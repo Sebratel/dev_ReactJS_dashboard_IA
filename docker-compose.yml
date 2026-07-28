@@ -29,7 +29,7 @@ services:
       # src/lib/runtimeConfig.ts.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
-      - "${WEB_PORT:-8081}:80"
+      - "${WEB_PORT}:80"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/"]
       interval: 30s

@@ -1,0 +1,92 @@
+# Indicadores Sebratel — stack de produção (SPA estática via nginx + API).
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+    image: indicadores-sebratel-web:latest
+    pull_policy: build
+    container_name: indicadores-sebratel-web
+    restart: unless-stopped
+    networks:
+      - indicadores-sebratel
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8081}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: indicadores-sebratel-api:latest
+    pull_policy: build
+    container_name: indicadores-sebratel-api
+    restart: unless-stopped
+    networks:
+      - indicadores-sebratel
+    environment:
+      API_PORT: 8788
+      ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-sebratel.com.br}
+      SNAPSHOT_PATH: /snapshot/installData.data
+    volumes:
+      - snapshot:/snapshot:ro
+      - data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8788/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Job do ETL — roda o catálogo único de queries (Postgres + MariaDB) em
+  # ciclo curto (ETL_INTERVAL_MINUTES), grava no volume `snapshot`.
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: indicadores-sebratel-api:latest
+    pull_policy: build
+    container_name: indicadores-sebratel-etl
+    restart: unless-stopped
+    networks:
+      - indicadores-sebratel
+    command: ["node", "scripts/etl-scheduler.mjs"]
+    environment:
+      SNAPSHOT_OUT: /snapshot/installData.data
+      ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-15}
+      DB_ELLEVEN_HOST: ${DB_ELLEVEN_HOST:-}
+      DB_ELLEVEN_DATABASE: ${DB_ELLEVEN_DATABASE:-}
+      DB_ELLEVEN_USER: ${DB_ELLEVEN_USER:-}
+      DB_ELLEVEN_PASSWORD: ${DB_ELLEVEN_PASSWORD:-}
+      DB_ELLEVEN_PORT: ${DB_ELLEVEN_PORT:-5432}
+      DB_ELLEVEN_SSL: ${DB_ELLEVEN_SSL:-}
+      DB_MARIA_HOST: ${DB_MARIA_HOST:-}
+      DB_MARIA_DATABASE: ${DB_MARIA_DATABASE:-}
+      DB_MARIA_USER: ${DB_MARIA_USER:-}
+      DB_MARIA_PASSWORD: ${DB_MARIA_PASSWORD:-}
+      DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
+    volumes:
+      - snapshot:/snapshot
+      - data:/app/data
+
+networks:
+  indicadores-sebratel:
+    driver: bridge
+
+volumes:
+  snapshot:
+  # Catálogo de queries (data/queries.json) e config do Builder
+  # (data/dashboard-config.json) — precisa ser o MESMO volume nos serviços
+  # api e etl, senão o ciclo agendado do etl sobrescreve o snapshot usando só
+  # o catálogo padrão (semente), descartando queries criadas/editadas via API.
+  data:

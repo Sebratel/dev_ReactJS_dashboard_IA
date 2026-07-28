@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- Aplica o tema salvo ANTES do CSS pintar qualquer coisa — sem isso,
+         quem já escolheu "escuro" veria um flash claro no primeiro paint
+         (o CSS aplica o :root padrão antes do JS do app rodar). Lê a mesma
+         chave que o zustand persist usa (src/store/appStore.ts), mas direto
+         do localStorage — não pode esperar o bundle do React carregar. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem('indicadores-sebratel-app')
+          var theme = raw && JSON.parse(raw).state && JSON.parse(raw).state.theme
+          if (theme === 'dark') document.documentElement.dataset.theme = 'dark'
+        } catch (e) { /* localStorage indisponível ou JSON inválido — fica no padrão claro */ }
+      })()
+    </script>
+    <link rel="icon" type="image/png" href="/logo-circular-sebratel.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Indicadores Sebratel</title>
+    <meta name="description" content="Indicadores Sebratel — gestão operacional de instalação, agendamento e reincidência" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

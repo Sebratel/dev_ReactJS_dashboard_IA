@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --app-bg:          244 241 232;
+    --app-surface:     235 231 219;
+    --app-card:        255 255 255;
+    --app-cardHover:   251 249 243;
+    --app-border:      224 220 208;
+    --app-borderLight: 209 204 190;
+
+    --color-white: 26 26 26;
+
+    --gray-100: 26 26 26;
+    --gray-200: 40 40 40;
+    --gray-300: 58 58 58;
+    --gray-400: 75 75 73;
+    --gray-500: 93 93 90;
+    --gray-600: 110 110 106;
+    --gray-700: 130 130 125;
+    --gray-800: 150 150 145;
+    --gray-900: 168 168 160;
+  }
+
+  /* Modo escuro — mesmas variáveis, valores invertidos. Como quase todo o
+     app já é construído sobre essas variáveis (bg-app-*, text-gray-*, etc.)
+     em vez de cor fixa, trocar só este bloco já reveste a maior parte da UI;
+     os poucos lugares com cor literal (ex. o fallback do KPI) são corrigidos
+     à parte. Ativado via <html data-theme="dark"> — ver src/store/appStore.ts. */
+  :root[data-theme='dark'] {
+    --app-bg:          17 17 20;
+    --app-surface:     26 26 30;
+    --app-card:        32 32 37;
+    --app-cardHover:   41 41 46;
+    --app-border:      53 53 60;
+    --app-borderLight: 72 72 80;
+
+    --color-white: 237 237 240;
+
+    /* gray-400 a gray-700 subiram de brilho (jul/2026) — texto secundário e
+       ícones (subtítulos, editar/excluir, busca, engrenagem) ficavam com
+       contraste baixo demais contra os fundos escuros (~4.8:1 no gray-500
+       original, abaixo do confortável pra texto pequeno). gray-100/200/300
+       (texto principal) e gray-800/900 (bem subtil, quase-fundo) não mudaram. */
+    --gray-100: 237 237 240;
+    --gray-200: 221 221 226;
+    --gray-300: 197 197 204;
+    --gray-400: 185 185 192;
+    --gray-500: 165 165 172;
+    --gray-600: 145 145 153;
+    --gray-700: 125 125 133;
+    --gray-800: 70 70 77;
+    --gray-900: 52 52 58;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: rgb(var(--app-bg));
+    color: rgb(var(--color-white));
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgb(var(--app-border));
+    border-radius: 99px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--app-borderLight));
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--app-border)) transparent;
+  }
+
+  .hover-lift {
+    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+    will-change: transform;
+  }
+  .hover-lift:hover {
+    transform: translateY(-3px);
+  }
+
+  .gradient-text {
+    background-image: linear-gradient(135deg, #ffb000 0%, #ff8f00 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .glass {
+    background-color: rgb(var(--app-card) / 0.72);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+  }
+}

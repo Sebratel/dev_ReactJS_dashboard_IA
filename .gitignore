@@ -1,0 +1,16 @@
+node_modules
+dist
+
+# Scripts de debug avulsos (não fazem parte do projeto)
+_probe_view.mjs
+
+# Credenciais / segredos
+.env
+.env.*
+!.env.example
+
+# Snapshot multi-tabela gerado pelo ETL (contém dados reais — não versionar)
+public/installData.data
+
+# Estado de runtime: overrides de query editados pela tela (volume do servidor)
+data/

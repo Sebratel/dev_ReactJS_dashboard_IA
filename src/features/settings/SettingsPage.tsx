@@ -15,6 +15,8 @@ import {
 } from './queryCatalogApi'
 import { QueryEditorModal } from './QueryEditorModal'
 import { FieldDictionaryCard } from './FieldDictionaryCard'
+import { LakehouseSourcesCard } from './LakehouseSourcesCard'
+import { Toggle, RefreshControl, FolderControl, type RefreshPatch } from './SourceControls'
 
 const DB_LABEL: Record<QueryDef['db'], string> = {
   postgres: 'PostgreSQL (DB_ELLEVEN)',
@@ -24,223 +26,10 @@ const DB_COLOR: Record<QueryDef['db'], string> = {
   postgres: '#3b82f6', mariadb: '#f59e0b',
 }
 
-// Toggle padrão do app — pill com círculo, transform via style (não classe
-// arbitrária do Tailwind) e type="button" explícito, pra nunca depender de
-// geração de classe em runtime pro deslocamento do círculo.
-function Toggle({ on, onChange, title }: { on: boolean; onChange: (v: boolean) => void; title?: string }) {
-  return (
-    <button
-      type="button"
-      title={title}
-      onClick={() => onChange(!on)}
-      className={cn('relative h-5 w-9 rounded-full transition-colors shrink-0', on ? 'bg-brand-blue' : 'bg-app-border')}
-    >
-      <span className="absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white transition-transform" style={{ transform: on ? 'translateX(16px)' : 'translateX(0)' }} />
-    </button>
-  )
-}
-
-const inputCls = 'rounded-lg border border-app-border bg-app-surface px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-brand-blue/50'
-const pillCls = (active: boolean) => cn(
-  'px-2.5 py-1 rounded-lg border text-[10px] font-medium',
-  active ? 'border-brand-blue bg-brand-blue/10 text-brand-blue' : 'border-app-border text-gray-300',
-)
-
-// Ritmo de atualização de UMA query — 'realtime' (todo ciclo do ETL, poucos
-// minutos) ou 'scheduled' (só a cada X min/h, mantendo o último dado bom
-// entre uma execução e outra). É por query, não uma config global: dá pra
-// ter uma em tempo real e outra agendada ao mesmo tempo.
-function RefreshControl({ q, onSave }: {
-  q: QueryDef
-  onSave: (refresh: { mode: 'realtime' | 'scheduled'; minutes?: number }) => Promise<void>
-}) {
-  const initialMode = q.refreshMode ?? 'realtime'
-  const initialMinutes = q.refreshMinutes ?? 60
-  const [mode, setMode] = useState<'realtime' | 'scheduled'>(initialMode)
-  const [value, setValue] = useState(initialMinutes % 60 === 0 && initialMinutes >= 60 ? initialMinutes / 60 : initialMinutes)
-  const [unit, setUnit] = useState<'minutos' | 'horas'>(initialMinutes % 60 === 0 && initialMinutes >= 60 ? 'horas' : 'minutos')
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const minutes = unit === 'horas' ? value * 60 : value
-  const dirty = mode !== initialMode || (mode === 'scheduled' && minutes !== initialMinutes)
-
-  const save = async () => {
-    setSaving(true); setError(null); setSaved(false)
-    try {
-      await onSave({ mode, minutes: mode === 'scheduled' ? minutes : undefined })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao salvar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <span className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">Atualização desta query</span>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <button type="button" onClick={() => setMode('realtime')} className={pillCls(mode === 'realtime')}>Tempo real</button>
-        <button type="button" onClick={() => setMode('scheduled')} className={pillCls(mode === 'scheduled')}>Agendada</button>
-        {mode === 'scheduled' && (
-          <>
-            <span className="text-[10px] text-gray-400">a cada</span>
-            <input type="number" min={1} value={value} onChange={(e) => setValue(Math.max(1, Number(e.target.value) || 1))} className={cn(inputCls, 'w-16')} />
-            <select value={unit} onChange={(e) => setUnit(e.target.value as 'minutos' | 'horas')} className={inputCls}>
-              <option value="minutos">Minutos</option>
-              <option value="horas">Horas</option>
-            </select>
-          </>
-        )}
-        {dirty && (
-          <button onClick={save} disabled={saving} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-blue text-white text-[11px] font-semibold hover:bg-brand-blueLight disabled:opacity-50">
-            {saving ? <Loader2 size={11} className="animate-spin" /> : null} Salvar
-          </button>
-        )}
-        {saved && <span className="text-[10px] text-emerald-400">Salvo ✓</span>}
-      </div>
-      {error && <p className="text-[11px] text-risk-critical">{error}</p>}
-      <p className="text-[10px] text-gray-400">
-        {mode === 'realtime'
-          ? 'Atualiza em todo ciclo do ETL (a cada poucos minutos).'
-          : 'Só busca dado novo a cada intervalo definido — entre uma execução e outra, mantém o último dado buscado (não some do Builder).'}
-        {q.lastRunAt && ` Última atualização: ${new Date(q.lastRunAt).toLocaleString('pt-BR')}.`}
-      </p>
-    </div>
-  )
-}
-
-// Em quais pastas esta query aparece como fonte no Builder — 'Todas as
-// pastas' (padrão, folderIds null) ou só as marcadas abaixo. Não afeta o
-// ETL nem `enabled`: controla só se a query aparece nos pickers de fonte de
-// quem está montando uma dashboard naquela pasta. Só admin ajusta isto —
-// ver requireAdmin() na rota PATCH /api/queries/:id/folders.
-function FolderControl({ q, allFolders, onSave }: {
-  q: QueryDef
-  allFolders: Folder[]
-  onSave: (folderIds: string[] | null) => Promise<void>
-}) {
-  const initialOpen = q.folderIds == null
-  const [open, setOpen] = useState(initialOpen)
-  const [selected, setSelected] = useState<Set<string>>(new Set(q.folderIds ?? []))
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const [checking, setChecking] = useState(false)
-  const [confirmRemoval, setConfirmRemoval] = useState<{ newFolderIds: string[] | null; affected: { name: string; dashboardNames: string[] }[] } | null>(null)
-
-  const initialSelectedKey = [...(q.folderIds ?? [])].sort().join(',')
-  const dirty = open !== initialOpen || (!open && [...selected].sort().join(',') !== initialSelectedKey)
-
-  const toggleFolder = (id: string) => setSelected((prev) => {
-    const next = new Set(prev)
-    next.has(id) ? next.delete(id) : next.add(id)
-    return next
-  })
-
-  const doSave = async (folderIds: string[] | null) => {
-    setSaving(true); setError(null); setSaved(false)
-    try {
-      await onSave(folderIds)
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao salvar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  // Antes de salvar, checa se alguma pasta que estava liberada e está sendo
-  // removida (ou deixada de fora ao restringir a partir de "todas") já tem
-  // widget de verdade usando esta query — se tiver, confirma antes, listando
-  // onde. Só amplia acesso (ou não remove nenhuma pasta) nunca pede confirmação.
-  const save = async () => {
-    const newFolderIds = open ? null : Array.from(selected)
-    const removedIds = newFolderIds === null
-      ? []
-      : q.folderIds == null
-        ? allFolders.filter((f) => !selected.has(f.id)).map((f) => f.id)
-        : q.folderIds.filter((id) => !selected.has(id))
-
-    if (removedIds.length === 0) { await doSave(newFolderIds); return }
-
-    setChecking(true); setError(null)
-    try {
-      const usage = await fetchQueryUsage(q.id)
-      const affected = usage.filter((u) => removedIds.includes(u.folderId))
-      if (affected.length > 0) {
-        setConfirmRemoval({ newFolderIds, affected: affected.map((f) => ({ name: f.folderName, dashboardNames: f.dashboardNames })) })
-      } else {
-        await doSave(newFolderIds)
-      }
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao verificar o uso desta query.')
-    } finally {
-      setChecking(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <span className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">Pastas onde esta query pode ser usada</span>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <button type="button" onClick={() => setOpen(true)} className={pillCls(open)}>Todas as pastas</button>
-        <button type="button" onClick={() => setOpen(false)} className={pillCls(!open)}>Só nestas</button>
-      </div>
-      {!open && (
-        allFolders.length === 0 ? (
-          <p className="text-[10px] text-gray-400">Nenhuma pasta cadastrada ainda.</p>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {allFolders.map((f) => (
-              <button key={f.id} type="button" onClick={() => toggleFolder(f.id)} className={pillCls(selected.has(f.id))}>{f.name}</button>
-            ))}
-          </div>
-        )
-      )}
-      <div className="flex items-center gap-2">
-        {dirty && (
-          <button onClick={save} disabled={saving || checking} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-blue text-white text-[11px] font-semibold hover:bg-brand-blueLight disabled:opacity-50">
-            {saving || checking ? <Loader2 size={11} className="animate-spin" /> : null} Salvar
-          </button>
-        )}
-        {saved && <span className="text-[10px] text-emerald-400">Salvo ✓</span>}
-      </div>
-      {error && <p className="text-[11px] text-risk-critical">{error}</p>}
-      <p className="text-[10px] text-gray-400">
-        {open
-          ? 'Aparece como fonte disponível em qualquer pasta.'
-          : selected.size === 0
-            ? 'Sem nenhuma pasta marcada, esta query some do Builder em todo lugar até marcar pelo menos uma.'
-            : 'Só quem estiver montando uma dashboard dentro de uma dessas pastas vê esta query no seletor de fontes.'}
-      </p>
-      {confirmRemoval && (
-        <ConfirmDialog
-          title="Remover acesso de pasta em uso?"
-          message={
-            `Esta query já está em uso em: ${confirmRemoval.affected
-              .map((f) => `"${f.name}" (${f.dashboardNames.join(', ')})`)
-              .join('; ')}. Remover o acesso não apaga os widgets já criados, mas eles deixam de aparecer no seletor de fontes para novas edições nessa pasta. Continuar?`
-          }
-          confirmLabel="Remover mesmo assim"
-          danger
-          onConfirm={() => { const { newFolderIds } = confirmRemoval; setConfirmRemoval(null); doSave(newFolderIds) }}
-          onCancel={() => setConfirmRemoval(null)}
-        />
-      )}
-    </div>
-  )
-}
-
 function QueryCard({ q, isAdmin, allFolders, onEdit, onDelete, onToggleEnabled, onSaveRefresh, onSaveFolders }: {
   q: QueryDef; isAdmin: boolean; allFolders: Folder[]
   onEdit: () => void; onDelete: () => void; onToggleEnabled: (enabled: boolean) => void
-  onSaveRefresh: (refresh: { mode: 'realtime' | 'scheduled'; minutes?: number }) => Promise<void>
+  onSaveRefresh: (refresh: RefreshPatch) => Promise<void>
   onSaveFolders: (folderIds: string[] | null) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
@@ -275,8 +64,8 @@ function QueryCard({ q, isAdmin, allFolders, onEdit, onDelete, onToggleEnabled, 
       </div>
       {open && (
         <div className="border-t border-app-border p-4 space-y-4">
-          <RefreshControl q={q} onSave={onSaveRefresh} />
-          {isAdmin && <FolderControl q={q} allFolders={allFolders} onSave={onSaveFolders} />}
+          <RefreshControl source={q} noun="query" onSave={onSaveRefresh} />
+          {isAdmin && <FolderControl source={q} noun="query" allFolders={allFolders} fetchUsage={fetchQueryUsage} onSave={onSaveFolders} />}
           <pre className="text-[11px] text-gray-300 bg-app-surface rounded-lg p-3 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed">{q.sql.trim()}</pre>
         </div>
       )}
@@ -344,7 +133,7 @@ export default function SettingsPage() {
     }
   }
 
-  const saveQueryRefresh = async (id: string, refresh: { mode: 'realtime' | 'scheduled'; minutes?: number }) => {
+  const saveQueryRefresh = async (id: string, refresh: RefreshPatch) => {
     const saved = await setQueryRefresh(id, refresh)
     setList((prev) => prev && prev.map((q) => (q.id === id ? saved : q)))
   }
@@ -448,6 +237,8 @@ export default function SettingsPage() {
       <p className="text-[10px] text-gray-500 text-center">
         Só são permitidas queries de leitura (SELECT/WITH). Ao salvar/remover, o snapshot é atualizado automaticamente em segundo plano — as colunas novas aparecem no editor de widgets do Builder em pouco tempo.
       </p>
+
+      <LakehouseSourcesCard allFolders={allFolders} />
 
       {isAdmin && <FieldDictionaryCard />}
 

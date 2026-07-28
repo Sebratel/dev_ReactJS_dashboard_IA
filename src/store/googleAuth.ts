@@ -3,6 +3,7 @@
 // navegador estiver ativa — elimina o "deslogar/logar a cada 1h".
 import { useAuthStore } from './authStore'
 import { GOOGLE_OAUTH_SCOPE } from '@/lib/googleScopes'
+import { googleClientId, MISSING_CLIENT_ID_MESSAGE } from '@/lib/runtimeConfig'
 
 const GSI_SRC = 'https://accounts.google.com/gsi/client'
 
@@ -34,8 +35,8 @@ function loadScript(): Promise<void> {
 async function ensureClient(): Promise<void> {
   await loadScript()
   if (tokenClient) return
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
-  if (!clientId) throw new Error('VITE_GOOGLE_CLIENT_ID não configurado')
+  const clientId = googleClientId()
+  if (!clientId) throw new Error(MISSING_CLIENT_ID_MESSAGE)
   tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: clientId,
     scope: GOOGLE_OAUTH_SCOPE,

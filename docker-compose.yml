@@ -1,20 +1,33 @@
-# Indicadores Sebratel — stack de produção (SPA estática via nginx + API).
+# Indicadores Sebratel — stack de produção (SPA estática via nginx + API + ETL).
+#
+# Pensada para rodar como STACK DO PORTAINER apontada para este repositório do
+# GitHub (Stacks → Add stack → Repository). Ver DEPLOY-PORTAINER.md para o
+# passo a passo e a lista de variáveis a preencher na tela da stack.
+#
+# Duas decisões que fazem a stack funcionar no Portainer sem retoque manual:
+#   1. Nenhum `container_name` fixo — o Portainer prefixa os containers com o
+#      nome da stack. Nome fixo colide entre stacks (ex. uma de homologação e
+#      uma de produção no mesmo host) e atrapalha o redeploy.
+#   2. O Client ID do Google NÃO é assado no build: entra como env do serviço
+#      `web` e é lido em runtime (docker/entrypoint.sh → /config.js). Trocar de
+#      Client ID é editar a env e reiniciar, sem reconstruir imagem.
 services:
   web:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     image: indicadores-sebratel-web:latest
     pull_policy: build
-    container_name: indicadores-sebratel-web
     restart: unless-stopped
     networks:
       - indicadores-sebratel
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      # Lido no boot pelo entrypoint e gravado em /config.js — ver
+      # src/lib/runtimeConfig.ts.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
       - "${WEB_PORT:-8081}:80"
     healthcheck:
@@ -30,7 +43,6 @@ services:
       dockerfile: Dockerfile.api
     image: indicadores-sebratel-api:latest
     pull_policy: build
-    container_name: indicadores-sebratel-api
     restart: unless-stopped
     networks:
       - indicadores-sebratel
@@ -38,32 +50,23 @@ services:
       API_PORT: 8788
       ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-sebratel.com.br}
       SNAPSHOT_PATH: /snapshot/installData.data
-    volumes:
-      - snapshot:/snapshot:ro
-      - data:/app/data
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8788/api/health"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 5s
-
-  # Job do ETL — roda o catálogo único de queries (Postgres + MariaDB) em
-  # ciclo curto (ETL_INTERVAL_MINUTES), grava no volume `snapshot`.
-  etl:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    image: indicadores-sebratel-api:latest
-    pull_policy: build
-    container_name: indicadores-sebratel-etl
-    restart: unless-stopped
-    networks:
-      - indicadores-sebratel
-    command: ["node", "scripts/etl-scheduler.mjs"]
-    environment:
-      SNAPSHOT_OUT: /snapshot/installData.data
-      ETL_INTERVAL_MINUTES: ${ETL_INTERVAL_MINUTES:-15}
+      # Quem é administrador (lista fixa, separada por vírgula) — ver
+      # server/accessLog.mjs. Sem isto, valem só os e-mails embutidos no código.
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      # SSO do Google. O CLIENT_ID é o mesmo do serviço `web`; o CLIENT_SECRET
+      # existe para o fluxo de autorização no servidor (ver DEPLOY-PORTAINER.md,
+      # seção SSO) e é ignorado enquanto o login continuar sendo o fluxo
+      # implícito feito no navegador.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      # Chave de cifra dos tokens do Data Hub guardados em disco. Se ficar
+      # vazia, uma chave aleatória é gerada em data/.secret-key no volume
+      # compartilhado — funciona, mas definir aqui dá controle sobre rotação.
+      # DEVE ser igual à do serviço `etl`, senão o ETL não decifra os tokens.
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      # Credenciais dos bancos: a API também executa SQL ao vivo (testar uma
+      # query no editor de Configurações) e dispara o ETL sob demanda, então
+      # precisa das mesmas variáveis do serviço `etl` — não só ele.
       DB_ELLEVEN_HOST: ${DB_ELLEVEN_HOST:-}
       DB_ELLEVEN_DATABASE: ${DB_ELLEVEN_DATABASE:-}
       DB_ELLEVEN_USER: ${DB_ELLEVEN_USER:-}
@@ -75,6 +78,59 @@ services:
       DB_MARIA_USER: ${DB_MARIA_USER:-}
       DB_MARIA_PASSWORD: ${DB_MARIA_PASSWORD:-}
       DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
+      # Endereço padrão sugerido no cadastro de uma fonte do Data Hub.
+      DHUB_BASE_URL: ${DHUB_BASE_URL:-https://data-hub.sebratel.net.br}
+    volumes:
+      # Leitura E escrita: além de ler o snapshot, a API dispara o ETL em
+      # segundo plano quando alguém mexe no catálogo de fontes (ver
+      # triggerEtlRefresh em server/index.mjs) — e é o ETL que escreve aqui.
+      - snapshot:/snapshot
+      - data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8788/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+  # Job do ETL — materializa todas as fontes de segundo plano (queries SQL do
+  # catálogo + datasets do Data Hub) num ciclo curto, gravando no volume
+  # `snapshot`. O ritmo real de CADA fonte é configurado na tela
+  # (tempo real / agendada); este intervalo é só o ciclo base.
+  etl:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    image: indicadores-sebratel-api:latest
+    pull_policy: build
+    restart: unless-stopped
+    networks:
+      - indicadores-sebratel
+    command: ["node", "scripts/etl-scheduler.mjs"]
+    environment:
+      SNAPSHOT_OUT: /snapshot/installData.data
+      # Nome que o scheduler realmente lê (scripts/etl-scheduler.mjs).
+      ETL_BASE_INTERVAL_MINUTES: ${ETL_BASE_INTERVAL_MINUTES:-2}
+      ETL_RUN_ON_START: ${ETL_RUN_ON_START:-false}
+      # Precisa ser IGUAL à do serviço `api` — é com ela que os tokens do Data
+      # Hub cadastrados pela tela são decifrados aqui.
+      SECRETS_KEY: ${SECRETS_KEY:-}
+      DB_ELLEVEN_HOST: ${DB_ELLEVEN_HOST:-}
+      DB_ELLEVEN_DATABASE: ${DB_ELLEVEN_DATABASE:-}
+      DB_ELLEVEN_USER: ${DB_ELLEVEN_USER:-}
+      DB_ELLEVEN_PASSWORD: ${DB_ELLEVEN_PASSWORD:-}
+      DB_ELLEVEN_PORT: ${DB_ELLEVEN_PORT:-5432}
+      DB_ELLEVEN_SSL: ${DB_ELLEVEN_SSL:-}
+      DB_MARIA_HOST: ${DB_MARIA_HOST:-}
+      DB_MARIA_DATABASE: ${DB_MARIA_DATABASE:-}
+      DB_MARIA_USER: ${DB_MARIA_USER:-}
+      DB_MARIA_PASSWORD: ${DB_MARIA_PASSWORD:-}
+      DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
+      # Ajustes de paginação/teto da busca no Data Hub — os padrões do código
+      # servem bem, só mexa se um dataset específico exigir.
+      DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-50000}
+      DHUB_MAX_ROWS: ${DHUB_MAX_ROWS:-500000}
+      DHUB_TIMEOUT_MS: ${DHUB_TIMEOUT_MS:-120000}
     volumes:
       - snapshot:/snapshot
       - data:/app/data
@@ -85,8 +141,10 @@ networks:
 
 volumes:
   snapshot:
-  # Catálogo de queries (data/queries.json) e config do Builder
-  # (data/dashboard-config.json) — precisa ser o MESMO volume nos serviços
-  # api e etl, senão o ciclo agendado do etl sobrescreve o snapshot usando só
-  # o catálogo padrão (semente), descartando queries criadas/editadas via API.
+  # Catálogo de queries (data/queries.json), fontes do Data Hub
+  # (data/lakehouseSources.json), planilhas, workspace e a chave de cifra
+  # (data/.secret-key) — precisa ser o MESMO volume nos serviços api e etl,
+  # senão o ciclo agendado do etl sobrescreve o snapshot usando só o catálogo
+  # padrão (semente), descartando o que foi criado/editado via API, e os tokens
+  # do Data Hub ficam indecifráveis do outro lado.
   data:

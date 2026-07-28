@@ -7,6 +7,9 @@ RUN npm ci --omit=dev
 
 COPY server ./server
 COPY scripts ./scripts
+# `src` não é sobra: server/workspace.mjs importa createWelcomeTab de
+# src/features/builder/defaultConfig.ts — é por isso que o processo sobe com
+# `tsx` (o loader que entende .ts) em vez de `node` puro.
 COPY src ./src
 COPY tsconfig.json ./
 
@@ -18,4 +21,6 @@ EXPOSE 8788
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget -qO- http://localhost:8788/api/health >/dev/null 2>&1 || exit 1
 
-CMD ["npx", "tsx", "server/index.mjs"]
+# Binário local em vez de `npx tsx`: resolve na hora, sem consultar registro
+# nem gastar o passo de resolução do npx a cada boot/restart do container.
+CMD ["./node_modules/.bin/tsx", "server/index.mjs"]

@@ -5,6 +5,7 @@ import { AlertCircle, Info, Loader2, Lock, Shield } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { logLogin } from '@/features/access/accessApi'
 import { GOOGLE_OAUTH_SCOPE } from '@/lib/googleScopes'
+import { googleClientId, MISSING_CLIENT_ID_MESSAGE } from '@/lib/runtimeConfig'
 
 declare global {
   interface Window { google?: any }
@@ -49,7 +50,7 @@ function HeroAmbientDecor({ reduced }: { reduced: boolean }) {
 }
 
 export default function LoginPage() {
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined
+  const clientId = googleClientId()
   const navigate = useNavigate()
   const setUser = useAuthStore((s) => s.setUser)
   const setAccessToken = useAuthStore((s) => s.setAccessToken)
@@ -59,7 +60,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!clientId) { setError('VITE_GOOGLE_CLIENT_ID não configurado no .env.'); return }
+    if (!clientId) { setError(MISSING_CLIENT_ID_MESSAGE); return }
 
     function init() {
       const oauth2 = window.google?.accounts?.oauth2

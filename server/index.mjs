@@ -23,6 +23,11 @@ import { runWidgetQuery, runFieldValues, listSourceDefs } from './widgetQuery.mj
 import {
   listSheetSources, createSheetSource, updateSheetSource, deleteSheetSource, getSheetSource, resolveSheetRows, sourceKey as sheetSourceKey,
 } from './sheetSources.mjs'
+import {
+  listLakehouseSources, getLakehouseSource, createLakehouseSource, updateLakehouseSource, deleteLakehouseSource,
+  setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, resolveCredentials,
+  sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
+} from './lakehouseSources.mjs'
 import { listFieldDictionary, upsertFieldDescription } from './fieldDictionary.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
@@ -386,6 +391,159 @@ app.patch('/api/sheet-sources/:id/refresh', requireAuth(), async (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// ─── Fontes do Data Hub / lakehouse (server/lakehouseSources.mjs) ──
+// Consumo da API pública do lakehouse como BARRAMENTO de dados: em vez de uma
+// query SQL batendo no banco de origem, cadastra-se um dataset publicado lá
+// mais um token de acesso. Auto-serviço como as planilhas (qualquer usuário
+// logado cadastra a sua), com a mesma regra de dono/admin pra editar e
+// remover; só admin decide em quais pastas a fonte aparece.
+//
+// O token nunca volta pro navegador em nenhuma destas rotas — a UI recebe só
+// `tokenHint`. Quem precisa do token em claro é o ETL, que decifra na hora de
+// buscar (ver scripts/fetch-install.mjs).
+app.get('/api/lakehouse-sources', requireAuth(), (_req, res) => {
+  res.json({ sources: listLakehouseSources(), defaultBaseUrl: DHUB_DEFAULT_BASE_URL })
+})
+
+// Testa credenciais AINDA NÃO SALVAS (o formulário acabou de digitá-las) e
+// devolve total de linhas + colunas detectadas, pra pessoa confirmar que é o
+// dataset certo antes de criar a fonte. Também serve pra revalidar uma fonte
+// existente: sem `token` no corpo, reusa o token já cadastrado em `id`.
+app.post('/api/lakehouse-sources/test', requireAuth(), async (req, res) => {
+  try {
+    const b = req.body || {}
+    let { baseUrl, datasetSlug, token } = b
+    if (!token && b.id) {
+      const saved = resolveCredentials(b.id)
+      token = saved.token
+      baseUrl = baseUrl || saved.baseUrl
+      datasetSlug = datasetSlug || saved.datasetSlug
+    }
+    res.json(await previewDataset({ baseUrl, datasetSlug, token }))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Cria e já valida contra o Data Hub — se o token não abrir o dataset, nada é
+// salvo e o erro real de lá volta pra tela (mesmo espírito de POST
+// /api/sheet-sources). Em seguida dispara o ETL, pra fonte já aparecer no
+// Builder sem esperar o próximo ciclo.
+app.post('/api/lakehouse-sources', requireAuth(), async (req, res) => {
+  const b = req.body || {}
+  try {
+    await previewDataset({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
+  } catch (e) {
+    return res.status(400).json({ error: e.message })
+  }
+  try {
+    const entry = createLakehouseSource({
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, enabled: b.enabled,
+    }, req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.create', target: entry.id, meta: { label: entry.label, dataset: entry.datasetSlug } })
+    triggerEtlRefresh(`fonte do Data Hub "${entry.datasetSlug}" cadastrada`)
+    res.json({ ok: true, source: entry })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// `token` vazio/ausente no corpo mantém o token atual — a tela nunca recebe o
+// token de volta, então não teria como reenviá-lo a cada edição.
+app.put('/api/lakehouse-sources/:id', requireAuth(), async (req, res) => {
+  const existing = getLakehouseSource(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Fonte não encontrada.' })
+  if (existing.createdBy !== req.user.email && !isAdmin(req.user.email)) {
+    return res.status(403).json({ error: 'Só quem cadastrou esta fonte (ou um administrador) pode editá-la.' })
+  }
+  const b = req.body || {}
+  try {
+    // Valida a combinação que vai ficar salva (o que mudou + o que ficou),
+    // pra uma edição errada não deixar a fonte quebrada até o próximo ETL.
+    await previewDataset({
+      baseUrl: b.baseUrl ?? existing.baseUrl,
+      datasetSlug: b.datasetSlug ?? existing.datasetSlug,
+      token: b.token || resolveCredentials(existing.id).token,
+    })
+  } catch (e) {
+    return res.status(400).json({ error: e.message })
+  }
+  try {
+    const saved = updateLakehouseSource(req.params.id, {
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token,
+    }, req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug } })
+    triggerEtlRefresh(`fonte do Data Hub "${saved.datasetSlug}" editada`)
+    res.json({ ok: true, source: saved })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+app.delete('/api/lakehouse-sources/:id', requireAuth(), (req, res) => {
+  try {
+    deleteLakehouseSource(req.params.id, req.user.email, isAdmin(req.user.email))
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.delete', target: req.params.id })
+    triggerEtlRefresh('fonte do Data Hub removida')
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// enabled e refresh: qualquer usuário logado ajusta (mesma decisão das
+// queries SQL — é ritmo de atualização, não permissão).
+app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), (req, res) => {
+  try {
+    const saved = setLakehouseEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.enabled', target: saved.id, meta: { enabled: saved.enabled } })
+    triggerEtlRefresh(`fonte do Data Hub "${saved.datasetSlug}" ${saved.enabled ? 'ativada' : 'desativada'}`)
+    res.json({ ok: true, source: saved })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), (req, res) => {
+  try {
+    const { mode, minutes } = req.body || {}
+    const saved = setLakehouseRefresh(req.params.id, { mode, minutes }, req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.refresh', target: saved.id, meta: { mode: saved.refreshMode, minutes: saved.refreshMinutes } })
+    res.json({ ok: true, source: saved })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Busca agora, sem esperar o ciclo. Dispara o ETL inteiro (é ele que escreve o
+// snapshot) — a resposta volta na hora e a atualização acontece em segundo
+// plano, igual ao que já acontece ao mexer no catálogo de queries.
+app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), (req, res) => {
+  const entry = getLakehouseSource(req.params.id)
+  if (!entry) return res.status(404).json({ error: 'Fonte não encontrada.' })
+  triggerEtlRefresh(`sincronização manual da fonte do Data Hub "${entry.datasetSlug}"`)
+  res.json({ ok: true, started: true })
+})
+
+// Em quais pastas esta fonte aparece no Builder — null (padrão) = todas.
+// Mesma regra do equivalente por query SQL: só admin.
+app.patch('/api/lakehouse-sources/:id/folders', requireAuth(), requireAdmin(), (req, res) => {
+  try {
+    const { folderIds } = req.body || {}
+    const saved = setLakehouseFolders(req.params.id, folderIds === undefined ? null : folderIds, req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.folders', target: saved.id, meta: { folderIds: saved.folderIds } })
+    res.json({ ok: true, source: saved })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Em quais pastas/dashboards esta fonte já está em uso — findFoldersUsingQuery
+// aceita qualquer string de fonte, não é específico de SQL.
+app.get('/api/lakehouse-sources/:id/usage', requireAuth(), (req, res) => {
+  res.json({ folders: findFoldersUsingQuery(lakehouseSourceKey(req.params.id)) })
 })
 
 // ─── Dicionário de dados (descrição/origem por coluna) ────────────

@@ -12,6 +12,7 @@
 import { getSnapshot } from './dataset.mjs'
 import { loadQueryCatalog } from './queryCatalog.mjs'
 import { isSheetSource, sheetSourceId, sourceKey as sheetSourceKey, listSheetSources, resolveSheetRows } from './sheetSources.mjs'
+import { listLakehouseSources, sourceKey as lakehouseSourceKey } from './lakehouseSources.mjs'
 import { fieldDictionaryMap } from './fieldDictionary.mjs'
 
 const MAX_POINTS = 100
@@ -96,24 +97,37 @@ async function withSheetSources(baseSnap, sheetKeys, accessToken) {
   return { ...(baseSnap ?? {}), data }
 }
 
-// Catálogo de fontes disponíveis (uma por query do catálogo com dados no
-// snapshot atual, mais uma por planilha do Google já cadastrada — ver
-// server/sheetSources.mjs) — usado por GET /api/sources para alimentar os
+// Catálogo de fontes disponíveis — uma por query do catálogo com dados no
+// snapshot atual, uma por dataset do Data Hub já materializado no snapshot
+// (ver server/lakehouseSources.mjs) e uma por planilha do Google cadastrada
+// (ver server/sheetSources.mjs). Usado por GET /api/sources para alimentar os
 // pickers do Builder no front (fonte/dimensão/medida/filtro/coluna).
-// `folderId`: quando informado, só entram fontes SQL cuja query está
-// liberada para aquela pasta (`query.folderIds` null/ausente = liberada em
-// todas — ver setQueryFolders em queryCatalog.mjs); planilhas do Google não
-// são restritas por pasta (sempre aparecem — são de quem cadastrou, não do
-// admin). Sem `folderId` (compat), nenhum filtro é aplicado.
+// `folderId`: quando informado, só entram fontes SQL/Data Hub liberadas para
+// aquela pasta (`folderIds` null/ausente = liberada em todas — ver
+// setQueryFolders em queryCatalog.mjs e setLakehouseFolders em
+// lakehouseSources.mjs); planilhas do Google não são restritas por pasta
+// (sempre aparecem — são de quem cadastrou, não do admin). Sem `folderId`
+// (compat), nenhum filtro é aplicado.
 // `accessToken`: usado só pra tentar atualizar o cache de cada planilha se
 // estiver expirado — falhando (sem acesso, sessão sem o escopo novo etc.),
 // a planilha aparece com 0 campos em vez de derrubar a lista inteira.
+// Fontes do Data Hub não precisam de nada disso: elas já vêm resolvidas no
+// snapshot pelo ETL, como as queries SQL.
 export async function listSourceDefs(folderId, accessToken) {
   const snap = getSnapshot()
   const data = { ...(snap?.data ?? {}) }
   const queries = loadQueryCatalog().list
   const titles = new Map(queries.map((q) => [q.id, q.title]))
   const folderIdsById = new Map(queries.map((q) => [q.id, q.folderIds ?? null]))
+
+  // Só nomeia/filtra: as linhas já estão em `data` sob a chave `dhub:<id>`.
+  // Uma fonte recém-cadastrada (ETL ainda não rodou) simplesmente não tem
+  // chave no snapshot e portanto não aparece — igual a uma query SQL nova.
+  for (const src of listLakehouseSources()) {
+    const key = lakehouseSourceKey(src.id)
+    titles.set(key, src.label)
+    folderIdsById.set(key, src.folderIds ?? null)
+  }
 
   for (const sh of listSheetSources()) {
     const key = sheetSourceKey(sh.id)

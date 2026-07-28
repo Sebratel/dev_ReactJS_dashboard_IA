@@ -17,8 +17,13 @@ A ideia central: em vez de páginas fixas de indicadores programadas no código,
 ```
 Banco de dados (Postgres "DB_ELLEVEN" e/ou MariaDB "DB_Applicattion")
         │  (queries SQL cadastradas em Configurações)
+        │
+        │   Data Hub / lakehouse — API pública de leitura
+        │   (datasets + token cadastrados em Configurações; o lakehouse
+        │    funciona como BARRAMENTO, sem acesso direto à origem)
+        │
         ▼
-Catálogo único de queries (data/queries.json)
+Catálogo de fontes (data/queries.json + data/lakehouseSources.json)
         │  (ETL — roda periodicamente ou sob demanda)
         ▼
 Snapshot em memória (public/installData.data, gzip)
@@ -166,10 +171,25 @@ Diferente das queries SQL acima (só admin cadastra), **qualquer usuário autent
 - **Quem pode editar/remover**: só quem cadastrou a planilha (ou um administrador) — mas qualquer pessoa com acesso ao widget pode **usá-la**, uma vez cadastrada.
 - **Requisito único de configuração** (feito uma vez, fora do app): a conta Google usada no login precisa ter concedido a permissão de leitura de planilhas — quem já estava logado antes desse recurso existir precisa **sair e entrar de novo** pra conceder o acesso novo.
 
+### 3.7-ter Fontes de dados — datasets do Data Hub / lakehouse (qualquer usuário)
+
+O terceiro tipo de fonte, e o caminho preferido para dado que já existe no **Data Hub** (`lakehouse_sebratel`). A ideia é usar o lakehouse como **barramento de dados**: em vez de cadastrar uma query SQL que bate direto no banco de origem, cadastra-se aqui um dataset já publicado lá, e o app lê pela API pública dele. Quem consome não precisa de credencial de banco nenhuma.
+
+- **Onde**: Configurações → seção **"Data Hub (lakehouse)"** → **"Nova fonte"**. Como as planilhas do Google (e diferente das queries SQL), é **auto-serviço**: qualquer usuário autenticado cadastra a própria fonte, com o **próprio token**.
+- **O que preencher**: um nome (é o que aparece no Builder), o **dataset** (o slug publicado no Data Hub, ex. `clientes-cancelados`), o endereço do Data Hub (já vem preenchido) e o **token de acesso** (gerado no Data Hub, em Integrações). Dá para colar a URL inteira do `curl` no campo de dataset — o endereço, o dataset e o token são extraídos dela automaticamente.
+- **Botão "Testar conexão"**: bate no Data Hub sem salvar nada e mostra quantas linhas o dataset tem e quais colunas vão aparecer no Builder, com uma amostra. Ao criar ou editar, esse teste é refeito no servidor: se o token não abrir o dataset, **nada é salvo** e o erro real do Data Hub aparece na tela (token revogado, sem acesso àquele dataset, dataset inexistente).
+- **Segurança do token**: é enviado uma vez e guardado **cifrado** no servidor (AES-256-GCM). Nunca volta para o navegador — a tela mostra só uma dica (`dhub_…6T97`). Ao editar uma fonte, deixar o campo de token vazio mantém o token que já está salvo.
+- **Atualização**: igual às queries SQL — **tempo real** (todo ciclo do ETL) ou **agendada** (a cada X minutos/horas, mantendo o último dado bom entre execuções). O padrão de uma fonte nova é *agendada, a cada 60 minutos*, porque dataset de lakehouse costuma ser materializado de tempo em tempo. Também há **"Sincronizar agora"**, que dispara a busca na hora. Se uma busca falhar, a fonte mantém o último dado bom e a tela mostra um selo "falhou" com o motivo.
+- **Volume**: datasets grandes são buscados em páginas (padrão: 50 mil linhas por requisição) até fechar o total informado pelo próprio Data Hub, com teto de segurança de 500 mil linhas por fonte.
+- **Pastas onde a fonte pode ser usada** (admin): mesma regra das queries SQL (ver 3.7) — por padrão aparece em qualquer pasta; um administrador pode restringi-la.
+- **Quem pode editar/remover**: só quem cadastrou (ou um administrador). Ligar/desligar e mudar o ritmo de atualização, qualquer usuário logado. Remover a fonte aqui **não** afeta nada no Data Hub — apaga só o cadastro deste app.
+- **Quando ela aparece no Builder**: depois do primeiro ciclo do ETL que a buscar (o cadastro já dispara um). Igual a uma query SQL nova.
+
 ### 3.8 Como os dados são atualizados
 
-- Um processo separado ("agendador de ETL") roda o ciclo base de atualização a cada poucos minutos (hoje, 2 minutos por padrão). Nesse ciclo, cada query decide se é a vez dela de rodar (ver 3.6).
-- Editar, criar, remover, ativar ou desativar uma query também dispara uma atualização em segundo plano na hora.
+- Um processo separado ("agendador de ETL") roda o ciclo base de atualização a cada poucos minutos (hoje, 2 minutos por padrão). Nesse ciclo, cada fonte de segundo plano — query SQL (3.7) ou dataset do Data Hub (3.7-ter) — decide se é a vez dela de rodar. Planilhas do Google não entram nesse ciclo: elas dependem do login de quem está usando, e por isso são resolvidas dentro da requisição (3.7-bis).
+- Editar, criar, remover, ativar ou desativar uma query ou uma fonte do Data Hub também dispara uma atualização em segundo plano na hora.
+- Uma fonte cuja busca falhe **mantém o último dado bom** em vez de zerar, e é tentada de novo no ciclo seguinte. Isso vale para as duas: uma query cujo banco está fora do ar e um dataset cujo token foi revogado se comportam igual.
 - **Importante**: a atualização acontece no servidor. Uma aba do navegador já aberta **não recarrega os dados sozinha** — é preciso dar F5, a menos que a aba tenha a opção **"Atualização automática"** ligada (em Configurações de tela, por aba): nesse caso, os widgets da aba buscam dado novo sozinhos, em segundo plano, no intervalo definido, sem piscar a tela — pensado para telas fixas expostas sem interação (ex. TV de um setor).
 
 ### 3.9 Autenticação e acesso

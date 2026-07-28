@@ -150,8 +150,8 @@ volumes:
   # Catálogo de queries (data/queries.json), fontes do Data Hub
   # (data/lakehouseSources.json), planilhas, workspace, sessões de login
   # (data/sessions.json) e a chave de cifra (data/.secret-key) — precisa ser o
-  # MESMO volume nos serviços api e etl,
-  # senão o ciclo agendado do etl sobrescreve o snapshot usando só o catálogo
-  # padrão (semente), descartando o que foi criado/editado via API, e os tokens
-  # do Data Hub ficam indecifráveis do outro lado.
+  # MESMO volume nos serviços api e etl, senão o ciclo agendado do etl
+  # sobrescreve o snapshot usando só o catálogo padrão (semente), descartando o
+  # que foi criado/editado via API, e os tokens do Data Hub ficam indecifráveis
+  # do outro lado.
   data:

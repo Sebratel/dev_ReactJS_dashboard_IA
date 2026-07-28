@@ -75,6 +75,7 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
+| `WEB_PORT` | Porta publicada no host (ex. `8081`). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
 
 ### Bancos de origem (se você usar fontes SQL)
 
@@ -93,7 +94,6 @@ stack funciona normalmente.
 
 | Variável | Padrão | Para quê |
 |---|---|---|
-| `WEB_PORT` | `8081` | Porta publicada no host. |
 | `DHUB_BASE_URL` | `https://data-hub.sebratel.net.br` | Endereço sugerido no cadastro de uma fonte do Data Hub. |
 | `ETL_BASE_INTERVAL_MINUTES` | `2` | Ciclo base do ETL. Não é o ritmo de cada fonte — isso se configura por fonte, na tela. |
 | `ETL_RUN_ON_START` | `false` | `true` força uma execução do ETL assim que o container sobe. |

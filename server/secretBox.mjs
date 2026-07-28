@@ -62,7 +62,7 @@ export function encryptSecret(plain) {
 export function decryptSecret(packed) {
   const parts = String(packed ?? '').split(':')
   if (parts.length !== 4 || parts[0] !== 'v1') {
-    throw new Error('Segredo em formato desconhecido — recadastre o token desta fonte.')
+    throw new Error('Segredo guardado em formato desconhecido.')
   }
   const [, ivB, tagB, ctB] = parts
   try {
@@ -71,8 +71,11 @@ export function decryptSecret(packed) {
     return Buffer.concat([decipher.update(Buffer.from(ctB, 'base64')), decipher.final()]).toString('utf8')
   } catch {
     // Chave trocada (SECRETS_KEY diferente / data/.secret-key perdido) ou
-    // arquivo adulterado — nos dois casos o caminho é recadastrar o token.
-    throw new Error('Não foi possível decifrar o token desta fonte (a chave de cifra mudou?). Recadastre o token.')
+    // arquivo adulterado. A mensagem é genérica de propósito: este módulo é
+    // usado por mais de um consumidor (tokens do Data Hub e sessões de login),
+    // e cada um sabe qual é a saída no seu caso — quem quiser orientar o
+    // usuário envolve este erro com o próprio texto.
+    throw new Error('Não foi possível decifrar um segredo guardado (a chave de cifra mudou?).')
   }
 }
 

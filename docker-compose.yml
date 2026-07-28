@@ -8,9 +8,10 @@
 #   1. Nenhum `container_name` fixo — o Portainer prefixa os containers com o
 #      nome da stack. Nome fixo colide entre stacks (ex. uma de homologação e
 #      uma de produção no mesmo host) e atrapalha o redeploy.
-#   2. O Client ID do Google NÃO é assado no build: entra como env do serviço
-#      `web` e é lido em runtime (docker/entrypoint.sh → /config.js). Trocar de
-#      Client ID é editar a env e reiniciar, sem reconstruir imagem.
+#   2. Nenhuma credencial do Google no build nem no serviço `web`: o login é
+#      conduzido pelo servidor (fluxo de código de autorização), então o Client
+#      ID e o Client Secret ficam só no `api`, lidos do ambiente em runtime.
+#      A imagem do `web` é a mesma em qualquer ambiente.
 services:
   web:
     build:
@@ -24,10 +25,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-    environment:
-      # Lido no boot pelo entrypoint e gravado em /config.js — ver
-      # src/lib/runtimeConfig.ts.
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
     ports:
       - "${WEB_PORT}:80"
     healthcheck:
@@ -53,16 +50,25 @@ services:
       # Quem é administrador (lista fixa, separada por vírgula) — ver
       # server/accessLog.mjs. Sem isto, valem só os e-mails embutidos no código.
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      # SSO do Google. O CLIENT_ID é o mesmo do serviço `web`; o CLIENT_SECRET
-      # existe para o fluxo de autorização no servidor (ver DEPLOY-PORTAINER.md,
-      # seção SSO) e é ignorado enquanto o login continuar sendo o fluxo
-      # implícito feito no navegador.
+      # SSO do Google — fluxo de código de autorização conduzido aqui, no
+      # servidor. Os dois são obrigatórios: sem o secret não há troca de token,
+      # e o login falha com mensagem clara na tela.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      # Chave de cifra dos tokens do Data Hub guardados em disco. Se ficar
-      # vazia, uma chave aleatória é gerada em data/.secret-key no volume
-      # compartilhado — funciona, mas definir aqui dá controle sobre rotação.
-      # DEVE ser igual à do serviço `etl`, senão o ETL não decifra os tokens.
+      # Endereço público da aplicação, usado para montar o `redirect_uri` que o
+      # Google exige que seja IDÊNTICO ao cadastrado no Google Cloud (ex.
+      # http://indicadores.interno:8081). Deixando vazio, é derivado dos
+      # cabeçalhos da requisição — funciona, mas depender do proxy é mais
+      # frágil do que declarar. Ver DEPLOY-PORTAINER.md, seção SSO.
+      APP_BASE_URL: ${APP_BASE_URL:-}
+      # Tempo de vida da sessão de login, em dias.
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
+      # Chave de cifra dos segredos guardados em disco: tokens do Data Hub e os
+      # tokens do Google das sessões de login. Se ficar vazia, uma chave
+      # aleatória é gerada em data/.secret-key no volume compartilhado —
+      # funciona, mas definir aqui dá controle sobre rotação. DEVE ser igual à
+      # do serviço `etl`, senão o ETL não decifra os tokens do Data Hub.
+      # Trocá-la desloga todo mundo (as sessões viram ilegíveis).
       SECRETS_KEY: ${SECRETS_KEY:-}
       # Credenciais dos bancos: a API também executa SQL ao vivo (testar uma
       # query no editor de Configurações) e dispara o ETL sob demanda, então
@@ -142,8 +148,9 @@ networks:
 volumes:
   snapshot:
   # Catálogo de queries (data/queries.json), fontes do Data Hub
-  # (data/lakehouseSources.json), planilhas, workspace e a chave de cifra
-  # (data/.secret-key) — precisa ser o MESMO volume nos serviços api e etl,
+  # (data/lakehouseSources.json), planilhas, workspace, sessões de login
+  # (data/sessions.json) e a chave de cifra (data/.secret-key) — precisa ser o
+  # MESMO volume nos serviços api e etl,
   # senão o ciclo agendado do etl sobrescreve o snapshot usando só o catálogo
   # padrão (semente), descartando o que foi criado/editado via API, e os tokens
   # do Data Hub ficam indecifráveis do outro lado.

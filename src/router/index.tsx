@@ -27,8 +27,23 @@ function PageSuspense({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageLoader />}>{children}</Suspense>
 }
 
+// Tela neutra enquanto a sessão é verificada no servidor — dura um round-trip.
+// Não usa o PageLoader (esqueleto de dashboard) porque aqui ainda não se sabe
+// nem se existe usuário.
+function SessionCheck() {
+  return (
+    <div className="min-h-svh flex items-center justify-center bg-app-bg">
+      <span className="text-xs text-gray-500">Verificando sessão…</span>
+    </div>
+  )
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s) => s.user)
+  const ready = useAuthStore((s) => s.ready)
+  // `ready` false = GET /api/auth/me ainda não respondeu. Sem esse gate, um F5
+  // numa sessão válida mandaria pro /login antes da resposta chegar.
+  if (!ready) return <SessionCheck />
   if (!user) return <Navigate to="/login" replace />
   return <>{children}</>
 }
@@ -45,8 +60,10 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
 
 function LoginRoute() {
   const user = useAuthStore((s) => s.user)
+  const ready = useAuthStore((s) => s.ready)
+  if (!ready) return <SessionCheck />
   if (user) return <Navigate to="/" replace />
-  return <Suspense fallback={<PageLoader />}><LoginPage /></Suspense>
+  return <Suspense fallback={<SessionCheck />}><LoginPage /></Suspense>
 }
 
 // `/` sozinho não é mais uma página própria — redireciona pra 1ª dashboard

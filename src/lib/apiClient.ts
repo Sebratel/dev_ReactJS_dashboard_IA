@@ -1,8 +1,13 @@
-// Cliente HTTP central da API. Anexa o Bearer e, em 401, RENOVA o token
-// silenciosamente e repete a chamada 1x. Só desloga se a sessão Google morreu
-// de verdade (aí o RequireAuth manda pro /login). Todos os helpers de API usam.
+// Cliente HTTP central da API. A sessão é um cookie HttpOnly definido pelo
+// servidor (ver server/sessions.mjs), então não há token para anexar aqui —
+// só é preciso pedir ao navegador que envie os cookies (`credentials`).
+//
+// Antes deste desenho, a página guardava o access_token do Google no
+// localStorage, mandava num header Authorization e, em cada 401, tentava uma
+// renovação silenciosa via Google Identity Services. Agora a renovação é
+// responsabilidade do servidor (que tem o refresh_token): um 401 aqui significa
+// que a sessão realmente acabou, e o caminho é voltar pro login.
 import { useAuthStore } from '@/store/authStore'
-import { refreshGoogleToken } from '@/store/googleAuth'
 
 export class ApiError extends Error {
   status: number
@@ -13,31 +18,18 @@ export class ApiError extends Error {
   }
 }
 
-function withAuth(init: RequestInit | undefined, token: string | null): RequestInit {
-  return { ...init, headers: { ...(init?.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) } }
-}
-
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const token = useAuthStore.getState().accessToken
   let res: Response
   try {
-    res = await fetch(path, withAuth(init, token))
+    res = await fetch(path, { ...init, credentials: 'same-origin' })
   } catch {
     throw new ApiError(0, 'Não foi possível falar com o servidor (backend offline?).')
   }
   if (res.status !== 401) return res
 
-  let newToken: string | null = null
-  try { newToken = await refreshGoogleToken() } catch { /* sessão Google indisponível */ }
-  if (newToken) {
-    try {
-      res = await fetch(path, withAuth(init, newToken))
-    } catch {
-      throw new ApiError(0, 'Não foi possível falar com o servidor (backend offline?).')
-    }
-    if (res.status !== 401) return res
-  }
-
+  // Sessão morta: limpa o estado local e deixa o RequireAuth do router levar
+  // pro /login. Não há retentativa — não existe nada a renovar do lado do
+  // cliente.
   useAuthStore.getState().logout()
   throw new ApiError(401, 'Sessão expirada. Entre novamente.')
 }

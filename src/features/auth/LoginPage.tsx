@@ -1,17 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion'
 import { AlertCircle, Info, Loader2, Lock, Shield } from 'lucide-react'
-import { useAuthStore } from '@/store/authStore'
-import { logLogin } from '@/features/access/accessApi'
-import { GOOGLE_OAUTH_SCOPE } from '@/lib/googleScopes'
-import { googleClientId, MISSING_CLIENT_ID_MESSAGE } from '@/lib/runtimeConfig'
+import { startGoogleLogin } from '@/store/authSession'
 
-declare global {
-  interface Window { google?: any }
-}
-
-const GSI_SRC = 'https://accounts.google.com/gsi/client'
+// A biblioteca Google Identity Services não é mais carregada: o fluxo de login
+// acontece inteiro no servidor (redirect → callback), então não há mais objeto
+// `window.google` nem script do Google nesta página.
 const HERO = '/login-hero.png'
 const LOGO = '/logo-circular-sebratel.png'
 const EASE = [0.22, 1, 0.36, 1] as const
@@ -50,59 +45,22 @@ function HeroAmbientDecor({ reduced }: { reduced: boolean }) {
 }
 
 export default function LoginPage() {
-  const clientId = googleClientId()
-  const navigate = useNavigate()
-  const setUser = useAuthStore((s) => s.setUser)
-  const setAccessToken = useAuthStore((s) => s.setAccessToken)
   const reduced = !!useReducedMotion()
-  const tokenClientRef = useRef<any>(null)
+  const [searchParams] = useSearchParams()
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!clientId) { setError(MISSING_CLIENT_ID_MESSAGE); return }
-
-    function init() {
-      const oauth2 = window.google?.accounts?.oauth2
-      if (!oauth2) return
-      tokenClientRef.current = oauth2.initTokenClient({
-        client_id: clientId,
-        scope: GOOGLE_OAUTH_SCOPE,
-        callback: async (resp: { access_token?: string }) => {
-          if (!resp.access_token) { setBusy(false); return }
-          try {
-            const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-              headers: { Authorization: `Bearer ${resp.access_token}` },
-            })
-            const p = await r.json()
-            setUser({ name: p.name ?? p.email, email: p.email, picture: p.picture })
-            setAccessToken(resp.access_token)
-            logLogin().catch(() => {})
-            navigate('/', { replace: true })
-          } catch {
-            setError('Falha ao obter os dados da conta Google.')
-            setBusy(false)
-          }
-        },
-        error_callback: () => setBusy(false),
-      })
-    }
-
-    if (window.google?.accounts?.oauth2) { init(); return }
-    let script = document.querySelector<HTMLScriptElement>(`script[src="${GSI_SRC}"]`)
-    if (script) { script.addEventListener('load', init); return }
-    script = document.createElement('script')
-    script.src = GSI_SRC; script.async = true; script.defer = true
-    script.onload = init
-    script.onerror = () => setError('Não foi possível carregar o Google Sign-In.')
-    document.head.appendChild(script)
-  }, [clientId, navigate, setUser, setAccessToken])
+  // O login não acontece mais nesta página: ela só manda o navegador pro
+  // /api/auth/google/start, e o servidor conduz o fluxo de código de
+  // autorização (ver server/googleOAuth.mjs). Não há mais script do Google
+  // Identity Services para carregar aqui, nem token passando pelo JavaScript.
+  //
+  // Quando algo falha no meio do fluxo, o servidor redireciona de volta pra
+  // /login?erro=… — é de lá que a mensagem abaixo vem.
+  const error = searchParams.get('erro')
 
   const handleGoogle = () => {
-    if (!tokenClientRef.current) { setError('Google Sign-In ainda não carregou. Tente novamente.'); return }
-    setError(null)
     setBusy(true)
-    tokenClientRef.current.requestAccessToken()
+    startGoogleLogin()
   }
 
   return (

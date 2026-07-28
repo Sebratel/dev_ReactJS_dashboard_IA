@@ -153,7 +153,15 @@ export function resolveCredentials(id) {
   const entry = getLakehouseSource(id)
   if (!entry) throw new Error(`Fonte "${id}" não encontrada.`)
   if (!entry.tokenEnc) throw new Error(`A fonte "${entry.label}" está sem token — edite e informe um.`)
-  return { baseUrl: entry.baseUrl, datasetSlug: entry.datasetSlug, token: decryptSecret(entry.tokenEnc) }
+  let token
+  try {
+    token = decryptSecret(entry.tokenEnc)
+  } catch (e) {
+    // A saída, neste caso, é recadastrar o token — a mensagem de secretBox é
+    // genérica porque ele também guarda as sessões de login.
+    throw new Error(`${e.message} Edite a fonte "${entry.label}" e informe o token novamente.`)
+  }
+  return { baseUrl: entry.baseUrl, datasetSlug: entry.datasetSlug, token }
 }
 
 // ─── Escrita do catálogo ───────────────────────────────────────────

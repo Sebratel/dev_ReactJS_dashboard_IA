@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useAppStore } from '@/store/appStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
-import { logLogout } from '@/features/access/accessApi'
+import { logout as endSession } from '@/store/authSession'
 
 const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   '/configuracoes': { title: 'Configurações', subtitle: 'Catálogo de queries e parâmetros globais' },
@@ -16,11 +16,12 @@ export function TopBar() {
   const params = useParams<{ folderId?: string; dashboardId?: string }>()
   const folders = useWorkspaceStore((s) => s.folders)
   const user = useAuthStore((s) => s.user)
-  const logout = useAuthStore((s) => s.logout)
   const theme = useAppStore((s) => s.theme)
   const toggleTheme = useAppStore((s) => s.toggleTheme)
+  // Sair de verdade: destrói a sessão no servidor e apaga o cookie — não basta
+  // limpar o estado local, que era tudo o que o fluxo antigo conseguia fazer.
   const handleLogout = () => {
-    logLogout().catch(() => {}).finally(() => { logout(); navigate('/login', { replace: true }) })
+    endSession().finally(() => navigate('/login', { replace: true }))
   }
 
   let page = PAGE_TITLES[location.pathname] ?? { title: 'Indicadores Sebratel', subtitle: '' }

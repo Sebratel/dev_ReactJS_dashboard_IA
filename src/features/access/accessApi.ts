@@ -54,10 +54,8 @@ export async function sendHeartbeat(): Promise<void> {
   await apiFetch('/api/access/heartbeat', { method: 'POST' })
 }
 
-export async function logLogin(): Promise<void> {
-  await apiFetch('/api/access/login', { method: 'POST' })
-}
-
-export async function logLogout(): Promise<void> {
-  await apiFetch('/api/access/logout', { method: 'POST' })
-}
+// Login e logout não são mais registrados por uma chamada do front: quem
+// escreve na auditoria agora é o próprio servidor, dentro do fluxo (callback do
+// Google e POST /api/auth/logout) — ver server/index.mjs. Para encerrar a
+// sessão, use `logout()` de src/store/authSession.ts, que é o que de fato
+// destrói a sessão no servidor e apaga o cookie.

@@ -26,12 +26,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <!-- Config de runtime (Client ID do Google etc.) — gerada no boot do
-         container a partir das envs da stack, ver docker/entrypoint.sh. Precisa
-         vir ANTES do bundle: é dela que src/lib/runtimeConfig.ts lê. Em
-         desenvolvimento é o esqueleto vazio de public/config.js e o app cai no
-         .env, como sempre. -->
-    <script src="/config.js"></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

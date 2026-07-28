@@ -194,7 +194,10 @@ O terceiro tipo de fonte, e o caminho preferido para dado que já existe no **Da
 
 ### 3.9 Autenticação e acesso
 
-- Login via Google OAuth, restrito a contas do domínio **@sebratel.com.br**.
+- Login via Google OAuth (**SSO**), restrito a contas do domínio **@sebratel.com.br**.
+- O login é conduzido **pelo servidor** (fluxo de código de autorização): clicar em "Entrar com Google" leva ao Google, e o retorno é tratado pelo backend, que troca o código por tokens usando o *client secret* da aplicação. A sessão fica num **cookie HttpOnly** — o navegador nunca tem acesso a token do Google, e nada de credencial é guardado no `localStorage`.
+- **Duração**: a sessão vale 30 dias por padrão (configurável). Enquanto ela existe, o servidor renova o acesso ao Google sozinho, então não há mais aquele efeito de "cair" depois de uma hora. **Sair** encerra a sessão de verdade no servidor, não só na aba.
+- Por conta de como o Google entrega a credencial de renovação, a **tela de consentimento do Google aparece a cada login** — em troca, logins são raros (a sessão dura semanas).
 - O catálogo de queries continua igualmente aberto a qualquer pessoa logada (ver 3.7). Dashboards, pastas e guias já têm controle de acesso por usuário — ver 3.1 e 3.12. A aba **Acessos** (3.11) e a gestão de **pastas** (3.1/3.12) são restritas a administradores.
 
 ### 3.10 Modo escuro

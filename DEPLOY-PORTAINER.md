@@ -69,10 +69,12 @@ o que vale é o que está aqui. Referência completa e comentada:
 
 | Variável | Para quê |
 |---|---|
-| `GOOGLE_CLIENT_ID` | Client ID da aplicação Google. Vai para o `web` (login) e para o `api`. |
+| `GOOGLE_CLIENT_ID` | Client ID da aplicação Google. Só o `api` precisa. |
+| `GOOGLE_CLIENT_SECRET` | Client secret da mesma aplicação — é com ele que o servidor troca o `code` por tokens. Ver seção 5. |
+| `APP_BASE_URL` | Endereço público da aplicação (ex. `http://indicadores.interno:8081`). Monta o `redirect_uri` que precisa estar cadastrado no Google. Ver seção 5. |
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. |
-| `SECRETS_KEY` | Chave que cifra os tokens do Data Hub em disco. Gere com `openssl rand -base64 32`. |
+| `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
 
 ### Bancos de origem (se você usar fontes SQL)
 
@@ -96,7 +98,7 @@ stack funciona normalmente.
 | `ETL_BASE_INTERVAL_MINUTES` | `2` | Ciclo base do ETL. Não é o ritmo de cada fonte — isso se configura por fonte, na tela. |
 | `ETL_RUN_ON_START` | `false` | `true` força uma execução do ETL assim que o container sobe. |
 | `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `50000` / `500000` / `120000` | Ajuste fino da busca no Data Hub. |
-| `GOOGLE_CLIENT_SECRET` | — | Ver seção 5. Declarada e **sem efeito** no login atual. |
+| `SESSION_TTL_DAYS` | `30` | Tempo de vida da sessão de login. |
 
 > `SECRETS_KEY` precisa ser **a mesma** nos serviços `api` e `etl` — o compose
 > já garante isso passando a mesma variável para os dois. Trocar a chave depois
@@ -109,42 +111,74 @@ stack funciona normalmente.
 
 1. `docker compose ps` (ou a tela da stack): `web` e `api` devem ficar
    **healthy**; `etl` não tem healthcheck, é um job em laço.
-2. Abra `http://<servidor>:8081/config.js` — deve mostrar o seu
-   `GOOGLE_CLIENT_ID`. Se vier vazio, a env não chegou no serviço `web`.
-3. Abra `http://<servidor>:8081/api/health` — deve responder
+2. Abra `http://<servidor>:8081/api/health` — deve responder
    `{"ok":true,...}`. Se der 502, o `api` não subiu (veja os logs dele).
-4. Faça login e vá em **Configurações** para cadastrar as fontes.
+3. Faça login. Se a tela mostrar um erro em vez de ir para o Google, ele veio do
+   servidor — as causas usuais são `GOOGLE_CLIENT_SECRET` ausente ou o
+   `redirect_uri` não cadastrado (seção 5).
+4. Vá em **Configurações** para cadastrar as fontes.
 
-O Client ID **não é assado na imagem**: o container gera `/config.js` no boot a
-partir do ambiente (ver [`docker/entrypoint.sh`](docker/entrypoint.sh)). Trocar
-de Client ID é editar a variável e reiniciar a stack — sem reconstruir imagem.
+Nenhuma credencial é assada na imagem: o Client ID e o Secret são lidos do
+ambiente pelo `api`, em runtime. Trocar de credencial é editar a variável e
+reiniciar a stack — sem reconstruir imagem.
 
 ---
 
-## 5. SSO — situação atual do `GOOGLE_CLIENT_SECRET`
+## 5. SSO — fluxo de código de autorização
 
-Vale ser explícito para não haver surpresa: **o login de hoje não usa client
-secret.** Ele é o fluxo implícito do Google Identity Services, feito inteiro no
-navegador — a página pede um `access_token` ao Google e o backend valida esse
-token contra a API de `userinfo` do Google a cada requisição
-([`server/index.mjs`](server/index.mjs), `getUserFromToken`). Nesse desenho não
-existe nenhum passo em que um segredo do servidor seja necessário.
+O login é conduzido **pelo servidor**. O navegador nunca vê um token do Google:
 
-`GOOGLE_CLIENT_SECRET` está declarada na stack e chega ao container do `api`
-para o caso de migrarmos para o **fluxo de código de autorização** (o servidor
-recebe um `code` e o troca por tokens, usando o secret). Essa migração traz
-ganhos concretos:
+```
+navegador → GET /api/auth/google/start        (servidor gera `state`, redireciona)
+          → accounts.google.com               (usuário escolhe a conta)
+          → GET /api/auth/google/callback     (servidor troca o `code` por tokens
+                                               usando o GOOGLE_CLIENT_SECRET)
+          → cookie de sessão HttpOnly         (sessão gravada em data/sessions.json)
+```
 
-- `refresh_token` de verdade — hoje a sessão depende de renovação silenciosa
-  que só funciona enquanto a sessão Google do navegador estiver viva;
-- o token deixa de transitar pelo JavaScript da página (cookie `HttpOnly`);
-- as planilhas do Google passariam a poder atualizar em segundo plano, o que
-  hoje é impossível (ver o comentário em
-  [`server/sheetSources.mjs`](server/sheetSources.mjs)).
+A sessão é um id opaco num cookie `HttpOnly`/`SameSite=Lax`; o `access_token` e
+o `refresh_token` do Google ficam no servidor, **cifrados** com a `SECRETS_KEY`
+(mesma chave dos tokens do Data Hub). Quando o access token vence, o servidor
+renova sozinho pelo refresh token — o usuário não é deslogado a cada hora.
 
-Mas ela mexe em login, store de autenticação, cliente HTTP e middleware de
-auth — não é um ajuste de configuração. Enquanto não for feita, a variável fica
-sem efeito.
+### O que configurar no Google Cloud (uma vez)
+
+Em **APIs e serviços → Credenciais → seu Client ID OAuth**, cadastre o
+**URI de redirecionamento autorizado**:
+
+```
+<APP_BASE_URL>/api/auth/google/callback
+```
+
+Ele precisa ser **idêntico**, caractere por caractere, ao que a API monta —
+inclusive esquema e porta. Cadastre um por ambiente, por exemplo:
+
+```
+http://localhost:5173/api/auth/google/callback          (desenvolvimento)
+http://indicadores.interno:8081/api/auth/google/callback (produção)
+```
+
+Se o URI não bater, o Google recusa antes de qualquer coisa e a tela de login
+mostra a mensagem que ele devolveu (`redirect_uri_mismatch`).
+
+### Detalhes que valem saber
+
+- **A tela de consentimento aparece a cada login.** É deliberado: o fluxo pede
+  `access_type=offline&prompt=consent`, e sem `prompt=consent` o Google só
+  devolve `refresh_token` no primeiro consentimento de cada usuário — nos
+  logins seguintes a sessão não teria como se renovar. Como a sessão dura
+  `SESSION_TTL_DAYS` (30 por padrão), logar é raro.
+- **`Secure` no cookie é condicional.** Marcado só quando a requisição chega por
+  https. Num servidor interno em http puro, marcar `Secure` sempre faria o
+  navegador descartar o cookie e o login nunca completaria.
+- **Trocar a `SECRETS_KEY` desloga todo mundo** — as sessões salvas ficam
+  ilegíveis (e são tratadas como expiradas, não como erro).
+- **Sessões sobrevivem a restart/redeploy**, porque ficam no volume `data`. Um
+  redeploy da stack não desloga ninguém.
+- **Logout invalida de verdade**: destrói a sessão no servidor, em vez de só
+  limpar o estado do navegador.
+- **A migração invalida as sessões antigas**: quem estava logado pelo fluxo
+  anterior precisa entrar novamente, uma vez.
 
 ---
 
@@ -160,8 +194,6 @@ sem efeito.
   antigo quando o `api` é recriado — e todo redeploy recria containers. Com a
   resolução diferida, `/api/` responde 502 enquanto o backend não está de pé e
   volta sozinho quando ele sobe.
-- **`/config.js` é `no-store`.** Se fosse cacheado, trocar o Client ID e
-  reiniciar não teria efeito em quem já tem a versão antiga no navegador.
 - **O `api` monta o volume do snapshot com escrita.** Ele dispara o ETL em
   segundo plano quando alguém mexe no catálogo de fontes, e é o ETL que escreve
   ali. Montar como somente-leitura faz essa atualização sob demanda falhar

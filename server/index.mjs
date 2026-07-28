@@ -10,6 +10,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { spawn } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -38,6 +39,12 @@ import {
   findFoldersUsingQuery,
 } from './workspace.mjs'
 import { isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS } from './accessLog.mjs'
+import {
+  COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, ensureAccessToken,
+} from './sessions.mjs'
+import {
+  isConfigured as isOAuthConfigured, resolveRedirectUri, buildAuthUrl, exchangeCode, refreshAccessToken, fetchUserInfo,
+} from './googleOAuth.mjs'
 
 const PORT = Number(process.env.API_PORT) || 8788
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -52,48 +59,170 @@ app.use((req, res, next) => {
   if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  // A sessão agora é um cookie, não um header Authorization — sem isto o
+  // navegador não envia o cookie em requisição de origem cruzada.
+  res.setHeader('Access-Control-Allow-Credentials', 'true')
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
 
 // ─── Auth ──────────────────────────────────────────────────────
-const tokenCache = new Map()
-const TOKEN_TTL_MS = 5 * 60 * 1000
+// Sessão de servidor + cookie HttpOnly (ver server/sessions.mjs) alimentada
+// pelo fluxo de código de autorização do Google (ver server/googleOAuth.mjs).
+// O navegador não vê token do Google em momento nenhum.
+const STATE_COOKIE = 'ind_oauth_state'
+const STATE_TTL_MS = 10 * 60 * 1000
+// Escrever no arquivo de sessões a cada requisição autenticada seria muito I/O
+// (o front tem heartbeat periódico); o "visto por último" só precisa de
+// granularidade de minuto.
+const TOUCH_INTERVAL_MS = 60 * 1000
 
-async function getUserFromToken(token) {
-  const cached = tokenCache.get(token)
-  if (cached && cached.exp > Date.now()) return cached.user
-  const r = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!r.ok) return null
-  const p = await r.json()
-  if (!p.email || p.email_verified === false) return null
-  const user = { email: String(p.email).toLowerCase(), name: p.name || p.email }
-  tokenCache.set(token, { user, exp: Date.now() + TOKEN_TTL_MS })
-  return user
+function readCookie(req, name) {
+  const raw = req.headers.cookie
+  if (!raw) return null
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim())
+  }
+  return null
+}
+
+// `Secure` só quando a requisição chegou por https: num servidor interno em
+// http puro, marcar Secure faria o navegador DESCARTAR o cookie silenciosamente
+// e o login nunca completaria.
+function isSecureRequest(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || '').split(',')[0].trim()
+  return proto === 'https'
+}
+
+function writeCookie(res, req, name, value, maxAgeMs) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    'Path=/',
+    'HttpOnly',
+    // Lax (e não Strict) porque o retorno do Google é uma navegação de
+    // primeiro nível vinda de outro site: com Strict o cookie não seria
+    // enviado no callback e o login falharia.
+    'SameSite=Lax',
+    `Max-Age=${Math.floor(maxAgeMs / 1000)}`,
+  ]
+  if (isSecureRequest(req)) parts.push('Secure')
+  res.append('Set-Cookie', parts.join('; '))
+}
+
+function clearCookie(res, req, name) {
+  const parts = [`${name}=`, 'Path=/', 'HttpOnly', 'SameSite=Lax', 'Max-Age=0']
+  if (isSecureRequest(req)) parts.push('Secure')
+  res.append('Set-Cookie', parts.join('; '))
 }
 
 function requireAuth() {
   return async (req, res, next) => {
-    const m = /^Bearer (.+)$/.exec(req.headers.authorization || '')
-    if (!m) return res.status(401).json({ error: 'Token de autenticação ausente.' })
-    let user = null
-    try { user = await getUserFromToken(m[1]) } catch { user = null }
-    if (!user) return res.status(401).json({ error: 'Sessão inválida ou expirada. Entre novamente.' })
-    if (!user.email.endsWith('@' + ALLOWED_DOMAIN)) {
+    const session = getSession(readCookie(req, COOKIE_NAME))
+    if (!session) return res.status(401).json({ error: 'Sessão inválida ou expirada. Entre novamente.' })
+    // Revalidado a cada requisição, não só no login: se o domínio permitido
+    // mudar, as sessões já abertas de fora dele param na hora.
+    if (!session.email.endsWith('@' + ALLOWED_DOMAIN)) {
       return res.status(403).json({ error: `Acesso restrito a contas @${ALLOWED_DOMAIN}.` })
     }
-    req.user = user
-    // Guardado (só na memória da requisição, nunca persistido) pra rotas que
-    // precisam falar com uma API do Google em nome do próprio usuário — ver
-    // server/sheetSources.mjs/googleSheets.mjs (planilhas cadastradas livremente).
-    req.accessToken = m[1]
-    touchUser(user.email, user.name)
+    // Renova o access_token do Google pelo refresh_token quando vencido. Sem
+    // conseguir (consentimento revogado no Google, refresh inválido), a sessão
+    // é destruída e o front manda pro login.
+    const accessToken = await ensureAccessToken(session, refreshAccessToken)
+    if (!accessToken) {
+      clearCookie(res, req, COOKIE_NAME)
+      return res.status(401).json({ error: 'Sua sessão com o Google expirou. Entre novamente.' })
+    }
+    req.user = { email: session.email, name: session.name }
+    // Disponível pras rotas que falam com uma API do Google em nome do próprio
+    // usuário — ver server/sheetSources.mjs/googleSheets.mjs (planilhas
+    // cadastradas livremente).
+    req.accessToken = accessToken
+    req.sessionId = session.id
+    if (Date.now() - (session.lastSeenAt ?? 0) > TOUCH_INTERVAL_MS) touchSession(session.id)
+    touchUser(session.email, session.name)
     next()
   }
 }
+
+// ─── Rotas do login (fluxo de código de autorização) ──────────────
+// Falha aqui não devolve JSON: quem está no meio do fluxo é o NAVEGADOR, numa
+// navegação de página. Redireciona pro /login com a mensagem, que a tela mostra.
+function failLogin(res, message) {
+  res.redirect(`/login?erro=${encodeURIComponent(message)}`)
+}
+
+app.get('/api/auth/google/start', (req, res) => {
+  if (!isOAuthConfigured()) {
+    return failLogin(res, 'Login do Google não configurado no servidor (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).')
+  }
+  try {
+    // `state` guardado em cookie, e não em memória do processo: assim o fluxo
+    // sobrevive a um restart no meio do login e funciona com mais de uma
+    // instância da API, sem estado compartilhado.
+    const state = randomBytes(24).toString('base64url')
+    writeCookie(res, req, STATE_COOKIE, state, STATE_TTL_MS)
+    res.redirect(buildAuthUrl({ redirectUri: resolveRedirectUri(req), state }))
+  } catch (e) {
+    failLogin(res, e.message)
+  }
+})
+
+app.get('/api/auth/google/callback', async (req, res) => {
+  const expectedState = readCookie(req, STATE_COOKIE)
+  clearCookie(res, req, STATE_COOKIE)
+
+  if (req.query.error) {
+    return failLogin(res, req.query.error === 'access_denied' ? 'Login cancelado.' : String(req.query.error))
+  }
+  // Proteção de CSRF do próprio fluxo: sem o state (ou divergente), o callback
+  // pode ter sido provocado por outro site.
+  if (!expectedState || req.query.state !== expectedState) {
+    return failLogin(res, 'Sessão de login expirada ou inválida. Tente entrar novamente.')
+  }
+  if (!req.query.code) return failLogin(res, 'O Google não devolveu o código de autorização.')
+
+  try {
+    const tokens = await exchangeCode({ code: String(req.query.code), redirectUri: resolveRedirectUri(req) })
+    const user = await fetchUserInfo(tokens.accessToken)
+    if (!user.email.endsWith('@' + ALLOWED_DOMAIN)) {
+      return failLogin(res, `Acesso restrito a contas @${ALLOWED_DOMAIN}.`)
+    }
+    if (!tokens.refreshToken) {
+      // Não deveria acontecer (pedimos access_type=offline + prompt=consent),
+      // mas sem refresh_token a sessão morreria em 1h sem aviso — melhor falhar
+      // agora, com uma mensagem que diz o que fazer.
+      return failLogin(res, 'O Google não devolveu credencial de renovação. Remova o acesso do app na sua Conta Google e entre novamente.')
+    }
+    const session = createSession(user, tokens)
+    writeCookie(res, req, COOKIE_NAME, session.id, SESSION_TTL_MS)
+    touchUser(user.email, user.name)
+    appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email })
+    res.redirect('/')
+  } catch (e) {
+    console.error(`[auth] falha no callback: ${e.message}`)
+    failLogin(res, e.message)
+  }
+})
+
+// Quem está logado — é o que o front chama ao carregar, em vez de guardar
+// identidade no localStorage. `isAdmin` vem junto pra economizar um
+// round-trip (a checagem de verdade continua sendo no servidor, por rota).
+app.get('/api/auth/me', requireAuth(), (req, res) => {
+  res.json({ user: req.user, isAdmin: isAdmin(req.user.email) })
+})
+
+app.post('/api/auth/logout', async (req, res) => {
+  const session = getSession(readCookie(req, COOKIE_NAME))
+  if (session) {
+    appendAuditLog({ email: session.email, name: session.name, action: 'auth.logout', target: session.email })
+    destroySession(session.id)
+  }
+  clearCookie(res, req, COOKIE_NAME)
+  res.sendStatus(204)
+})
 
 // Restringe uma rota a administradores (gestão de acessos) — lista fixa via
 // ADMIN_EMAILS, ver server/accessLog.mjs. Usar sempre depois de requireAuth().
@@ -790,15 +919,10 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
   res.sendStatus(204)
 })
 
-app.post('/api/access/login', requireAuth(), (req, res) => {
-  appendAuditLog({ email: req.user.email, name: req.user.name, action: 'auth.login', target: req.user.email })
-  res.sendStatus(204)
-})
-
-app.post('/api/access/logout', requireAuth(), (req, res) => {
-  appendAuditLog({ email: req.user.email, name: req.user.name, action: 'auth.logout', target: req.user.email })
-  res.sendStatus(204)
-})
+// O registro de login/logout na auditoria mudou de lugar: agora acontece no
+// servidor, dentro do próprio fluxo (callback do Google e POST
+// /api/auth/logout), em vez de depender de uma chamada extra do front que
+// poderia simplesmente não acontecer.
 
 app.listen(PORT, () => {
   console.log(`Indicadores Sebratel API ouvindo em :${PORT}`)

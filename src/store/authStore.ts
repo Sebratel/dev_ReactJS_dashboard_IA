@@ -1,5 +1,15 @@
+// Estado de autenticação do cliente.
+//
+// NÃO é mais persistido no localStorage, e não guarda token nenhum: a sessão de
+// verdade é o cookie HttpOnly que o servidor define (ver server/sessions.mjs),
+// invisível pro JavaScript. O que existe aqui é só uma cópia em memória de
+// "quem está logado", carregada de GET /api/auth/me a cada abertura do app
+// (ver src/store/authSession.ts) — o servidor é a única fonte de verdade.
+//
+// Antes, este store persistia o access_token do Google no localStorage; era o
+// que o fluxo implícito exigia, e é exatamente o que a migração para o fluxo de
+// código eliminou.
 import { create } from 'zustand'
-import { persist, createJSONStorage } from 'zustand/middleware'
 
 export interface AuthUser {
   name: string
@@ -9,25 +19,23 @@ export interface AuthUser {
 
 interface AuthState {
   user: AuthUser | null
-  accessToken: string | null
   isAdmin: boolean
-  setUser: (u: AuthUser | null) => void
-  setAccessToken: (t: string | null) => void
+  // null enquanto a 1ª checagem de sessão não terminou — o router usa isso pra
+  // não mandar pro /login quem só ainda não foi verificado (o que faria um
+  // F5 numa sessão válida cair na tela de login).
+  ready: boolean
+  setSession: (session: { user: AuthUser; isAdmin: boolean }) => void
   setIsAdmin: (v: boolean) => void
+  setReady: (v: boolean) => void
   logout: () => void
 }
 
-export const useAuthStore = create<AuthState>()(
-  persist(
-    (set) => ({
-      user: null,
-      accessToken: null,
-      isAdmin: false,
-      setUser: (user) => set({ user }),
-      setAccessToken: (accessToken) => set({ accessToken }),
-      setIsAdmin: (isAdmin) => set({ isAdmin }),
-      logout: () => set({ user: null, accessToken: null, isAdmin: false }),
-    }),
-    { name: 'indicadores-sebratel-auth', storage: createJSONStorage(() => localStorage) },
-  ),
-)
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null,
+  isAdmin: false,
+  ready: false,
+  setSession: ({ user, isAdmin }) => set({ user, isAdmin, ready: true }),
+  setIsAdmin: (isAdmin) => set({ isAdmin }),
+  setReady: (ready) => set({ ready }),
+  logout: () => set({ user: null, isAdmin: false, ready: true }),
+}))

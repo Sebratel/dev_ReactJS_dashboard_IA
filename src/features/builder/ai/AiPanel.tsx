@@ -36,8 +36,11 @@ const SUGGESTIONS = [
   'Compare o volume por equipe nos últimos meses.',
 ]
 
-export function AiPanel({ folderId, onApply, onClose }: {
+export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
   folderId: string
+  // Pergunta já digitada no convite da guia vazia (ver AiEmptyState): o painel
+  // abre e manda sozinho, pra pessoa não precisar escrever duas vezes.
+  initialPrompt?: string
   onApply: (widgets: WidgetConfig[]) => void
   onClose: () => void
 }) {
@@ -125,6 +128,20 @@ export function AiPanel({ folderId, onApply, onClose }: {
     }
   }
 
+  const overBudget = !!status && status.budgetUsd > 0 && status.spentUsd >= status.budgetUsd
+
+  // Dispara a pergunta vinda do convite da guia vazia, uma única vez. O ref é
+  // o que garante "uma vez": em desenvolvimento o React monta o componente
+  // duas vezes, e sem isso o turno sairia duplicado — e cobrado duas vezes.
+  const autoSent = useRef(false)
+  useEffect(() => {
+    if (autoSent.current || !initialPrompt || selected.size === 0 || overBudget) return
+    autoSent.current = true
+    void send(initialPrompt)
+    // `send` é recriada a cada render; o guard acima é o que controla o efeito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPrompt, selected.size, overBudget])
+
   const applyProposal = (turnIndex: number) => {
     const proposal = turns[turnIndex]?.proposal
     if (!proposal || proposal.applied) return
@@ -138,7 +155,6 @@ export function AiPanel({ folderId, onApply, onClose }: {
     setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, proposal: undefined } : t)))
   }
 
-  const overBudget = !!status && status.budgetUsd > 0 && status.spentUsd >= status.budgetUsd
   const canChat = !!conversationId || selected.size > 0
 
   return (

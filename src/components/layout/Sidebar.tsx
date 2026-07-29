@@ -8,7 +8,7 @@ import { FolderSettingsModal } from '@/features/workspace/FolderSettingsModal'
 import { cn } from '@/utils/cn'
 
 const STATIC_NAV_ITEMS = [
-  { path: '/configuracoes', icon: Settings, label: 'Configurações', sublabel: 'Queries e parâmetros' },
+  { path: '/configuracoes', icon: Settings, label: 'Configurações', sublabel: 'Fontes de dados' },
 ]
 const ADMIN_NAV_ITEM = { path: '/acessos', icon: ShieldCheck, label: 'Acessos', sublabel: 'Usuários e log de ações' }
 

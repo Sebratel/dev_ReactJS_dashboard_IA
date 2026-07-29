@@ -16,6 +16,7 @@ import {
   Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles,
 } from 'lucide-react'
 import { AiPanel } from './ai/AiPanel'
+import { AiEmptyState } from './ai/AiEmptyState'
 import { cn } from '@/utils/cn'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { fetchSources } from './builderApi'
@@ -83,6 +84,20 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   const [previewWidget, setPreviewWidget] = useState<WidgetConfig | null>(null)
   const closeWidgetModal = () => { setWidgetModal({ open: false, widget: null }); setPreviewWidget(null) }
   const [aiPanelOpen, setAiPanelOpen] = useState(false)
+  // Pergunta feita no convite da guia vazia — o painel abre já com ela e manda
+  // sozinho, pra pessoa não digitar duas vezes.
+  const [aiInitialPrompt, setAiInitialPrompt] = useState<string | undefined>(undefined)
+
+  // Abre a conversa a partir do convite: entra em modo edição (é onde os
+  // widgets aprovados viram rascunho) e recarrega o catálogo de fontes antes,
+  // porque é dele que o painel monta a lista de fontes.
+  const askAi = (prompt: string) => {
+    refreshSources().then(() => {
+      setEditMode(true)
+      setAiInitialPrompt(prompt)
+      setAiPanelOpen(true)
+    })
+  }
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [tabManagerOpen, setTabManagerOpen] = useState(false)
   const [canvasModalOpen, setCanvasModalOpen] = useState(false)
@@ -472,9 +487,18 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         >
           {mounted && (
             displayWidgets.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
-                Aba vazia — {editMode && canEditCurrentTab ? 'clique em “+ Widget” para adicionar o primeiro gráfico.' : 'entre no modo edição para adicionar conteúdo.'}
-              </div>
+              canEditCurrentTab ? (
+                // Guia vazia convida a conversar, não a montar. Quem não pode
+                // editar continua vendo só o aviso — não há o que oferecer.
+                <AiEmptyState
+                  onAsk={askAi}
+                  onManual={() => refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) })}
+                />
+              ) : (
+                <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
+                  Guia vazia — você não tem permissão para editar esta guia.
+                </div>
+              )
             ) : (
               <GridLayout
                 width={width}
@@ -508,6 +532,20 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                 ))}
               </GridLayout>
             )
+          )}
+
+          {/* Guia que só tem texto (a de boas-vindas é assim) não está "vazia"
+              pelo contador de widgets, mas também não tem nenhum indicador —
+              é justamente o primeiro contato de quem abre a dashboard. Aí o
+              convite entra ABAIXO do conteúdo, em vez de substituí-lo. */}
+          {mounted && displayWidgets.length > 0 && canEditCurrentTab
+            && displayWidgets.every((w) => w.type === 'text') && (
+            <div className="mt-4">
+              <AiEmptyState
+                onAsk={askAi}
+                onManual={() => refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) })}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -552,7 +590,12 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         <ThemePickerModal initialThemeId={detectAppliedTheme(tab.widgets)} onApply={applyTheme} onClose={() => setThemeModalOpen(false)} />
       )}
       {aiPanelOpen && (
-        <AiPanel folderId={folderId} onApply={applyAiWidgets} onClose={() => setAiPanelOpen(false)} />
+        <AiPanel
+          folderId={folderId}
+          initialPrompt={aiInitialPrompt}
+          onApply={applyAiWidgets}
+          onClose={() => { setAiPanelOpen(false); setAiInitialPrompt(undefined) }}
+        />
       )}
       {confirmState && (
         <ConfirmDialog

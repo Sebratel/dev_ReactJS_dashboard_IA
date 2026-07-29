@@ -6,7 +6,7 @@ import { useWorkspaceStore } from '@/store/workspaceStore'
 import { logout as endSession } from '@/store/authSession'
 
 const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
-  '/configuracoes': { title: 'Configurações', subtitle: 'Catálogo de queries e parâmetros globais' },
+  '/configuracoes': { title: 'Configurações', subtitle: 'Fontes de dados e dicionário' },
   '/acessos': { title: 'Acessos', subtitle: 'Usuários, status online e log de ações' },
 }
 

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "api": "tsx server/index.mjs",
+    "api": "tsx watch --clear-screen=false server/index.mjs",
+    "api:once": "tsx server/index.mjs",
+    "//api": "`api` recarrega ao salvar qualquer arquivo de server/ ou scripts/. NÃO recarrega ao mudar o .env (o arquivo não está no grafo de módulos; --include não resolve) — depois de editar o .env, reinicie na mão. `api:once` é o modo sem watch, igual ao que o container roda.",
     "fetch:install": "node scripts/fetch-install.mjs"
   },
   "dependencies": {

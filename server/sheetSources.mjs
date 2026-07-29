@@ -1,10 +1,13 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Catálogo de planilhas do Google Sheets cadastradas pelos próprios usuários
-// (não é admin-only, ao contrário do catálogo de queries SQL — ver
-// server/queryCatalog.mjs) — qualquer usuário autenticado pode colar um link
-// e usar as colunas da planilha em qualquer widget, como se fosse mais uma
-// fonte. Persistido em data/sheetSources.json, mesmo padrão de arquivo único
-// já usado em accessLog.mjs/queryCatalog.mjs.
+// — qualquer usuário autenticado pode colar um link e usar as colunas da
+// planilha em qualquer widget, como se fosse mais uma fonte. Persistido em
+// data/sheetSources.json, mesmo padrão de arquivo único já usado em
+// accessLog.mjs/lakehouseSources.mjs.
+//
+// É a fonte para dado que ninguém vai publicar no Data Hub (uma lista mantida
+// à mão, um de-para): dado corporativo entra pelo barramento, ver
+// server/lakehouseSources.mjs.
 //
 // Cada entrada: { id, label, url, spreadsheetId, sheetName (aba — null = a
 // 1ª), createdBy, createdAt, updatedBy, updatedAt, cache }. `cache` guarda o

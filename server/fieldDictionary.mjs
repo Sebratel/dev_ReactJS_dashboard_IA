@@ -5,7 +5,7 @@
 // Builder — mesmo estilo dos "(i)" que já explicam Dados/Modificadores/
 // Formato, só que preenchido pelo próprio admin em vez de fixo no código.
 // Persistido em data/fieldDictionary.json, mesmo padrão de arquivo único já
-// usado em accessLog.mjs/queryCatalog.mjs/sheetSources.mjs — lista pequena
+// usado em accessLog.mjs/sheetSources.mjs — lista pequena
 // (um admin escreve à mão), sem necessidade de nada mais elaborado.
 // ─────────────────────────────────────────────────────────────────────────
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'

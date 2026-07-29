@@ -1,10 +1,11 @@
-// Controles compartilhados entre os tipos de fonte de dados de Configurações:
-// queries SQL (SettingsPage.tsx) e datasets do Data Hub
-// (LakehouseSourcesCard.tsx). Os dois têm exatamente os mesmos eixos de
-// configuração — liga/desliga, ritmo de atualização e em quais pastas a fonte
-// aparece no Builder — então estes componentes são genéricos sobre a "forma"
-// comum (refreshMode/refreshMinutes/lastRunAt/folderIds) em vez de amarrados
-// ao tipo de uma delas.
+// Controles de uma fonte de dados em Configurações: liga/desliga, ritmo de
+// atualização e em quais pastas ela aparece no Builder.
+//
+// São genéricos sobre a "forma" comum (refreshMode/refreshMinutes/lastRunAt/
+// folderIds) em vez de amarrados a um tipo de fonte — nasceram compartilhados
+// entre o catálogo de queries SQL e os datasets do Data Hub. O SQL saiu (o
+// lakehouse é o barramento único), então hoje só o Data Hub os usa; a forma
+// genérica ficou porque é o que qualquer fonte futura vai precisar.
 import { useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/utils/cn'
@@ -73,7 +74,7 @@ export function RefreshControl({ source, noun, onSave }: {
 
   return (
     <div className="space-y-2">
-      <span className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">Atualização {noun === 'query' ? 'desta query' : 'desta fonte'}</span>
+      <span className="text-[10px] font-semibold text-gray-300 uppercase tracking-wider">Atualização desta {noun}</span>
       <div className="flex items-center gap-1.5 flex-wrap">
         <button type="button" onClick={() => setMode('realtime')} className={pillCls(mode === 'realtime')}>Tempo real</button>
         <button type="button" onClick={() => setMode('scheduled')} className={pillCls(mode === 'scheduled')}>Agendada</button>

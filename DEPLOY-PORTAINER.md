@@ -13,19 +13,18 @@ A stack ([`docker-compose.yml`](docker-compose.yml)) tem três serviços:
 | Serviço | Imagem | O que faz |
 |---|---|---|
 | `web` | nginx + build da SPA | Serve a interface e faz proxy de `/api/` para o `api`. É o único com porta publicada. |
-| `api` | Node + Express | `/api/*`: workspace, catálogo de fontes, agregação dos widgets. |
-| `etl` | mesma imagem do `api` | Job de segundo plano: materializa as fontes (queries SQL + datasets do Data Hub) num snapshot. |
+| `api` | Node + Express | `/api/*`: workspace, catálogo de fontes, agregação dos widgets, montagem com IA. |
+| `etl` | mesma imagem do `api` | Job de segundo plano: materializa os datasets do Data Hub num snapshot. |
 
 Dois volumes, os dois **compartilhados entre `api` e `etl`**:
 
 - `snapshot` — o snapshot materializado (dado de todas as fontes, comprimido).
-- `data` — catálogo de queries, fontes do Data Hub, planilhas, workspace,
-  usuários e a chave de cifra dos tokens (`data/.secret-key`).
+- `data` — fontes do Data Hub, planilhas, workspace, usuários, sessões de
+  login e a chave de cifra dos tokens (`data/.secret-key`).
 
-> **Não separe esses volumes por serviço.** Com volumes diferentes, o ciclo do
-> `etl` sobrescreve o snapshot usando só o catálogo semente (descartando o que
-> foi cadastrado pela tela) e os tokens do Data Hub cadastrados pelo `api`
-> ficam indecifráveis do lado do `etl`.
+> **Não separe esses volumes por serviço.** Com volumes diferentes, o `etl` não
+> vê as fontes cadastradas pela tela (grava um snapshot vazio) e os tokens do
+> Data Hub gravados pelo `api` ficam indecifráveis do lado dele.
 
 ---
 
@@ -77,18 +76,17 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
 | `WEB_PORT` | Porta publicada no host (ex. `8081`). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
 
-### Bancos de origem (se você usar fontes SQL)
+### Não há credencial de banco
 
-`DB_ELLEVEN_HOST`, `DB_ELLEVEN_PORT`, `DB_ELLEVEN_DATABASE`, `DB_ELLEVEN_USER`,
-`DB_ELLEVEN_PASSWORD`, `DB_ELLEVEN_SSL` e os equivalentes `DB_MARIA_*`.
+Esta stack **não fala com banco de dados** — não existe `DB_ELLEVEN_*` nem
+`DB_MARIA_*` para preencher, e as imagens não trazem driver de Postgres ou
+MySQL. Todo dado corporativo entra pelo Data Hub, cadastrado na tela pelo
+próprio usuário (com o token dele). Havia antes um catálogo de queries SQL que
+batia direto no ERP e no MariaDB; ele foi removido porque manter os dois
+caminhos consumia duas plataformas grandes pela mesma informação.
 
-Vão para **os dois** serviços, `api` e `etl`: o `etl` roda as queries do
-catálogo, e o `api` precisa das mesmas credenciais para o botão "Testar" do
-editor de query e para disparar o ETL sob demanda.
-
-Uma instalação que consuma **só** o Data Hub pode deixar tudo isso vazio: as
-queries SQL falham individualmente (mantendo o último dado bom) e o resto da
-stack funciona normalmente.
+Para dado que não vai ser publicado no Data Hub, existem as planilhas do
+Google — que usam o login do próprio usuário, sem credencial de serviço.
 
 ### Opcionais
 
@@ -97,7 +95,7 @@ stack funciona normalmente.
 | `DHUB_BASE_URL` | `https://data-hub.sebratel.net.br` | Endereço sugerido no cadastro de uma fonte do Data Hub. |
 | `ETL_BASE_INTERVAL_MINUTES` | `2` | Ciclo base do ETL. Não é o ritmo de cada fonte — isso se configura por fonte, na tela. |
 | `ETL_RUN_ON_START` | `false` | `true` força uma execução do ETL assim que o container sobe. |
-| `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `50000` / `500000` / `120000` | Ajuste fino da busca no Data Hub. |
+| `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `10000` / `500000` / `120000` | Ajuste fino da busca no Data Hub. O padrão de página é 10.000 porque é o teto do próprio Data Hub — pedir mais só gasta round-trip. |
 | `SESSION_TTL_DAYS` | `30` | Tempo de vida da sessão de login. |
 
 > `SECRETS_KEY` precisa ser **a mesma** nos serviços `api` e `etl` — o compose

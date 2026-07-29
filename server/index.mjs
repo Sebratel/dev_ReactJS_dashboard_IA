@@ -1,9 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Backend Express — serve /api/* a partir do snapshot materializado em
-// memória (server/dataset.mjs), gerado por um catálogo único e editável de
-// queries (server/queryCatalog.mjs). Toda a dashboard é construída
-// manualmente no Builder a partir das colunas reais dessas queries — não há
-// abas/métricas fixas embutidas no código.
+// memória (server/dataset.mjs), alimentado pelos datasets do Data Hub
+// cadastrados na tela (server/lakehouseSources.mjs). Toda a dashboard é
+// construída manualmente no Builder a partir das colunas reais dessas fontes
+// — não há abas/métricas fixas embutidas no código.
+//
+// Este servidor NÃO fala com banco de dados: o lakehouse é o barramento. Havia
+// antes um catálogo de queries SQL que batia direto no Postgres do ERP e no
+// MariaDB; manter os dois caminhos consumia duas plataformas grandes pela
+// mesma informação, então o SQL saiu.
 // Mesmo padrão de auth do dev_ReacJS_HealthyScore-staging (Google OAuth,
 // domínio restrito), adaptado para este projeto.
 // ─────────────────────────────────────────────────────────────────────────
@@ -14,12 +19,6 @@ import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
-import { makePool } from '../scripts/db.mjs'
-import { makeMariaPool } from '../scripts/db-maria.mjs'
-import {
-  loadQueryCatalog, createQuery, updateQuery, deleteQuery, resetQueryCatalog, setQueryEnabled, setQueryRefresh,
-  setQueryFolders, executeQuery, TEST_ROW_LIMIT,
-} from './queryCatalog.mjs'
 import { runWidgetQuery, runFieldValues, listSourceDefs } from './widgetQuery.mjs'
 import {
   listSheetSources, createSheetSource, updateSheetSource, deleteSheetSource, getSheetSource, resolveSheetRows, sourceKey as sheetSourceKey,
@@ -266,30 +265,15 @@ function requireTabEdit() {
   }
 }
 
-// ─── Pools de banco sob demanda (só para "testar query" ao vivo) ──
-// O servidor Express é de vida longa — cria os pools uma vez e reusa. Se as
-// credenciais estiverem ausentes/erradas, a falha fica isolada na primeira
-// chamada que tentar usá-los (não derruba o servidor no boot).
-let pgPool = null
-function getPgPool() {
-  if (!pgPool) pgPool = makePool()
-  return pgPool
-}
-let mariaPoolPromise = null
-async function getMariaPool() {
-  if (!mariaPoolPromise) mariaPoolPromise = makeMariaPool().catch((e) => { mariaPoolPromise = null; throw e })
-  return mariaPoolPromise
-}
-
-// ─── Disparo do ETL após alterar o catálogo de queries ────────────
+// ─── Disparo do ETL após alterar o catálogo de fontes ─────────────
 let etlRunning = false
 function triggerEtlRefresh(reason) {
   if (etlRunning) return
   etlRunning = true
   const child = spawn(process.execPath, [ETL_SCRIPT], { stdio: 'inherit', env: process.env })
   child.on('exit', () => { etlRunning = false })
-  child.on('error', (e) => { etlRunning = false; console.error(`[query-catalog] falha ao disparar ETL: ${e.message}`) })
-  console.log(`[query-catalog] atualizando snapshot em segundo plano (${reason})`)
+  child.on('error', (e) => { etlRunning = false; console.error(`[etl] falha ao disparar: ${e.message}`) })
+  console.log(`[etl] atualizando snapshot em segundo plano (${reason})`)
 }
 
 // ─── Rotas ───────────────────────────────────────────────────────
@@ -299,113 +283,6 @@ app.get('/api/health', (_req, res) => {
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {
   res.json(getStatus())
-})
-
-// ─── Catálogo único de queries (add/editar/remover livremente) ───
-app.get('/api/queries', requireAuth(), (_req, res) => {
-  res.json(loadQueryCatalog())
-})
-
-app.post('/api/queries', requireAuth(), (req, res) => {
-  try {
-    const saved = createQuery(req.body || {}, req.user.email)
-    triggerEtlRefresh(`nova query ${saved.id}`)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.create', target: saved.id })
-    res.json({ ok: true, query: saved })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-app.put('/api/queries/:id', requireAuth(), (req, res) => {
-  try {
-    const saved = updateQuery(req.params.id, req.body || {}, req.user.email)
-    triggerEtlRefresh(`query editada ${saved.id}`)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.update', target: saved.id })
-    res.json({ ok: true, query: saved })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-app.delete('/api/queries/:id', requireAuth(), (req, res) => {
-  try {
-    deleteQuery(req.params.id)
-    triggerEtlRefresh(`query removida ${req.params.id}`)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.delete', target: req.params.id })
-    res.json({ ok: true })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-app.post('/api/queries/reset', requireAuth(), (req, res) => {
-  const list = resetQueryCatalog()
-  triggerEtlRefresh('catálogo restaurado ao padrão')
-  appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.reset', target: null })
-  res.json({ ok: true, queries: list })
-})
-
-// Ativa/desativa uma query — desativada não roda no próximo ETL e some do
-// catálogo de fontes do Builder (fica "bloqueada para uso") até reativar.
-app.patch('/api/queries/:id/enabled', requireAuth(), (req, res) => {
-  try {
-    const saved = setQueryEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
-    triggerEtlRefresh(`query ${saved.enabled ? 'ativada' : 'desativada'}: ${saved.id}`)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: saved.enabled ? 'query.enable' : 'query.disable', target: saved.id })
-    res.json({ ok: true, query: saved })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-// Modo de atualização de UMA query — 'realtime' (roda em todo ciclo do ETL)
-// ou 'scheduled' (só roda a cada `minutes`, mantendo o dado anterior nos
-// ciclos em que não é a vez dela). Config por query, não global — cada uma
-// tem seu próprio ritmo, ver scripts/fetch-install.mjs.
-app.patch('/api/queries/:id/refresh', requireAuth(), (req, res) => {
-  try {
-    const { mode, minutes } = req.body || {}
-    const saved = setQueryRefresh(req.params.id, { mode, minutes }, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.refresh', target: saved.id, meta: { mode: saved.refreshMode, minutes: saved.refreshMinutes } })
-    res.json({ ok: true, query: saved })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-// Em quais pastas (e dashboards dentro delas) esta query já está em uso de
-// fato — alimenta o aviso de confirmação antes do admin remover uma pasta
-// que já depende dela (ver FolderControl em SettingsPage.tsx).
-app.get('/api/queries/:id/usage', requireAuth(), requireAdmin(), (req, res) => {
-  res.json({ folders: findFoldersUsingQuery(req.params.id) })
-})
-
-// Em quais pastas esta query aparece como fonte no Builder — null (padrão)
-// = todas. Só admin (mesmo nível de quem gerencia pastas em si) decide isso;
-// diferente de enabled/refresh, que qualquer usuário logado pode ajustar.
-app.patch('/api/queries/:id/folders', requireAuth(), requireAdmin(), (req, res) => {
-  try {
-    const { folderIds } = req.body || {}
-    const saved = setQueryFolders(req.params.id, folderIds === undefined ? null : folderIds, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'query.folders.update', target: saved.id, meta: { folderIds: saved.folderIds } })
-    res.json({ ok: true, query: saved })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
-})
-
-// Executa SQL ao vivo (capado) sem salvar — usado pelo editor para validar
-// antes de criar/editar uma query.
-app.post('/api/queries/test', requireAuth(), async (req, res) => {
-  try {
-    const { db, sql } = req.body || {}
-    const rows = await executeQuery({ db, sql }, { pgPool: getPgPool(), mariaPool: await getMariaPool(), limit: TEST_ROW_LIMIT })
-    const columns = rows.length ? Object.keys(rows[0]) : []
-    res.json({ columns, rows, rowCount: rows.length })
-  } catch (e) {
-    res.status(400).json({ error: e.message })
-  }
 })
 
 // Catálogo de fontes (uma por query com dados no snapshot) — alimenta os

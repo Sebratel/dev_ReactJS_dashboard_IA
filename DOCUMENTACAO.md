@@ -8,26 +8,21 @@
 
 O **Indicadores Sebratel** é uma ferramenta interna de **construção manual de dashboards**, no estilo Power BI, para acompanhar indicadores operacionais (hoje focados em Instalação: protocolos, agenda, produtividade, backlog, reincidência, capacidade de equipe etc.).
 
-A ideia central: em vez de páginas fixas de indicadores programadas no código, **qualquer pessoa autorizada monta as próprias telas** — escolhe a query (fonte de dados), o tipo de gráfico/tabela, os campos, a formatação, o layout — sem precisar de um desenvolvedor para cada mudança. O resultado é compartilhado: todo mundo que acessa o sistema vê a mesma dashboard (e as mesmas edições), como um painel de equipe.
+A ideia central: em vez de páginas fixas de indicadores programadas no código, **qualquer pessoa autorizada monta as próprias telas** — escolhe a fonte de dados, o tipo de gráfico/tabela, os campos, a formatação, o layout — sem precisar de um desenvolvedor para cada mudança. O resultado é compartilhado: todo mundo que acessa o sistema vê a mesma dashboard (e as mesmas edições), como um painel de equipe.
 
 ---
 
 ## 2. Visão geral da arquitetura (resumo)
 
 ```
-Banco de dados (Postgres "DB_ELLEVEN" e/ou MariaDB "DB_Applicattion")
-        │  (queries SQL cadastradas em Configurações)
-        │
-        │   Data Hub / lakehouse — API pública de leitura
-        │   (datasets + token cadastrados em Configurações; o lakehouse
-        │    funciona como BARRAMENTO, sem acesso direto à origem)
-        │
+Data Hub / lakehouse — API pública de leitura
+        │  (datasets + token cadastrados em Configurações)
         ▼
-Catálogo de fontes (data/queries.json + data/lakehouseSources.json)
+Catálogo de fontes (data/lakehouseSources.json)
         │  (ETL — roda periodicamente ou sob demanda)
         ▼
 Snapshot em memória (public/installData.data, gzip)
-        │  (API Express: /api/widget-data, /api/sources, /api/queries, ...)
+        │  (API Express: /api/widget-data, /api/sources, /api/lakehouse-sources, ...)
         ▼
 Workspace (data/workspace.json) — Pasta (setor) → Dashboard → Guia → Widgets
         │  (API Express: /api/workspace/*, com checagem de acesso em cada nível)
@@ -35,7 +30,9 @@ Workspace (data/workspace.json) — Pasta (setor) → Dashboard → Guia → Wid
 Dashboard Builder (React) — menu de pastas/dashboards, guias, filtros, widgets
 ```
 
-Não existe um "esquema" fixo de dados: cada query cadastrada vira uma fonte, e as colunas disponíveis para montar gráficos são **inferidas automaticamente** a partir dos dados reais que aquela query retorna (número, data ou texto). Isso significa que qualquer coluna nova no SQL de uma query aparece sozinha no Builder, sem configuração manual.
+**Este app não fala com banco de dados.** O lakehouse é o barramento: quem quer um dado no dashboard publica um dataset lá, e aqui se cadastra a fonte apontando para ele. Existia antes um catálogo de queries SQL que batia direto no Postgres do ERP e no MariaDB; manter os dois caminhos significava consumir duas plataformas grandes pela mesma informação, então o SQL foi removido (ver o histórico de alterações). Para dado que ninguém vai publicar no Data Hub — uma lista mantida à mão, um de-para — existem as planilhas do Google (3.7-bis).
+
+Não existe um "esquema" fixo de dados: cada fonte cadastrada traz as colunas que o dataset tem, e o tipo de cada uma (número, data ou texto) é **inferido automaticamente** a partir dos dados reais. Coluna nova no dataset aparece sozinha no Builder, sem configuração manual.
 
 ---
 
@@ -146,26 +143,28 @@ Seção "Meta e alertas" em Formato, disponível conforme o tipo de widget:
   - **Linha, área**: só a linha de meta (referência) — sem coloração condicional (uma linha contínua não tem "pedaços" discretos pra colorir).
 - Regras e meta são independentes — dá pra usar só uma das duas, ou as duas juntas.
 
-### 3.7 Fontes de dados — o catálogo de queries (Configurações)
+### 3.7 Fontes de dados — visão geral
 
-- Cada **query SQL** cadastrada vira uma fonte de dados selecionável no Builder.
-- Cadastro/edição tem um botão **"Testar"**, que roda o SQL ao vivo (capado em 50 linhas) sem salvar nada — só para validar antes de confirmar.
-- Cada query pode ser **ativada/desativada** — desativada, ela não é buscada e some do catálogo de fontes até ser reativada de novo (os widgets que a usavam ficam sem dado, mas não são apagados).
-- Cada query escolhe, **individualmente**, como é atualizada:
-  - **Tempo real**: roda em todo ciclo do motor de atualização (ver 3.8).
-  - **Agendada**: só busca dado novo a cada X minutos/horas definidos por ela — entre uma execução e outra, mantém o último dado bom (não some da dashboard).
-  - É possível ter várias queries com modos e intervalos diferentes ao mesmo tempo — não existe uma configuração "global" de atualização.
-- **Pastas onde a query pode ser usada** (admin): por padrão, uma query aparece como fonte disponível em **qualquer pasta**. Um administrador pode restringi-la a uma ou mais pastas específicas — a partir daí, só quem está montando uma dashboard dentro de uma dessas pastas vê essa query no seletor de fontes do editor de widget (nas outras pastas, ela simplesmente não aparece). A mesma query liberada numa pasta pode ser usada em quantas dashboards/guias quiser dentro dela. Isso não afeta o ETL (a query continua sendo buscada normalmente) nem quem pode editar o catálogo em si — controla só visibilidade como fonte. Se o admin tentar remover uma pasta que já tem widget usando a query de verdade, aparece um aviso de confirmação listando as pastas/dashboards afetadas antes de salvar (widgets já criados continuam funcionando mesmo depois — a restrição só afeta o seletor de fontes para novas edições).
-- **Restaurar padrão** apaga as queries customizadas e volta às 12 queries originais do projeto.
+Existem **dois** tipos de fonte, e a principal é o Data Hub:
+
+| Tipo | Onde se cadastra | Para quê |
+|---|---|---|
+| **Data Hub / lakehouse** (3.7-ter) | Configurações | Todo dado corporativo. É o barramento. |
+| **Planilha do Google** (3.7-bis) | Editor de widget → Modificadores | Dado que ninguém vai publicar no Data Hub: lista mantida à mão, de-para, apoio. |
+
+> **Não existe mais catálogo de queries SQL.** Até 29/07/2026 esta tela tinha um catálogo de queries que batiam direto no Postgres do ERP e no MariaDB. Ele foi removido: manter os dois caminhos significava consumir duas plataformas grandes pela mesma informação, e o lakehouse existe justamente para ser o ponto único. Hoje o app não tem driver de banco nem credencial de banco — se você precisa de um dado novo, publique o dataset no Data Hub.
+
+Dois recursos valem para qualquer fonte:
+
 - **Mesclar campos entre fontes** (só em widgets de tabela e como campo extra em qualquer papel do widget): funciona como um JOIN simples — casa uma chave em comum entre duas fontes e traz um campo da fonte relacionada.
-- **Dicionário de dados** (Configurações, só admin edita): uma descrição livre por campo de qualquer fonte (SQL ou planilha) — o que ele significa, de onde vem. Aparece automaticamente como um balão de informação (i), igual aos que já explicam Dados/Modificadores/Formato, ao lado do campo em qualquer seletor do Builder (Eixo X/Y, Legenda, Filtro, colunas de tabela) — pra qualquer usuário, não só quem escreveu. Campo sem descrição não mostra nada extra.
+- **Dicionário de dados** (Configurações, só admin edita): uma descrição livre por campo de qualquer fonte — o que ele significa, de onde vem. Aparece automaticamente como um balão de informação (i), igual aos que já explicam Dados/Modificadores/Formato, ao lado do campo em qualquer seletor do Builder (Eixo X/Y, Legenda, Filtro, colunas de tabela) — pra qualquer usuário, não só quem escreveu. Campo sem descrição não mostra nada extra. É também o que a IA lê para entender o significado de cada coluna (3.7-quater).
 
 ### 3.7-bis Fontes de dados — planilhas do Google (qualquer usuário)
 
-Diferente das queries SQL acima (só admin cadastra), **qualquer usuário autenticado** pode cadastrar a própria planilha do Google Sheets e usar as colunas dela em qualquer gráfico/tabela, sem depender de um administrador:
+**Qualquer usuário autenticado** pode cadastrar a própria planilha do Google Sheets e usar as colunas dela em qualquer gráfico/tabela, sem depender de um administrador:
 
 - No editor de widget, aba **Modificadores** → seção **"Planilhas do Google"**: cole o link da planilha (precisa estar acessível pela sua própria conta Google — ver permissões abaixo), dê um nome, e opcionalmente informe qual aba usar (padrão: a primeira). Dá para cadastrar quantas planilhas quiser.
-- Depois de cadastrada, a planilha aparece como mais uma fonte no seletor da aba **Dados** — igual a uma query SQL — e todos os tipos de gráfico/tabela/matriz funcionam com ela normalmente.
+- Depois de cadastrada, a planilha aparece como mais uma fonte no seletor da aba **Dados** — igual a um dataset do Data Hub — e todos os tipos de gráfico/tabela/matriz funcionam com ela normalmente.
 - **Permissão**: o app lê a planilha com a **sua própria conta Google** (mesma conta do login) — só funciona se essa conta já tem acesso à planilha no Drive (compartilhada com você, ou você é o dono). Não é preciso deixar a planilha pública.
 - **Atualização**: os dados ficam em cache por até 5 minutos; depois disso, a próxima vez que alguém com acesso à planilha abrir um widget que a usa, ela busca de novo sozinha. Também dá para forçar uma atualização imediata (botão de atualizar, na lista de planilhas em Modificadores).
 - **Quem pode editar/remover**: só quem cadastrou a planilha (ou um administrador) — mas qualquer pessoa com acesso ao widget pode **usá-la**, uma vez cadastrada.
@@ -173,17 +172,17 @@ Diferente das queries SQL acima (só admin cadastra), **qualquer usuário autent
 
 ### 3.7-ter Fontes de dados — datasets do Data Hub / lakehouse (qualquer usuário)
 
-O terceiro tipo de fonte, e o caminho preferido para dado que já existe no **Data Hub** (`lakehouse_sebratel`). A ideia é usar o lakehouse como **barramento de dados**: em vez de cadastrar uma query SQL que bate direto no banco de origem, cadastra-se aqui um dataset já publicado lá, e o app lê pela API pública dele. Quem consome não precisa de credencial de banco nenhuma.
+A fonte **principal** do app, e o caminho para todo dado corporativo. O lakehouse é o **barramento**: cadastra-se aqui um dataset já publicado lá, e o app lê pela API pública dele. Quem consome não precisa de credencial de banco nenhuma — e o app, de propósito, não tem como alcançar banco algum.
 
-- **Onde**: Configurações → seção **"Data Hub (lakehouse)"** → **"Nova fonte"**. Como as planilhas do Google (e diferente das queries SQL), é **auto-serviço**: qualquer usuário autenticado cadastra a própria fonte, com o **próprio token**.
+- **Onde**: Configurações → seção **"Data Hub (lakehouse)"** → **"Nova fonte"**. É **auto-serviço**: qualquer usuário autenticado cadastra a própria fonte, com o **próprio token**.
 - **O que preencher**: um nome (é o que aparece no Builder), o **dataset** (o slug publicado no Data Hub, ex. `clientes-cancelados`), o endereço do Data Hub (já vem preenchido) e o **token de acesso** (gerado no Data Hub, em Integrações). Dá para colar a URL inteira do `curl` no campo de dataset — o endereço, o dataset e o token são extraídos dela automaticamente.
 - **Botão "Testar conexão"**: bate no Data Hub sem salvar nada e mostra quantas linhas o dataset tem e quais colunas vão aparecer no Builder, com uma amostra. Ao criar ou editar, esse teste é refeito no servidor: se o token não abrir o dataset, **nada é salvo** e o erro real do Data Hub aparece na tela (token revogado, sem acesso àquele dataset, dataset inexistente).
 - **Segurança do token**: é enviado uma vez e guardado **cifrado** no servidor (AES-256-GCM). Nunca volta para o navegador — a tela mostra só uma dica (`dhub_…6T97`). Ao editar uma fonte, deixar o campo de token vazio mantém o token que já está salvo.
-- **Atualização**: igual às queries SQL — **tempo real** (todo ciclo do ETL) ou **agendada** (a cada X minutos/horas, mantendo o último dado bom entre execuções). O padrão de uma fonte nova é *agendada, a cada 60 minutos*, porque dataset de lakehouse costuma ser materializado de tempo em tempo. Também há **"Sincronizar agora"**, que dispara a busca na hora. Se uma busca falhar, a fonte mantém o último dado bom e a tela mostra um selo "falhou" com o motivo.
-- **Volume**: datasets grandes são buscados em páginas (padrão: 50 mil linhas por requisição) até fechar o total informado pelo próprio Data Hub, com teto de segurança de 500 mil linhas por fonte.
-- **Pastas onde a fonte pode ser usada** (admin): mesma regra das queries SQL (ver 3.7) — por padrão aparece em qualquer pasta; um administrador pode restringi-la.
+- **Atualização**: **tempo real** (todo ciclo do ETL) ou **agendada** (a cada X minutos/horas, mantendo o último dado bom entre execuções). O padrão de uma fonte nova é *agendada, a cada 60 minutos*, porque dataset de lakehouse costuma ser materializado de tempo em tempo. Também há **"Sincronizar agora"**, que dispara a busca na hora. Se uma busca falhar, a fonte mantém o último dado bom e a tela mostra um selo "falhou" com o motivo.
+- **Volume**: datasets grandes são buscados em páginas até fechar o total informado pelo próprio Data Hub, com teto de segurança de 500 mil linhas por fonte. O Data Hub entrega no máximo 10 mil linhas por requisição (mesmo que se peça mais), então um dataset de 177 mil linhas vem em 18 idas.
+- **Pastas onde a fonte pode ser usada** (admin): por padrão a fonte aparece em **qualquer pasta**; um administrador pode restringi-la a pastas específicas — a partir daí só quem monta uma dashboard dentro delas a vê no seletor de fontes. Isso não afeta o ETL (a fonte continua sendo buscada) e não apaga widget já criado; se a pasta removida já tiver widget usando a fonte, aparece um aviso de confirmação listando o que será afetado.
 - **Quem pode editar/remover**: só quem cadastrou (ou um administrador). Ligar/desligar e mudar o ritmo de atualização, qualquer usuário logado. Remover a fonte aqui **não** afeta nada no Data Hub — apaga só o cadastro deste app.
-- **Quando ela aparece no Builder**: depois do primeiro ciclo do ETL que a buscar (o cadastro já dispara um). Igual a uma query SQL nova.
+- **Quando ela aparece no Builder**: depois do primeiro ciclo do ETL que a buscar (o cadastro já dispara um).
 
 ### 3.7-quater Montar widgets conversando com a IA
 
@@ -202,9 +201,9 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 
 ### 3.8 Como os dados são atualizados
 
-- Um processo separado ("agendador de ETL") roda o ciclo base de atualização a cada poucos minutos (hoje, 2 minutos por padrão). Nesse ciclo, cada fonte de segundo plano — query SQL (3.7) ou dataset do Data Hub (3.7-ter) — decide se é a vez dela de rodar. Planilhas do Google não entram nesse ciclo: elas dependem do login de quem está usando, e por isso são resolvidas dentro da requisição (3.7-bis).
-- Editar, criar, remover, ativar ou desativar uma query ou uma fonte do Data Hub também dispara uma atualização em segundo plano na hora.
-- Uma fonte cuja busca falhe **mantém o último dado bom** em vez de zerar, e é tentada de novo no ciclo seguinte. Isso vale para as duas: uma query cujo banco está fora do ar e um dataset cujo token foi revogado se comportam igual.
+- Um processo separado ("agendador de ETL") roda o ciclo base de atualização a cada poucos minutos (hoje, 2 minutos por padrão). Nesse ciclo, cada dataset do Data Hub (3.7-ter) decide se é a vez dela de rodar. Planilhas do Google não entram nesse ciclo: elas dependem do login de quem está usando, e por isso são resolvidas dentro da requisição (3.7-bis).
+- Editar, criar, remover, ativar ou desativar uma fonte do Data Hub também dispara uma atualização em segundo plano na hora.
+- Uma fonte cuja busca falhe **mantém o último dado bom** em vez de zerar, e é tentada de novo no ciclo seguinte. Um dataset cujo token foi revogado, por exemplo, mantém o último dado bom e mostra o motivo da falha na tela.
 - **Importante**: a atualização acontece no servidor. Uma aba do navegador já aberta **não recarrega os dados sozinha** — é preciso dar F5, a menos que a aba tenha a opção **"Atualização automática"** ligada (em Configurações de tela, por aba): nesse caso, os widgets da aba buscam dado novo sozinhos, em segundo plano, no intervalo definido, sem piscar a tela — pensado para telas fixas expostas sem interação (ex. TV de um setor).
 
 ### 3.9 Autenticação e acesso
@@ -213,7 +212,7 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 - O login é conduzido **pelo servidor** (fluxo de código de autorização): clicar em "Entrar com Google" leva ao Google, e o retorno é tratado pelo backend, que troca o código por tokens usando o *client secret* da aplicação. A sessão fica num **cookie HttpOnly** — o navegador nunca tem acesso a token do Google, e nada de credencial é guardado no `localStorage`.
 - **Duração**: a sessão vale 30 dias por padrão (configurável). Enquanto ela existe, o servidor renova o acesso ao Google sozinho, então não há mais aquele efeito de "cair" depois de uma hora. **Sair** encerra a sessão de verdade no servidor, não só na aba.
 - Por conta de como o Google entrega a credencial de renovação, a **tela de consentimento do Google aparece a cada login** — em troca, logins são raros (a sessão dura semanas).
-- O catálogo de queries continua igualmente aberto a qualquer pessoa logada (ver 3.7). Dashboards, pastas e guias já têm controle de acesso por usuário — ver 3.1 e 3.12. A aba **Acessos** (3.11) e a gestão de **pastas** (3.1/3.12) são restritas a administradores.
+- O cadastro de fontes é aberto a qualquer pessoa logada (ver 3.7-ter); só quem cadastrou, ou um admin, edita/remove a sua. Dashboards, pastas e guias já têm controle de acesso por usuário — ver 3.1 e 3.12. A aba **Acessos** (3.11) e a gestão de **pastas** (3.1/3.12) são restritas a administradores.
 
 ### 3.10 Modo escuro
 
@@ -225,7 +224,7 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 - **Usuários**: todo mundo que já logou pelo menos uma vez, com primeiro e último acesso.
 - **Papel (Admin/Padrão)**: qualquer administrador pode promover ou rebaixar outro usuário direto na tabela (com confirmação antes) — vale só para quem já acessou pelo menos uma vez. A lista de e-mails em `ADMIN_EMAILS` (env) ou no código de `server/accessLog.mjs` agora é só o **ponto de partida** (bootstrap): assim que alguém troca o papel de um usuário pela tela, esse valor salvo manda, mesmo que a pessoa estivesse ou não naquela lista original. O sistema nunca deixa remover o último administrador restante. Esse papel é diferente de "gerente de pasta" (3.1/3.12) — um usuário `padrão` pode ser gerente de uma ou mais pastas sem virar administrador global.
 - **Online agora**: calculado por "visto nos últimos 90 segundos" — o navegador manda um sinal (heartbeat) a cada 45s enquanto a aba está visível, então uma tela aberta e parada ainda aparece online.
-- **Log de ações**: registra criar/editar/remover/ativar/desativar/reagendar uma query, restaurar o catálogo de queries, criar/editar/remover pasta ou dashboard, alterar acesso de pasta/guia, salvar guias/widgets e login/logout — com quem fez, quando e o alvo da ação. Guarda as últimas 5.000 ações (as mais antigas são descartadas).
+- **Log de ações**: registra criar/editar/remover/ativar/desativar/reagendar uma fonte do Data Hub, iniciar conversa com a IA, criar/editar/remover pasta ou dashboard, alterar acesso de pasta/guia, salvar guias/widgets e login/logout — com quem fez, quando e o alvo da ação. Guarda as últimas 5.000 ações (as mais antigas são descartadas).
 - Não registra leituras (visualizar um gráfico, abrir uma guia) — só ações que mudam alguma configuração, para o log continuar útil e legível.
 
 ### 3.12 Permissões por pasta, dashboard e guia
@@ -257,12 +256,12 @@ Todo widget tem um ícone de balão de comentário no cabeçalho, visível tanto
 
 ## 4. Regras de funcionamento
 
-1. **Só leitura no banco**: uma query só pode ser `SELECT`/`WITH`. Qualquer palavra-chave de escrita (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `TRUNCATE`, `CREATE`, etc.) é bloqueada ao salvar.
-2. **Catálogo de queries é compartilhado e sem restrição por usuário**: um único documento salvo no servidor — qualquer pessoa logada edita, e a mudança vale pra todos. Dashboards/pastas/guias, por outro lado, têm controle de acesso por usuário (ver 3.1/3.12) — cada uma é seu próprio documento dentro do workspace. A única exceção parcial é a restrição de **pastas onde a query pode ser usada como fonte** (3.7, admin) — controla visibilidade da query no Builder, não quem edita o catálogo.
-3. **Colunas vêm dos dados, não de um cadastro manual**: o tipo de cada campo (número, data ou texto/categoria) é inferido automaticamente olhando uma amostra dos dados reais retornados pela query.
+1. **Só leitura, por construção**: o app não tem driver de banco nem credencial de banco. Ele só consome a API pública de leitura do Data Hub e a API de leitura do Google Sheets — não existe caminho para escrever em lugar nenhum.
+2. **Catálogo de fontes é compartilhado**: um único documento salvo no servidor — qualquer pessoa logada cadastra uma fonte, e ela passa a existir para todos (só quem cadastrou, ou um admin, edita/remove a sua). Dashboards/pastas/guias, por outro lado, têm controle de acesso por usuário (ver 3.1/3.12) — cada uma é seu próprio documento dentro do workspace. Além disso, um admin pode restringir **em quais pastas** cada fonte aparece (3.7-ter) — isso controla visibilidade no Builder, não quem edita o catálogo.
+3. **Colunas vêm dos dados, não de um cadastro manual**: o tipo de cada campo (número, data ou texto/categoria) é inferido automaticamente olhando uma amostra dos dados reais do dataset.
 4. **Cor principal nunca compete com cor de série**: quando há legenda ou múltiplas medidas, cada série tem sua própria cor — a "Cor principal" só vale para o caso de série única.
 5. **Duplicar um widget** cria uma cópia com id novo, marcada "(cópia)" no título, posicionada num espaço livre da grade (ou centralizada, se a grade estiver cheia).
-6. **Nenhuma ação destrutiva é silenciosa**: remover widget, guia, pasta, query, descartar alterações ou restaurar o padrão sempre pedem confirmação antes.
+6. **Nenhuma ação destrutiva é silenciosa**: remover widget, guia, pasta ou fonte de dados, e descartar alterações, sempre pedem confirmação antes.
 7. **Acesso à pasta é sempre o primeiro filtro**: mesmo que alguém tenha visualização/edição liberada numa guia, isso só faz efeito se a pessoa também tiver acesso à pasta onde a dashboard está — os dois controles são independentes, e o de pasta é sempre do administrador.
 8. **A guia de boas-vindas nunca pode ficar bloqueada nem ser removida** — é a única guia com acesso sempre aberto por padrão dentro de uma dashboard.
 
@@ -272,14 +271,15 @@ Todo widget tem um ícone de balão de comentário no cabeçalho, visível tanto
 
 | Limite | Valor | Onde se aplica |
 |---|---|---|
-| Linhas por query no ETL | 500.000 | Corte de segurança contra uma query sem `WHERE` numa tabela gigante. |
-| Linhas na pré-visualização/teste de uma query | 50 | Botão "Testar" em Configurações. |
+| Linhas por fonte no ETL | 500.000 | Corte de segurança contra um dataset gigante cadastrado por engano. |
+| Linhas por requisição ao Data Hub | 10.000 | Teto do próprio Data Hub — um dataset maior vem em várias idas. |
+| Linhas na amostra do "Testar conexão" | 5 | Só para confirmar o dataset e ver as colunas. |
 | Pontos num gráfico (Top N) | até 100 | Mesmo que o Top N configurado peça mais. |
 | Séries de Legenda | até 8 | Valores além do 8º são descartados (não somados a "outros"). |
 | Valores distintos listados num filtro | até 500 | Popup de seleção de valores de um filtro/filtro fixo. |
 | Linhas/colunas numa Matriz | até 500 linhas (por nível) / 50 colunas dinâmicas | Colunas são rankeadas pelo total geral; o excesso é cortado. |
 | Amostra para inferir o tipo de um campo | 300 linhas | Só afeta a detecção do tipo (número/data/texto), não os dados exibidos. |
-| Ciclo base do ETL | ~2 minutos | Frequência mínima prática de uma query "tempo real". |
+| Ciclo base do ETL | ~2 minutos | Frequência mínima prática de uma fonte "tempo real". |
 | Janela para considerar um usuário "online" | 90 segundos | Aba Acessos — heartbeat do navegador a cada 45s. |
 | Ações guardadas no log de acessos | 5.000 mais recentes | As mais antigas são descartadas automaticamente. |
 
@@ -295,16 +295,16 @@ Todo widget tem um ícone de balão de comentário no cabeçalho, visível tanto
 - Combinar campos de fontes diferentes num mesmo widget (mesclagem por chave).
 - Adicionar um widget de texto livre (sem fonte de dados) pra instruções, avisos ou contexto — usado automaticamente na guia de boas-vindas.
 - Personalizar cor, fonte, opacidade, fundo e rótulos de praticamente todo elemento visual de um widget, individualmente.
-- Ter queries com ritmos de atualização diferentes entre si (tempo real vs. agendada, cada uma com seu próprio intervalo).
+- Ter fontes com ritmos de atualização diferentes entre si (tempo real vs. agendada, cada uma com seu próprio intervalo).
 - Ligar atualização automática só nas guias que precisam (ex. TV de painel), deixando as demais só atualizarem por F5.
-- Testar uma query antes de salvar, sem afetar a dashboard em produção.
-- Restaurar o catálogo de queries ao estado padrão a qualquer momento.
+- Testar a conexão de uma fonte antes de salvar (mostra total de linhas e colunas detectadas), sem afetar a dashboard em produção.
+- Pedir para a **IA montar os widgets** conversando, e aprovar antes de aplicar (3.7-quater).
 - Sobrepor widgets deliberadamente na grade (não é bloqueado).
 
 ## 7. O que NÃO é possível hoje (impossibilidades conhecidas)
 
-- **Não dá para escrever no banco** por uma query (só leitura) — não é uma ferramenta de manutenção de dados.
-- **O catálogo de queries continua sem permissão por usuário** — qualquer pessoa logada pode criar/editar/remover queries, independente de ter acesso a alguma pasta/dashboard.
+- **Não dá para consultar banco de dados direto** — nem para escrever nem para ler. Todo dado corporativo precisa estar publicado como dataset no Data Hub; o app não alcança o Postgres do ERP nem o MariaDB.
+- **O cadastro de fontes não tem permissão por usuário** — qualquer pessoa logada pode cadastrar uma fonte do Data Hub, independente de ter acesso a alguma pasta/dashboard (mas só quem cadastrou, ou um admin, edita/remove a dela).
 - **Um gerente de pasta não pode se auto-promover a administrador**, nem alterar quem tem acesso à própria pasta (isso é sempre do admin) — só controla o que acontece dentro dela (dashboards e acesso de guia).
 - **Liberar acesso de guia pra alguém sem acesso à pasta não tem efeito nenhum** até um admin liberar a pasta também — não é uma forma de contornar o controle de pasta.
 - **"Online" na aba Acessos é uma aproximação** (visto nos últimos 90s), não uma sessão real — não há como saber em qual tela/widget a pessoa está, só que o app está aberto e ativo.

@@ -47,7 +47,7 @@ async function firstSheetTitle(spreadsheetId, accessToken) {
 
 // Alto o bastante pra qualquer planilha manual real, baixo o bastante pra
 // nunca competir de tamanho com uma fonte SQL de verdade (essas já tem seu
-// próprio limite, MAX_ETL_ROWS, bem maior — ver queryCatalog.mjs).
+// próprio teto, bem maior — ver MAX_ROWS em lakehouseSources.mjs).
 const MAX_SHEET_ROWS = 20_000
 
 function coerceCell(v) {

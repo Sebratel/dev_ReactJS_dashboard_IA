@@ -7,7 +7,7 @@
 // árvore de pastas (setores) → dashboards → guias (o TabConfig de sempre),
 // cada nível com seu próprio controle de acesso. Mesmo padrão de
 // persistência síncrona (ler, mutar em memória, regravar o arquivo inteiro)
-// usado em accessLog.mjs/queryCatalog.mjs — escala bem pro tamanho de uma
+// usado em accessLog.mjs/lakehouseSources.mjs — escala bem pro tamanho de uma
 // ferramenta interna, sem concorrência de escrita pesada.
 // ─────────────────────────────────────────────────────────────────────────
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -405,8 +405,8 @@ export function setTabAccess(folderId, dashboardId, tabId, { mode, view, edit },
 // Em quais pastas (e dashboards) uma query do catálogo já está sendo usada
 // de fato por algum widget — varre TODAS as pastas/dashboards/guias/widgets,
 // independente do `folderIds` atual da query (um widget continua funcionando
-// mesmo que a pasta seja removida da liberação depois, ver setQueryFolders
-// em queryCatalog.mjs). Usado pra avisar o admin antes de remover uma pasta
+// mesmo que a pasta seja removida da liberação depois, ver
+// setLakehouseFolders em lakehouseSources.mjs). Usado pra avisar o admin antes de remover uma pasta
 // que já tem widgets dependendo dessa query — ver PUT .../queries/:id/folders.
 export function findFoldersUsingQuery(queryId) {
   const ws = loadWorkspace()

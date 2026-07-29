@@ -2,15 +2,15 @@
 // Motor genérico de agregação do Dashboard Builder — executa um WidgetConfig
 // + filtros ativos da aba sobre o snapshot em memória:
 //   filtra (aba + widget) → agrupa por dimensão → agrega → ordena → limita.
-// Toda fonte (widget.source) é o id de uma query do catálogo único
-// (server/queryCatalog.mjs) — não há fontes "embutidas": o catálogo de
-// campos de cada fonte é inferido em tempo real a partir de uma amostra dos
-// dados reais retornados pela query (ver inferSourceDef), já que o SQL é
-// livremente editável e não tem um tipo TS fixo por trás.
+// Toda fonte (widget.source) é uma chave cadastrada na tela — um dataset do
+// Data Hub (`dhub:<id>`, ver server/lakehouseSources.mjs) ou uma planilha do
+// Google (`sheet:<id>`). Não há fontes "embutidas": o catálogo de campos de
+// cada uma é inferido em tempo real a partir de uma amostra dos dados reais
+// (ver inferSourceDef), já que a forma vem do dataset publicado e não de um
+// tipo TS fixo por trás.
 // Espelha os tipos de src/features/builder/types.ts.
 // ─────────────────────────────────────────────────────────────────────────
 import { getSnapshot } from './dataset.mjs'
-import { loadQueryCatalog } from './queryCatalog.mjs'
 import { isSheetSource, sheetSourceId, sourceKey as sheetSourceKey, listSheetSources, resolveSheetRows } from './sheetSources.mjs'
 import { listLakehouseSources, sourceKey as lakehouseSourceKey } from './lakehouseSources.mjs'
 import { fieldDictionaryMap } from './fieldDictionary.mjs'
@@ -97,32 +97,30 @@ async function withSheetSources(baseSnap, sheetKeys, accessToken) {
   return { ...(baseSnap ?? {}), data }
 }
 
-// Catálogo de fontes disponíveis — uma por query do catálogo com dados no
-// snapshot atual, uma por dataset do Data Hub já materializado no snapshot
-// (ver server/lakehouseSources.mjs) e uma por planilha do Google cadastrada
-// (ver server/sheetSources.mjs). Usado por GET /api/sources para alimentar os
-// pickers do Builder no front (fonte/dimensão/medida/filtro/coluna).
-// `folderId`: quando informado, só entram fontes SQL/Data Hub liberadas para
+// Catálogo de fontes disponíveis — uma por dataset do Data Hub já
+// materializado no snapshot (ver server/lakehouseSources.mjs) e uma por
+// planilha do Google cadastrada (ver server/sheetSources.mjs). Usado por
+// GET /api/sources para alimentar os pickers do Builder no front
+// (fonte/dimensão/medida/filtro/coluna).
+// `folderId`: quando informado, só entram fontes do Data Hub liberadas para
 // aquela pasta (`folderIds` null/ausente = liberada em todas — ver
-// setQueryFolders em queryCatalog.mjs e setLakehouseFolders em
-// lakehouseSources.mjs); planilhas do Google não são restritas por pasta
-// (sempre aparecem — são de quem cadastrou, não do admin). Sem `folderId`
-// (compat), nenhum filtro é aplicado.
+// setLakehouseFolders em lakehouseSources.mjs); planilhas do Google não são
+// restritas por pasta (sempre aparecem — são de quem cadastrou, não do
+// admin). Sem `folderId` (compat), nenhum filtro é aplicado.
 // `accessToken`: usado só pra tentar atualizar o cache de cada planilha se
 // estiver expirado — falhando (sem acesso, sessão sem o escopo novo etc.),
 // a planilha aparece com 0 campos em vez de derrubar a lista inteira.
 // Fontes do Data Hub não precisam de nada disso: elas já vêm resolvidas no
-// snapshot pelo ETL, como as queries SQL.
+// snapshot pelo ETL.
 export async function listSourceDefs(folderId, accessToken) {
   const snap = getSnapshot()
   const data = { ...(snap?.data ?? {}) }
-  const queries = loadQueryCatalog().list
-  const titles = new Map(queries.map((q) => [q.id, q.title]))
-  const folderIdsById = new Map(queries.map((q) => [q.id, q.folderIds ?? null]))
+  const titles = new Map()
+  const folderIdsById = new Map()
 
   // Só nomeia/filtra: as linhas já estão em `data` sob a chave `dhub:<id>`.
   // Uma fonte recém-cadastrada (ETL ainda não rodou) simplesmente não tem
-  // chave no snapshot e portanto não aparece — igual a uma query SQL nova.
+  // chave no snapshot e portanto não aparece.
   for (const src of listLakehouseSources()) {
     const key = lakehouseSourceKey(src.id)
     titles.set(key, src.label)

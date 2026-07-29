@@ -1,13 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Fontes do Data Hub (lakehouse_sebratel) — o terceiro tipo de fonte de dados
-// do Builder, ao lado das queries SQL (server/queryCatalog.mjs) e das
-// planilhas do Google (server/sheetSources.mjs).
+// Fontes do Data Hub (lakehouse_sebratel) — a fonte de dados PRINCIPAL do
+// Builder, ao lado das planilhas do Google (server/sheetSources.mjs).
 //
-// A ideia é o lakehouse funcionar como BARRAMENTO: em vez de cadastrar uma
-// query SQL que bate direto no banco de produção, cadastra-se aqui um
-// `dataset` já publicado no Data Hub e um token de acesso próprio. Este
-// projeto só consome a API pública de leitura de lá — nada é escrito no
-// lakehouse, e nenhuma credencial de banco é necessária.
+// O lakehouse é o BARRAMENTO: cadastra-se aqui um `dataset` já publicado lá
+// mais um token de acesso próprio, e este projeto só consome a API pública de
+// leitura — nada é escrito no lakehouse, e nenhuma credencial de banco é
+// necessária. Existia antes um catálogo de queries SQL que batia direto no
+// Postgres do ERP e no MariaDB; manter os dois caminhos consumia duas
+// plataformas grandes pela mesma informação, então o SQL foi removido e este
+// módulo passou a ser o caminho único para dado corporativo.
 //
 //   GET <baseUrl>/api/public/v1/datasets/<slug>/rows?limit=&offset=
 //   header X-Api-Token: <token>          (evita o token no log de acesso)
@@ -17,7 +18,7 @@
 // enabled, refreshMode: 'realtime'|'scheduled', refreshMinutes, lastRunAt,
 // rowCount, lastError, lastErrorAt, folderIds, createdBy, createdAt,
 // updatedBy, updatedAt }. Persistido em data/lakehouseSources.json, mesmo
-// padrão de arquivo único de queryCatalog.mjs/sheetSources.mjs.
+// padrão de arquivo único de accessLog.mjs/sheetSources.mjs.
 //
 // O token NUNCA fica em claro no disco (ver server/secretBox.mjs) e NUNCA
 // volta pro navegador — a UI recebe só `tokenHint` ("dhub_…6T97"), o
@@ -25,11 +26,11 @@
 //
 // Diferente das planilhas (que só atualizam dentro de uma requisição, porque
 // dependem do token OAuth de quem está logado), o token daqui é da própria
-// aplicação — então a fonte entra no ciclo do ETL (scripts/fetch-install.mjs)
-// e é buscada em segundo plano, exatamente como uma query SQL, com o mesmo
-// par realtime/agendada. As linhas caem no snapshot sob a chave `dhub:<id>`,
+// aplicação — então a fonte é buscada em segundo plano pelo ciclo do ETL
+// (scripts/fetch-install.mjs), com o par realtime/agendada configurável por
+// fonte. As linhas caem no snapshot sob a chave `dhub:<id>`,
 // e dali em diante o motor de widgets (server/widgetQuery.mjs) não sabe nem
-// precisa saber que aquela fonte veio de uma API em vez de um SELECT.
+// precisa saber que aquela fonte veio de uma API HTTP.
 // ─────────────────────────────────────────────────────────────────────────
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -45,12 +46,15 @@ export const SOURCE_PREFIX = 'dhub:'
 // Data Hub, mas na prática é sempre esta.
 export const DEFAULT_BASE_URL = process.env.DHUB_BASE_URL || 'https://data-hub.sebratel.net.br'
 
-// A API pública aceita até 100k linhas por página; 50k é folgado o bastante
-// pra trazer um dataset grande em poucas idas e ainda manter cada resposta
-// num tamanho sensato de memória/JSON.
-const PAGE_SIZE = Math.min(100_000, Math.max(1_000, Number(process.env.DHUB_PAGE_SIZE) || 50_000))
-// Teto de linhas por fonte — mesmo espírito do MAX_ETL_ROWS das queries SQL:
-// não é pra limitar dataset legítimo, é pra conter um caso patológico.
+// O Data Hub CAPA em 10 mil linhas por página, mesmo que você peça mais — e
+// ecoa no corpo o `limit` que você pediu, não o que ele aplicou. Medido contra
+// a instância real: limit=20000 e limit=60000 devolvem 10000 linhas as duas.
+// Por isso o padrão é 10 mil (pedir mais só gasta round-trip) e por isso o fim
+// da paginação é decidido pelo `total`, nunca pelo tamanho da página — ver
+// fetchDatasetRows.
+const PAGE_SIZE = Math.min(100_000, Math.max(1_000, Number(process.env.DHUB_PAGE_SIZE) || 10_000))
+// Teto de linhas por fonte — não é pra limitar dataset legítimo,
+// é pra conter um caso patológico (um dataset gigante por engano).
 export const MAX_ROWS = Math.max(1_000, Number(process.env.DHUB_MAX_ROWS) || 500_000)
 // Trava anti-loop: mesmo que a API responda de um jeito inesperado (sempre
 // devolvendo página cheia, por exemplo), o laço de paginação termina.
@@ -270,7 +274,7 @@ export function setLakehouseRefresh(id, { mode, minutes }, userEmail) {
 }
 
 // Em quais pastas esta fonte aparece no Builder — null = todas. Mesma
-// convenção de setQueryFolders em queryCatalog.mjs.
+// convenção de `folder.accessEmails` em workspace.mjs.
 export function setLakehouseFolders(id, folderIds, userEmail) {
   if (folderIds !== null && !Array.isArray(folderIds)) {
     throw new Error('folderIds inválido — use null (todas as pastas) ou uma lista de ids.')
@@ -352,17 +356,28 @@ export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS } = {})
   let pageCount = 0
 
   while (pageCount < MAX_PAGES) {
-    const limit = Math.min(PAGE_SIZE, maxRows - fetched)
-    if (limit <= 0) break
-    const body = await requestPage(credentials, { limit, offset: fetched })
+    const want = Math.min(PAGE_SIZE, maxRows - fetched)
+    if (want <= 0) break
+    const body = await requestPage(credentials, { limit: want, offset: fetched })
     pageCount += 1
     if (typeof body.total === 'number') total = body.total
+    const got = body.rows.length
+    // Página vazia é o único fim inequívoco: acabaram as linhas, ou o offset
+    // passou do fim.
+    if (got === 0) break
     pages.push(body.rows)
-    fetched += body.rows.length
-    // Página incompleta = acabou. Página vazia idem (protege contra um
-    // `total` maior que a quantidade realmente devolvida).
-    if (body.rows.length < limit) break
-    if (total != null && fetched >= total) break
+    fetched += got
+
+    if (total != null) {
+      // Quem decide o fim é o `total` informado pela própria API. NÃO dá pra
+      // usar "página menor que o pedido" como sinal: o Data Hub capa em 10 mil
+      // por página e devolve menos que o pedido sem que os dados tenham
+      // acabado — tratar isso como fim truncava todo dataset grande.
+      if (fetched >= Math.min(total, maxRows)) break
+    } else if (got < want) {
+      // Sem `total`, só aí o tamanho da página serve de pista.
+      break
+    }
   }
 
   if (pageCount >= MAX_PAGES) {

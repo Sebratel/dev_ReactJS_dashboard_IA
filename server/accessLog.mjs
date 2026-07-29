@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────
 // Gestão de acessos: quem já entrou no app, quem está online agora, e um log
-// de ações administrativas. Mesmo padrão de persistência de queryCatalog.mjs
+// de ações administrativas. Mesmo padrão de persistência de lakehouseSources.mjs
 // / dashboardConfig.mjs (JSON em data/, leitura/escrita síncrona).
 // ─────────────────────────────────────────────────────────────────────────
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'

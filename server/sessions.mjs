@@ -10,7 +10,7 @@
 //
 // Persistido em arquivo — e não em memória — para um restart do container (ou
 // um redeploy da stack no Portainer) não deslogar todo mundo. Mesmo padrão de
-// arquivo único de accessLog.mjs/queryCatalog.mjs.
+// arquivo único de accessLog.mjs/lakehouseSources.mjs.
 //
 // Os tokens são cifrados em repouso com a mesma chave dos tokens do Data Hub
 // (server/secretBox.mjs). Um vazamento do volume `data` não entrega acesso à

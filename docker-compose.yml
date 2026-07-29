@@ -70,20 +70,8 @@ services:
       # do serviço `etl`, senão o ETL não decifra os tokens do Data Hub.
       # Trocá-la desloga todo mundo (as sessões viram ilegíveis).
       SECRETS_KEY: ${SECRETS_KEY:-}
-      # Credenciais dos bancos: a API também executa SQL ao vivo (testar uma
-      # query no editor de Configurações) e dispara o ETL sob demanda, então
-      # precisa das mesmas variáveis do serviço `etl` — não só ele.
-      DB_ELLEVEN_HOST: ${DB_ELLEVEN_HOST:-}
-      DB_ELLEVEN_DATABASE: ${DB_ELLEVEN_DATABASE:-}
-      DB_ELLEVEN_USER: ${DB_ELLEVEN_USER:-}
-      DB_ELLEVEN_PASSWORD: ${DB_ELLEVEN_PASSWORD:-}
-      DB_ELLEVEN_PORT: ${DB_ELLEVEN_PORT:-5432}
-      DB_ELLEVEN_SSL: ${DB_ELLEVEN_SSL:-}
-      DB_MARIA_HOST: ${DB_MARIA_HOST:-}
-      DB_MARIA_DATABASE: ${DB_MARIA_DATABASE:-}
-      DB_MARIA_USER: ${DB_MARIA_USER:-}
-      DB_MARIA_PASSWORD: ${DB_MARIA_PASSWORD:-}
-      DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
+      # Não há credencial de banco aqui de propósito: este serviço não fala com
+      # Postgres nem MariaDB. Todo dado corporativo entra pelo Data Hub.
       # Endereço padrão sugerido no cadastro de uma fonte do Data Hub.
       DHUB_BASE_URL: ${DHUB_BASE_URL:-https://data-hub.sebratel.net.br}
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
@@ -106,9 +94,8 @@ services:
       retries: 3
       start_period: 5s
 
-  # Job do ETL — materializa todas as fontes de segundo plano (queries SQL do
-  # catálogo + datasets do Data Hub) num ciclo curto, gravando no volume
-  # `snapshot`. O ritmo real de CADA fonte é configurado na tela
+  # Job do ETL — materializa os datasets do Data Hub num ciclo curto, gravando
+  # no volume `snapshot`. O ritmo real de CADA fonte é configurado na tela
   # (tempo real / agendada); este intervalo é só o ciclo base.
   etl:
     build:
@@ -128,20 +115,9 @@ services:
       # Precisa ser IGUAL à do serviço `api` — é com ela que os tokens do Data
       # Hub cadastrados pela tela são decifrados aqui.
       SECRETS_KEY: ${SECRETS_KEY:-}
-      DB_ELLEVEN_HOST: ${DB_ELLEVEN_HOST:-}
-      DB_ELLEVEN_DATABASE: ${DB_ELLEVEN_DATABASE:-}
-      DB_ELLEVEN_USER: ${DB_ELLEVEN_USER:-}
-      DB_ELLEVEN_PASSWORD: ${DB_ELLEVEN_PASSWORD:-}
-      DB_ELLEVEN_PORT: ${DB_ELLEVEN_PORT:-5432}
-      DB_ELLEVEN_SSL: ${DB_ELLEVEN_SSL:-}
-      DB_MARIA_HOST: ${DB_MARIA_HOST:-}
-      DB_MARIA_DATABASE: ${DB_MARIA_DATABASE:-}
-      DB_MARIA_USER: ${DB_MARIA_USER:-}
-      DB_MARIA_PASSWORD: ${DB_MARIA_PASSWORD:-}
-      DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
       # Ajustes de paginação/teto da busca no Data Hub — os padrões do código
       # servem bem, só mexa se um dataset específico exigir.
-      DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-50000}
+      DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-10000}
       DHUB_MAX_ROWS: ${DHUB_MAX_ROWS:-500000}
       DHUB_TIMEOUT_MS: ${DHUB_TIMEOUT_MS:-120000}
     volumes:
@@ -154,11 +130,9 @@ networks:
 
 volumes:
   snapshot:
-  # Catálogo de queries (data/queries.json), fontes do Data Hub
-  # (data/lakehouseSources.json), planilhas, workspace, sessões de login
-  # (data/sessions.json) e a chave de cifra (data/.secret-key) — precisa ser o
-  # MESMO volume nos serviços api e etl, senão o ciclo agendado do etl
-  # sobrescreve o snapshot usando só o catálogo padrão (semente), descartando o
-  # que foi criado/editado via API, e os tokens do Data Hub ficam indecifráveis
-  # do outro lado.
+  # Fontes do Data Hub (data/lakehouseSources.json), planilhas, workspace,
+  # sessões de login (data/sessions.json) e a chave de cifra
+  # (data/.secret-key) — precisa ser o MESMO volume nos serviços api e etl.
+  # Com volumes separados, o etl não vê as fontes cadastradas pela tela (grava
+  # um snapshot vazio) e os tokens do Data Hub ficam indecifráveis do lado dele.
   data:

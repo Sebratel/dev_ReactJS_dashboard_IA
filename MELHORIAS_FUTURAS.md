@@ -12,9 +12,8 @@
 
 ### A. Fontes de dados e integrações
 
-- [ ] **1. Fonte de dados via API de outro app (além de conexão direta ao banco)**
-  Hoje toda fonte é uma query SQL contra Postgres ou MariaDB (`server/queryCatalog.mjs`). A ideia é permitir cadastrar uma fonte do tipo "API/link" — em vez de SQL, o ETL faz uma chamada HTTP (GET/POST) para o app de tabelas/queries e usa a resposta como as linhas da fonte, do mesmo jeito que hoje usa o resultado de uma query. Os dois tipos convivem: a mesma tela de Configurações passaria a ter um seletor "SQL" ou "API/link" ao criar uma query.
-  **Complexidade:** Média. Decisões a tomar: formato de autenticação da API externa (token fixo? OAuth?), formato esperado da resposta (JSON de array de objetos é o caminho mais direto, já que o motor de widgets já trabalha com linhas como objetos), e se o refresh segue o mesmo agendador (tempo real/agendado) que já existe por query.
+- [x] **1. Fonte de dados via API — FEITO (29/07/2026), e virou o caminho único**
+  Implementado como as fontes do Data Hub (`server/lakehouseSources.mjs`): cadastra-se um dataset publicado no lakehouse + um token, e o ETL busca pela API pública dele. Foi além do item original: o catálogo de queries SQL contra Postgres/MariaDB foi **removido**, porque manter os dois caminhos consumia duas plataformas grandes pela mesma informação. Hoje o app não tem driver nem credencial de banco.
 
 - [x] **2. Google Sheets como fonte livre pelo próprio usuário** — implementado em 28/07/2026, ver `HISTORICO_ALTERACOES.md`.
   Qualquer usuário autenticado cadastra o link da própria planilha do Google (aba Modificadores, no editor de widget) e usa as colunas dela em qualquer gráfico/tabela — leitura via OAuth da própria conta Google do usuário (mesmo escopo pedido no login, ampliado), sem service account. Cada planilha é uma fonte independente (não há mescla automática entre planilhas de um mesmo widget). Upload de Excel (`.xlsx`) **não** foi incluído nesta rodada — pode ser um complemento futuro se surgir a necessidade (parsing de arquivo é uma frente separada da leitura via link).
@@ -25,11 +24,11 @@
 
 ### B. Inteligência Artificial
 
-- [ ] **4. IA (Gemini/Anthropic) gera gráficos e dashboards prontos a partir de uma descrição**
+- [x] **4. IA gera gráficos e dashboards prontos a partir de uma descrição — FEITO (29/07/2026)**
   Usuário descreve o que quer ("quero ver o total instalado por mês, por equipe") e a IA monta o(s) widget(s) ou a dashboard inteira, já usando as fontes/campos reais disponíveis na pasta.
   **Complexidade:** Alta. Tecnicamente dá pra fazer com boa confiabilidade: mandamos pro modelo o catálogo de campos da(s) fonte(s) da pasta (já existe, é o que alimenta o Builder hoje) e pedimos uma saída estruturada no formato exato do `WidgetConfig` (ou de uma lista deles) — o modelo tem boa capacidade de gerar JSON estruturado quando a "gramática" (os tipos, campos, agregações possíveis) é bem definida, que é exatamente o nosso caso. Importante: nunca aplicar direto — sempre mostrar uma pré-visualização e pedir confirmação antes de adicionar de fato à guia, porque o modelo pode interpretar mal um pedido ambíguo.
 
-- [ ] **5. Insights automáticos de IA lendo o que está na tela**
+- [x] **5. Insights automáticos de IA — FEITO (29/07/2026), via widget de texto**
   Um painel (ou um novo tipo de widget) que olha os dados já carregados dos gráficos/tabelas da guia e gera um resumo em texto: tendências, valores fora do padrão, comparações.
   **Complexidade:** Média-alta. Os dados agregados já existem no navegador (é o que os gráficos mostram) — a parte nova é mandar esse resumo (não o dataset bruto, que pode ser grande) pra IA e exibir o texto de volta, num widget tipo "insight". Cuidado a ter: decidir se roda automaticamente (custo de IA a cada carregamento) ou só quando o usuário pedir (um botão "Gerar insight"), que é o caminho mais seguro pra começar.
 
@@ -104,7 +103,7 @@ Estas são ideias que não estavam na sua lista — coisas que percebo como lacu
   Um campo derivado de uma fórmula simples (razão entre duas medidas, diferença percentual entre dois períodos, concatenação de dois campos de texto...), calculado uma vez e disponível como se fosse mais um campo da fonte, reutilizável em qualquer widget. Isso é, na prática, o pré-requisito técnico do item 6 da Parte 1 (IA gerando cálculos) — e também tem valor sozinho, sem IA nenhuma, pra quem já sabe exatamente a fórmula que quer.
 
 - [ ] **2.10. Papel de acesso intermediário ("editor de dados")**
-  Hoje só existem três níveis: admin, gerente de pasta, e usuário padrão. Pode fazer sentido um papel que só cuida do catálogo de queries (cadastra/edita fontes de dados) sem precisar ser administrador completo (que também gerencia pastas, usuários, temas etc.) — separando "quem cuida do dado" de "quem cuida da estrutura".
+  Hoje só existem três níveis: admin, gerente de pasta, e usuário padrão. Pode fazer sentido um papel que só cuida do catálogo de fontes (cadastra/edita fontes de dados) sem precisar ser administrador completo (que também gerencia pastas, usuários, temas etc.) — separando "quem cuida do dado" de "quem cuida da estrutura".
 
 - [ ] **2.11. Auditoria com detalhe do que mudou**
   O log de auditoria (aba Acessos) já registra quem fez o quê e quando, mas não o que mudou de fato num "Salvar" de dashboard. Guardar um resumo de diferença (ex. "3 widgets adicionados, 1 removido") deixaria a auditoria mais útil pra investigar problemas.

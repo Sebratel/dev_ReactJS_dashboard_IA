@@ -45,8 +45,14 @@ const EFFORT = process.env.AI_EFFORT || 'high'
 // Teto do que o modelo pode gerar por resposta. Cobre raciocínio + texto +
 // o JSON dos widgets junto; proposta de dashboard inteira cabe folgado.
 const MAX_TOKENS = Math.max(2000, Number(process.env.AI_MAX_TOKENS) || 16000)
-// Trava anti-loop do ciclo de ferramentas.
-const MAX_ITERATIONS = Math.max(2, Number(process.env.AI_MAX_ITERATIONS) || 8)
+// Orçamento de idas ao modelo por turno. 8 era apertado demais: com uma fonte
+// de 31 campos e um pedido aberto ("KPIs que contam uma história"), o modelo
+// gastava as idas explorando e estourava sem nunca propor nada — o usuário
+// pagava e não recebia widget. Além de subir o teto, agora o modelo é AVISADO
+// quando está perto do fim (ver WRAP_UP_AT) pra fechar com o que tem.
+const MAX_ITERATIONS = Math.max(3, Number(process.env.AI_MAX_ITERATIONS) || 14)
+// Quantas idas antes do fim o aviso de "conclua agora" entra.
+const WRAP_UP_AT = 3
 // Teto de gasto por usuário por dia, em dólares. Zero desliga o teto.
 const DAILY_BUDGET_USD = Number(process.env.AI_DAILY_BUDGET_USD ?? 5)
 
@@ -153,15 +159,27 @@ Comunicação: seja direto e breve. Uma ou duas frases dizendo o que montou e po
 
 Escopo: entregue o que foi pedido, no tamanho que foi pedido. Se o pedido for ambíguo, resolva como um colega experiente resolveria e siga; só pergunte quando leituras diferentes levariam a dashboards materialmente diferentes. Não acrescente widgets que ninguém pediu.`
 
+// O catálogo carrega VALORES DE EXEMPLO dos campos de texto e marca os de alta
+// cardinalidade (ver inferSourceDef em widgetQuery.mjs). Isso é o que evita a
+// maior parte das idas e voltas: com os valores em mão o modelo escreve o
+// filtro com a grafia certa sem chamar field_values, e sabe de saída que
+// agrupar por nome de cliente não produz gráfico útil.
 function catalogText(sources) {
   const lines = sources.map((s) => {
     const fields = s.fields.map((f) => {
       const kind = f.kind === 'number' ? 'número' : f.kind === 'date' ? 'data' : 'texto'
-      return `    - ${f.key} (${kind})${f.description ? ` — ${f.description}` : ''}`
+      const parts = [`    - ${f.key} (${kind})`]
+      if (f.highCardinality) parts.push(' [muitos valores distintos — identificador, não use como dimensão de gráfico]')
+      else if (f.sampleValues?.length) {
+        const more = f.distinctInSample > f.sampleValues.length ? ', …' : ''
+        parts.push(` — valores: ${f.sampleValues.map((v) => JSON.stringify(v)).join(', ')}${more}`)
+      }
+      if (f.description) parts.push(` — ${f.description}`)
+      return parts.join('')
     }).join('\n')
     return `  Fonte "${s.key}" — ${s.label} (${s.fields.length} campos)\n${fields}`
   })
-  return `Catálogo de fontes disponíveis nesta conversa:\n\n${lines.join('\n\n')}`
+  return `Catálogo de fontes disponíveis nesta conversa:\n\n${lines.join('\n\n')}\n\nOs valores mostrados vêm de uma amostra dos dados reais — use-os para escrever filtros com a grafia exata. Só chame field_values quando precisar de um valor que não está aí.`
 }
 
 function buildTools() {
@@ -245,6 +263,7 @@ async function runTool(name, input, ctx) {
     // Efeito colateral deliberado: a proposta vai pro navegador por SSE, não
     // pelo texto da resposta — o front recebe JSON pronto pra renderizar.
     ctx.emit({ type: 'widgets', widgets, summary: String(input.summary ?? '') })
+    ctx.proposed += 1
     return { text: `${widgets.length} widget(s) enviados para aprovação do usuário. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
   }
 
@@ -287,7 +306,9 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   conv.lastUsedAt = Date.now()
   conv.messages.push({ role: 'user', content: userText })
 
-  const ctx = { sources, accessToken, emit }
+  //  conta as propostas aceitas no turno — é o que decide se um
+  // estouro de orçamento é perda total ou entrega parcial.
+  const ctx = { sources, accessToken, emit, proposed: 0 }
   const tools = buildTools()
   const system = [
     { type: 'text', text: INSTRUCTIONS },
@@ -297,7 +318,27 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   ]
 
   let totalUsd = 0
+  // `finish` centraliza a saída pra garantir que o custo SEMPRE chegue ao
+  // painel. Antes o caminho de erro só emitia a mensagem, então o contador de
+  // gasto ficava em US$ 0,00 mesmo depois de o turno ter consumido tokens —
+  // exatamente o que aconteceu no primeiro uso real.
+  const finish = (extra = {}) => {
+    emit({ type: 'done', usd: totalUsd, usage: usageFor(email), ...extra })
+    return { usd: totalUsd }
+  }
+
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
+    const remaining = MAX_ITERATIONS - iteration
+    // Aviso de fechamento como mensagem de sistema no meio da conversa: entra
+    // DEPOIS do histórico, então não invalida o prefixo cacheado, e é canal de
+    // operador (o modelo trata como instrução, não como texto do usuário).
+    if (remaining === WRAP_UP_AT && ctx.proposed === 0) {
+      conv.messages.push({
+        role: 'system',
+        content: `Você tem poucas idas restantes neste turno. Pare de explorar e chame propose_widgets AGORA, com o melhor conjunto que você já consegue montar a partir do catálogo. É melhor entregar 3 widgets sólidos do que não entregar nada.`,
+      })
+    }
+
     const stream = anthropic().messages.stream({
       model: MODEL,
       max_tokens: MAX_TOKENS,
@@ -315,11 +356,11 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
 
     if (message.stop_reason === 'refusal') {
       emit({ type: 'error', message: 'O modelo recusou este pedido. Reformule ou tente um recorte diferente.' })
-      return { usd: totalUsd }
+      return finish()
     }
     if (message.stop_reason !== 'tool_use') {
-      emit({ type: 'done', usd: totalUsd, usage: usageFor(email) })
-      return { usd: totalUsd }
+      console.log(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+      return finish()
     }
 
     const toolUses = message.content.filter((b) => b.type === 'tool_use')
@@ -332,6 +373,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       } catch (e) {
         out = { isError: true, text: e.message }
       }
+      console.log(`[ai] ida ${iteration + 1}/${MAX_ITERATIONS} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
       results.push({
         type: 'tool_result', tool_use_id: call.id, content: out.text,
         ...(out.isError ? { is_error: true } : {}),
@@ -342,6 +384,14 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
     conv.messages.push({ role: 'user', content: results })
   }
 
-  emit({ type: 'error', message: 'A IA fez muitas idas e voltas sem concluir. Tente um pedido mais específico.' })
-  return { usd: totalUsd }
+  // Estourou o orçamento. Se ele JÁ propôs algo, aquilo vale — o usuário
+  // recebe os widgets em vez de perder o turno inteiro (e o dinheiro).
+  console.log(`[ai] orçamento de ${MAX_ITERATIONS} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+  if (ctx.proposed === 0) {
+    emit({
+      type: 'error',
+      message: 'A IA explorou os dados mas não fechou uma proposta neste turno. Peça de novo — de preferência mais específico (ex.: "3 KPIs de churn e um gráfico por motivo de cancelamento").',
+    })
+  }
+  return finish()
 }

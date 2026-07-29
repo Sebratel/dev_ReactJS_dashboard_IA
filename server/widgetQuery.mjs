@@ -46,23 +46,50 @@ function getRows(snap, source) {
   return snap?.data?.[source] ?? null
 }
 
+// Quantos valores distintos de um campo de texto acompanham o catálogo, e a
+// partir de quantos ele é considerado "identificador" (alta cardinalidade) em
+// vez de categoria. Serve principalmente à montagem com IA: com exemplos em
+// mão, o modelo escreve o filtro com a grafia certa sem precisar consultar o
+// campo, e sabe que agrupar por `client_name` não faz sentido.
+const SAMPLE_VALUES_PER_FIELD = 6
+const HIGH_CARDINALITY_RATIO = 0.5
+
 // Deriva um SourceDef em tempo real a partir de uma amostra dos dados reais
-// — não há TS interface hand-escrita, pois a forma é definida pelo SQL do
-// usuário. kind por valor observado; campos nunca vistos com valor não-nulo
-// ficam 'dimension' (comportamento neutro: agrupável/filtrável).
+// — não há TS interface hand-escrita, pois a forma vem do dataset publicado.
+// kind por valor observado; campos nunca vistos com valor não-nulo ficam
+// 'dimension' (comportamento neutro: agrupável/filtrável).
 function inferSourceDef(source, rows, label) {
   const fields = new Map()
-  for (const r of rows.slice(0, INFER_SAMPLE_SIZE)) {
+  const sample = rows.slice(0, INFER_SAMPLE_SIZE)
+  for (const r of sample) {
     for (const [k, v] of Object.entries(r)) {
       let f = fields.get(k)
-      if (!f) { f = { key: k, label: k, kind: 'dimension' }; fields.set(k, f) }
-      if (v == null || f.sawValue) continue
-      f.sawValue = true
-      if (typeof v === 'number') f.kind = 'number'
-      else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) f.kind = 'date'
+      if (!f) { f = { key: k, label: k, kind: 'dimension', seen: new Set() }; fields.set(k, f) }
+      if (v == null) continue
+      if (!f.sawValue) {
+        f.sawValue = true
+        if (typeof v === 'number') f.kind = 'number'
+        else if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) f.kind = 'date'
+      }
+      // Só acompanha os distintos de texto, e para de acumular depois que já
+      // ficou claro que é identificador — não vale gastar memória contando
+      // 300 nomes de cliente diferentes.
+      if (f.kind === 'dimension' && f.seen.size <= INFER_SAMPLE_SIZE * HIGH_CARDINALITY_RATIO) {
+        f.seen.add(String(v))
+      }
     }
   }
-  return { key: source, label: label ?? source, fields: Array.from(fields.values()).map(({ sawValue, ...f }) => f) }
+  return {
+    key: source,
+    label: label ?? source,
+    fields: Array.from(fields.values()).map(({ sawValue, seen, ...f }) => {
+      if (f.kind !== 'dimension' || seen.size === 0) return f
+      // Muitos valores distintos numa amostra pequena = identificador (nome,
+      // CPF, id): útil pra listar numa tabela, ruim pra agrupar.
+      if (seen.size > sample.length * HIGH_CARDINALITY_RATIO) return { ...f, highCardinality: true }
+      return { ...f, sampleValues: Array.from(seen).slice(0, SAMPLE_VALUES_PER_FIELD), distinctInSample: seen.size }
+    }),
+  }
 }
 
 function getSourceDef(source, snap) {

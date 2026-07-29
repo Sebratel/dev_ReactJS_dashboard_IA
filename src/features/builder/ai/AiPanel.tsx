@@ -54,6 +54,15 @@ export function AiPanel({ folderId, onApply, onClose }: {
 
   const sources = getAllSources()
 
+  // Pré-seleciona quando há poucas fontes: com uma ou duas cadastradas, exigir
+  // um clique antes de poder escrever é atrito puro. Com muitas, deixa a
+  // escolha — o catálogo de todas subiria no prompt e diluiria o contexto.
+  useEffect(() => {
+    if (sources.length > 0 && sources.length <= 3) {
+      setSelected(new Set(sources.map((s) => s.key)))
+    }
+  }, [sources.length])
+
   useEffect(() => {
     let alive = true
     fetchAiStatus()

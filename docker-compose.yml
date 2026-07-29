@@ -86,6 +86,13 @@ services:
       DB_MARIA_PORT: ${DB_MARIA_PORT:-3306}
       # Endereço padrão sugerido no cadastro de uma fonte do Data Hub.
       DHUB_BASE_URL: ${DHUB_BASE_URL:-https://data-hub.sebratel.net.br}
+      # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
+      # indisponível e o resto do app segue normal. Só o `api` precisa — o
+      # navegador nunca vê a chave.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-opus-5}
+      AI_EFFORT: ${AI_EFFORT:-high}
+      AI_DAILY_BUDGET_USD: ${AI_DAILY_BUDGET_USD:-5}
     volumes:
       # Leitura E escrita: além de ler o snapshot, a API dispara o ETL em
       # segundo plano quando alguém mexe no catálogo de fontes (ver

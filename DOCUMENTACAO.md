@@ -185,6 +185,21 @@ O terceiro tipo de fonte, e o caminho preferido para dado que já existe no **Da
 - **Quem pode editar/remover**: só quem cadastrou (ou um administrador). Ligar/desligar e mudar o ritmo de atualização, qualquer usuário logado. Remover a fonte aqui **não** afeta nada no Data Hub — apaga só o cadastro deste app.
 - **Quando ela aparece no Builder**: depois do primeiro ciclo do ETL que a buscar (o cadastro já dispara um). Igual a uma query SQL nova.
 
+### 3.7-quater Montar widgets conversando com a IA
+
+No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (mesma permissão: quem pode adicionar widget na guia pode usar). Ele abre um painel de conversa lateral onde você descreve o que quer ver e a IA monta os widgets.
+
+- **Como se usa**: marque quais fontes a IA pode usar, escreva o pedido ("monte uma tela com os principais indicadores", "compare o volume por equipe nos últimos meses", "quais os 3 gargalos que os dados mostram?") e a resposta vai aparecendo enquanto ela pensa. Ao terminar, ela apresenta os widgets propostos com tipo e título.
+- **Nada é aplicado sozinho**: você clica em **"Adicionar à guia"** (ou "Descartar"). Aprovar coloca os widgets no rascunho da guia — e, como qualquer edição manual, **ainda depende do "Salvar"** da barra de edição. É deliberado: o modelo pode interpretar mal um pedido ambíguo.
+- **Depois de aprovado é um widget normal**: abre no editor de sempre, muda cor, tipo, campo, formatação. A IA dá o ponto de partida, não um objeto especial.
+- **O que a IA vê**: apenas os **nomes** dos campos das fontes marcadas, o tipo de cada um (número/data/texto) e a descrição escrita no dicionário de dados (3.7). **As linhas de dados nunca são enviadas.** Quando ela precisa de valores reais — por exemplo, para saber se o status é "Concluído" ou "CONCLUIDO" antes de criar um filtro — ela consulta os valores distintos daquele campo, e só aquilo sobe. Para escrever um insight, ela lê o resultado **já agregado** do widget (as mesmas centenas de números que o gráfico mostra), não o dataset.
+- **Não invento campo**: o que a IA propõe é validado contra o catálogo real antes de chegar na tela. Campo ou fonte inexistente é recusado e devolvido pra ela corrigir na mesma conversa — em vez de gerar um widget quebrado.
+- **Insights**: peça uma análise e ela pode devolver um widget de **texto** com o que os números mostram — que fica salvo na guia como qualquer outro widget.
+- **Acesso**: a conversa só alcança fontes que você já veria no Builder daquela pasta (as mesmas regras de 3.7 e 3.12 valem, sem exceção).
+- **Custo e limite**: cada interação custa centavos e o painel mostra, no canto, quanto você já gastou hoje e qual o limite diário. Batendo o limite, o campo de mensagem bloqueia até o dia seguinte (ajustável em `AI_DAILY_BUDGET_USD`).
+- **Trocar de fontes**: a seleção trava depois da primeira mensagem — para mudar, comece uma conversa nova. As conversas ficam só em memória e expiram em 2 horas; nada de transcrição salva em disco.
+- **Requisito de configuração**: a variável `ANTHROPIC_API_KEY` no servidor. Sem ela o botão continua aparecendo, mas o painel avisa que a IA não está configurada; o resto do app não é afetado.
+
 ### 3.8 Como os dados são atualizados
 
 - Um processo separado ("agendador de ETL") roda o ciclo base de atualização a cada poucos minutos (hoje, 2 minutos por padrão). Nesse ciclo, cada fonte de segundo plano — query SQL (3.7) ou dataset do Data Hub (3.7-ter) — decide se é a vez dela de rodar. Planilhas do Google não entram nesse ciclo: elas dependem do login de quem está usando, e por isso são resolvidas dentro da requisição (3.7-bis).

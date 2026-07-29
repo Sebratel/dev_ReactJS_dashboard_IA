@@ -13,8 +13,9 @@ import { noOverlapCompactor } from 'react-grid-layout/core'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 import {
-  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette,
+  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles,
 } from 'lucide-react'
+import { AiPanel } from './ai/AiPanel'
 import { cn } from '@/utils/cn'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { fetchSources } from './builderApi'
@@ -81,6 +82,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // painel e da barra de edição) persistem algo de fato.
   const [previewWidget, setPreviewWidget] = useState<WidgetConfig | null>(null)
   const closeWidgetModal = () => { setWidgetModal({ open: false, widget: null }); setPreviewWidget(null) }
+  const [aiPanelOpen, setAiPanelOpen] = useState(false)
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [tabManagerOpen, setTabManagerOpen] = useState(false)
   const [canvasModalOpen, setCanvasModalOpen] = useState(false)
@@ -227,6 +229,21 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
       return { ...t, widgets: [...t.widgets, { ...widget, layout: { ...widget.layout, x, y } }] }
     })
     closeWidgetModal()
+  }
+
+  // Widgets propostos pela IA e aprovados pelo usuário (ver ai/AiPanel.tsx).
+  // Entram como rascunho, exatamente como um widget feito à mão: só o "Salvar"
+  // da barra de edição persiste. Cada um acha o próprio espaço livre — e a
+  // lista cresce a cada iteração, senão todos nasceriam na mesma posição.
+  const applyAiWidgets = (widgets: WidgetConfig[]) => {
+    updateTab((t) => {
+      let placed = t.widgets
+      for (const w of widgets) {
+        const { x, y } = findFreeSpot(placed, w.layout.w, w.layout.h)
+        placed = [...placed, { ...w, layout: { ...w.layout, x, y } }]
+      }
+      return { ...t, widgets: placed }
+    })
   }
 
   // Ajuste rápido de UM widget sem passar pelo painel de edição (hoje só usado
@@ -389,7 +406,12 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           ) : (
             <>
               {canEditCurrentTab && (
-                <button onClick={() => refreshSources().then(() => setWidgetModal({ open: true, widget: null }))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Plus size={11} /> Widget</button>
+                <>
+                  <button onClick={() => refreshSources().then(() => setWidgetModal({ open: true, widget: null }))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Plus size={11} /> Widget</button>
+                  {/* Mesma permissão do "+ Widget": quem pode adicionar widget
+                      nesta guia pode pedir pra IA montar. */}
+                  <button onClick={() => refreshSources().then(() => setAiPanelOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
+                </>
               )}
               {canManageDashboard && (
                 <>
@@ -528,6 +550,9 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
       )}
       {themeModalOpen && (
         <ThemePickerModal initialThemeId={detectAppliedTheme(tab.widgets)} onApply={applyTheme} onClose={() => setThemeModalOpen(false)} />
+      )}
+      {aiPanelOpen && (
+        <AiPanel folderId={folderId} onApply={applyAiWidgets} onClose={() => setAiPanelOpen(false)} />
       )}
       {confirmState && (
         <ConfirmDialog

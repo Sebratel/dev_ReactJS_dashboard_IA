@@ -30,6 +30,7 @@ import {
   sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
 } from './lakehouseSources.mjs'
 import { listFieldDictionary, upsertFieldDescription } from './fieldDictionary.mjs'
+import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
   getFolder, getTab, hasFolderAccess, canManageFolder, canEditTabWidgets,
@@ -673,6 +674,74 @@ app.patch('/api/lakehouse-sources/:id/folders', requireAuth(), requireAdmin(), (
 // aceita qualquer string de fonte, não é específico de SQL.
 app.get('/api/lakehouse-sources/:id/usage', requireAuth(), (req, res) => {
   res.json({ folders: findFoldersUsingQuery(lakehouseSourceKey(req.params.id)) })
+})
+
+// ─── Montagem com IA (server/aiAssistant.mjs) ─────────────────────
+// A IA propõe WidgetConfig; nada é gravado por estas rotas. Quem aplica na
+// guia é o usuário, e mesmo aí é rascunho até ele clicar em "Salvar".
+app.get('/api/ai/status', requireAuth(), (req, res) => {
+  res.json(usageFor(req.user.email))
+})
+
+// Abre a conversa amarrada a uma pasta + um conjunto de fontes. O acesso à
+// pasta é checado aqui, e listSourceDefs já respeita o folderIds de cada
+// fonte — então a conversa nunca alcança dado que o usuário não veria no
+// Builder.
+app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
+  try {
+    if (!isAiConfigured()) {
+      return res.status(503).json({ error: 'Montagem com IA não configurada no servidor (falta ANTHROPIC_API_KEY).' })
+    }
+    const { folderId, sourceKeys } = req.body || {}
+    const folder = getFolder(folderId)
+    if (!folder) return res.status(404).json({ error: 'Pasta não encontrada.' })
+    if (!hasFolderAccess(folder, req.user.email)) return res.status(403).json({ error: 'Sem acesso a esta pasta.' })
+    if (!Array.isArray(sourceKeys) || sourceKeys.length === 0) {
+      return res.status(400).json({ error: 'Selecione pelo menos uma fonte de dados.' })
+    }
+    const started = await startConversation({
+      email: req.user.email, folderId, sourceKeys, accessToken: req.accessToken,
+    })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'ai.conversation.start', target: started.conversationId, meta: { folderId, sources: started.sources.map((s) => s.key) } })
+    res.json(started)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Um turno da conversa, em streaming (SSE). Resposta longa e incremental: o
+// texto aparece digitando e os widgets chegam como um evento próprio.
+app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
+  const { text } = req.body || {}
+  if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  // Sem isto o nginx BUFFERIZA a resposta inteira e o streaming não chega ao
+  // navegador em produção — a pessoa veria a tela parada e a resposta toda de
+  // uma vez no fim (ver docker/nginx.conf).
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  let closed = false
+  req.on('close', () => { closed = true })
+  const emit = (event) => {
+    if (closed) return
+    res.write(`data: ${JSON.stringify(event)}\n\n`)
+  }
+
+  try {
+    await runTurn({
+      conversationId: req.params.id, email: req.user.email, userText: String(text),
+      accessToken: req.accessToken, emit,
+    })
+  } catch (e) {
+    console.error(`[ai] turno falhou: ${e.message}`)
+    emit({ type: 'error', message: e.message })
+  } finally {
+    if (!closed) res.end()
+  }
 })
 
 // ─── Dicionário de dados (descrição/origem por coluna) ────────────

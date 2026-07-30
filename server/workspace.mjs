@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { isAdmin, isKnownUser, resolveUsers, listKnownEmails } from './accessLog.mjs'
-import { createWelcomeTab } from '../src/features/builder/defaultConfig.ts'
+import { createWelcomeTab, LEGACY_WELCOME_TEXTS, CURRENT_WELCOME_TEXT } from '../src/features/builder/defaultConfig.ts'
 
 const WORKSPACE_PATH = process.env.WORKSPACE_PATH
   ? resolve(process.env.WORKSPACE_PATH)
@@ -81,11 +81,50 @@ function buildInitialWorkspace() {
   return { version: 1, folders: [folder] }
 }
 
+// Atualiza o texto da guia de boas-vindas de dashboards que já existiam.
+// `createWelcomeTab` só roda na CRIAÇÃO, então sem isto uma dashboard antiga
+// ficaria para sempre com o texto que ensina o caminho manual e cita o
+// catálogo de queries (que não existe mais).
+//
+// Conservadora de propósito: só troca quando o conteúdo salvo é EXATAMENTE um
+// dos textos que o app já gerou (LEGACY_WELCOME_TEXTS). Qualquer edição feita
+// por alguém — mesmo um espaço a mais — faz o texto deixar de casar, e aí ele
+// é preservado. Devolve quantos widgets foram atualizados.
+function migrateWelcomeText(ws) {
+  let updated = 0
+  for (const folder of ws.folders ?? []) {
+    for (const dashboard of folder.dashboards ?? []) {
+      for (const tab of dashboard.tabs ?? []) {
+        if (!tab.isWelcome) continue
+        for (const widget of tab.widgets ?? []) {
+          if (widget.type !== 'text') continue
+          if (!LEGACY_WELCOME_TEXTS.includes(widget.content)) continue
+          widget.content = CURRENT_WELCOME_TEXT
+          updated += 1
+        }
+      }
+    }
+  }
+  return updated
+}
+
 function loadWorkspace() {
   if (existsSync(WORKSPACE_PATH)) {
     try {
-      const ws = JSON.parse(readFileSync(WORKSPACE_PATH, 'utf8'))
-      if (ws && Array.isArray(ws.folders)) return ws
+      // Guarda o texto ORIGINAL antes de parsear: é ele que vira o backup se a
+      // migração mexer em algo (o objeto é mutado no lugar, então salvá-lo
+      // depois gravaria a versão nova como "backup").
+      const raw = readFileSync(WORKSPACE_PATH, 'utf8')
+      const ws = JSON.parse(raw)
+      if (ws && Array.isArray(ws.folders)) {
+        const migrated = migrateWelcomeText(ws)
+        if (migrated > 0) {
+          try { writeFileSync(`${WORKSPACE_PATH}.bak`, raw, 'utf8') } catch { /* backup é bônus, não bloqueia */ }
+          saveWorkspace(ws)
+          console.log(`[workspace] texto de boas-vindas atualizado em ${migrated} guia(s) — backup do anterior em ${WORKSPACE_PATH}.bak`)
+        }
+        return ws
+      }
       throw new Error('formato inválido — "folders" (array) ausente')
     } catch (e) {
       console.error(`[workspace] arquivo corrompido (${e.message}) — recriando a partir do padrão`)

@@ -8,54 +8,51 @@ function genId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
 }
 
-// Texto de boas-vindas. Reescrito para começar pelo caminho da IA: a versão
-// anterior abria ensinando "+ Widget → escolha o tipo → escolha a fonte →
-// diga o que vai no eixo X e no eixo Y", ou seja, exigia entender vocabulário
-// de BI antes de ver o primeiro gráfico. Montar à mão continua documentado,
-// como o segundo caminho.
-const WELCOME_TEXT = `Bem-vindo(a) ao Indicadores Sebratel! 👋
+// Texto de boas-vindas. Registro corporativo: sem emoji, sem diminutivo, frases
+// diretas — mas sem jargão de BI ("dimensão", "medida", "eixo X"), que é o que
+// tornava a primeira tela intimidante. Profissional e acessível não são
+// opostos: o que se evita aqui é o tom de conversa informal, não a clareza.
+const WELCOME_TEXT = `INDICADORES SEBRATEL
 
-Aqui você monta as suas telas de indicadores conversando — do jeito que você falaria com um colega.
+Plataforma interna para acompanhamento de indicadores operacionais. As telas são montadas pelas próprias áreas, descrevendo o que precisa ser acompanhado — sem depender de desenvolvimento.
 
-💬 COMECE PERGUNTANDO
-Em qualquer guia vazia (ou no botão "IA", no modo de edição), escreva o que você quer ver. Por exemplo:
-- "Quais são os principais indicadores destes dados?"
-- "Analise o churn e me mostre onde estão os problemas."
-- "Compare o volume por mês e destaque o que mudou."
+COMO MONTAR UMA TELA
 
-A IA lê os dados disponíveis, monta os gráficos e te mostra a proposta. Você aprova o que gostou e descarta o resto — nada entra na tela sem o seu ok.
+Em uma guia sem conteúdo, ou pelo botão "IA" no modo de edição, descreva o que você precisa visualizar. Por exemplo:
 
-Depois de aprovado, todo gráfico é normal: dá pra editar, trocar cor, mudar o tipo, do jeito que você quiser.
+- Quais são os principais indicadores destes dados?
+- Analise o churn e identifique onde estão as maiores perdas.
+- Compare o volume por mês e destaque as variações relevantes.
 
-📁 COMO TUDO SE ORGANIZA
-Pense em 3 gavetas, uma dentro da outra:
-- Pasta → o seu setor (ex. Comercial, Instalação, Financeiro), no menu à esquerda.
-- Dashboard → uma tela dentro da pasta.
-- Guia → uma aba dentro da dashboard, como esta aqui, "Boas-vindas".
+A IA consulta os dados disponíveis, monta os gráficos e apresenta a proposta para aprovação. Nada é aplicado à tela sem a sua confirmação.
 
-🔒 QUEM VÊ O QUÊ
-- Administradores veem qualquer pasta, sempre.
-- Gerentes cuidam do próprio setor.
-- Você vê o que foi liberado especialmente para você.
+Gráficos aprovados são editáveis como qualquer outro: tipo de visual, campos, cores e formatação. Para configurar cada detalhe desde o início, o botão "+ Widget" abre o editor manual.
 
-Uma guia nova nasce fechada, até alguém liberar o acesso — só esta aqui, a de boas-vindas, fica sempre aberta.
+ESTRUTURA
 
-✏️ MODO DE EDIÇÃO
-O botão "Editar dashboard", no canto de cima, libera os controles:
-- IA → conversa para montar os gráficos (o caminho mais rápido).
-- + Widget → monta um gráfico à mão, se você preferir escolher tudo.
-- Filtro → adiciona um filtro no topo da tela (ex. período, cidade).
-- Abas, Formato e Temas → organizam as guias, o tamanho da tela e as cores.
+- Pasta: a área ou setor (Comercial, Instalação, Financeiro), no menu lateral.
+- Dashboard: uma tela dentro da pasta.
+- Guia: uma aba dentro da dashboard, como esta.
 
-Fique tranquilo(a): nada é salvo até você clicar em "Salvar". Não gostou? "Descartar" desfaz tudo.
+PERMISSÕES
 
-📦 DE ONDE VÊM OS DADOS
-Os dados chegam do Data Hub, cadastrados em Configurações. Sentiu falta de alguma informação? Fale com um administrador para publicar o conjunto de dados que você precisa.
+- Administradores acessam todas as pastas.
+- Gerentes administram o próprio setor.
+- Demais usuários acessam o que lhes for liberado.
 
-💬 FICOU ALGUMA DÚVIDA?
-Fale com o gerente do seu setor ou com um administrador — eles ajudam com acessos e com qualquer dúvida.
+Guias novas nascem restritas até que o acesso seja concedido. Esta guia permanece sempre visível.
 
-Agora é sua vez: diga o que você quer ver. 🚀`
+EDIÇÃO
+
+O botão "Editar dashboard" libera os controles da tela: IA, + Widget, Filtro, Abas, Formato e Temas. Nenhuma alteração é gravada até que você clique em "Salvar"; "Descartar" reverte as alterações não salvas.
+
+ORIGEM DOS DADOS
+
+Os conjuntos de dados são publicados no Data Hub e cadastrados em Configurações. Para incluir uma informação ainda não disponível, solicite a publicação a um administrador.
+
+SUPORTE
+
+Dúvidas sobre acesso ou utilização: consulte o gerente da sua área ou um administrador.`
 
 // Versões anteriores do texto de boas-vindas, para a migração em
 // server/workspace.mjs. A regra é: só substitui quando o conteúdo salvo é
@@ -112,9 +109,66 @@ Tudo que aparece pra você escolher já vem pronto do catálogo de Configuraçõ
 Sem problema! Fale com o gerente do seu setor ou com um administrador — eles te ajudam com acessos e com qualquer dúvida que aparecer.
 
 Agora é sua vez: explore, clique, e monte a dashboard que faz sentido para o seu dia a dia! 🚀`,
+
+  // v2 — já começava pela IA (a correção que importava), mas manteve o tom
+  // informal da v1: emoji em cada seção, "fique tranquilo(a)", "do jeito que
+  // você falaria com um colega". Ficou acessível e pouco profissional.
+  `Bem-vindo(a) ao Indicadores Sebratel! 👋
+
+Aqui você monta as suas telas de indicadores conversando — do jeito que você falaria com um colega.
+
+💬 COMECE PERGUNTANDO
+Em qualquer guia vazia (ou no botão "IA", no modo de edição), escreva o que você quer ver. Por exemplo:
+- "Quais são os principais indicadores destes dados?"
+- "Analise o churn e me mostre onde estão os problemas."
+- "Compare o volume por mês e destaque o que mudou."
+
+A IA lê os dados disponíveis, monta os gráficos e te mostra a proposta. Você aprova o que gostou e descarta o resto — nada entra na tela sem o seu ok.
+
+Depois de aprovado, todo gráfico é normal: dá pra editar, trocar cor, mudar o tipo, do jeito que você quiser.
+
+📁 COMO TUDO SE ORGANIZA
+Pense em 3 gavetas, uma dentro da outra:
+- Pasta → o seu setor (ex. Comercial, Instalação, Financeiro), no menu à esquerda.
+- Dashboard → uma tela dentro da pasta.
+- Guia → uma aba dentro da dashboard, como esta aqui, "Boas-vindas".
+
+🔒 QUEM VÊ O QUÊ
+- Administradores veem qualquer pasta, sempre.
+- Gerentes cuidam do próprio setor.
+- Você vê o que foi liberado especialmente para você.
+
+Uma guia nova nasce fechada, até alguém liberar o acesso — só esta aqui, a de boas-vindas, fica sempre aberta.
+
+✏️ MODO DE EDIÇÃO
+O botão "Editar dashboard", no canto de cima, libera os controles:
+- IA → conversa para montar os gráficos (o caminho mais rápido).
+- + Widget → monta um gráfico à mão, se você preferir escolher tudo.
+- Filtro → adiciona um filtro no topo da tela (ex. período, cidade).
+- Abas, Formato e Temas → organizam as guias, o tamanho da tela e as cores.
+
+Fique tranquilo(a): nada é salvo até você clicar em "Salvar". Não gostou? "Descartar" desfaz tudo.
+
+📦 DE ONDE VÊM OS DADOS
+Os dados chegam do Data Hub, cadastrados em Configurações. Sentiu falta de alguma informação? Fale com um administrador para publicar o conjunto de dados que você precisa.
+
+💬 FICOU ALGUMA DÚVIDA?
+Fale com o gerente do seu setor ou com um administrador — eles ajudam com acessos e com qualquer dúvida.
+
+Agora é sua vez: diga o que você quer ver. 🚀`,
 ]
 
 export const CURRENT_WELCOME_TEXT = WELCOME_TEXT
+
+// Alturas na grade que o app já gerou para a guia de boas-vindas. A migração
+// só redimensiona quando a atual é uma destas — quem arrastou a borda pra
+// escolher outro tamanho não é sobrescrito.
+//
+// 12 esteve aqui por engano: contei as LINHAS do texto e concluí que 14 dava
+// folga demais, mas os parágrafos longos quebram em várias linhas na tela e o
+// card cortou a última seção. 14 é a altura que cabe o texto inteiro.
+export const LEGACY_WELCOME_HEIGHTS: number[] = [12]
+export const CURRENT_WELCOME_HEIGHT = 14
 
 export function createWelcomeTab(): TabConfig {
   return {

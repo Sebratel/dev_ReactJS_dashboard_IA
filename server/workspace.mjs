@@ -13,7 +13,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { isAdmin, isKnownUser, resolveUsers, listKnownEmails } from './accessLog.mjs'
-import { createWelcomeTab, LEGACY_WELCOME_TEXTS, CURRENT_WELCOME_TEXT } from '../src/features/builder/defaultConfig.ts'
+import { createWelcomeTab, LEGACY_WELCOME_TEXTS, CURRENT_WELCOME_TEXT, LEGACY_WELCOME_HEIGHTS, CURRENT_WELCOME_HEIGHT } from '../src/features/builder/defaultConfig.ts'
 
 const WORKSPACE_PATH = process.env.WORKSPACE_PATH
   ? resolve(process.env.WORKSPACE_PATH)
@@ -98,9 +98,25 @@ function migrateWelcomeText(ws) {
         if (!tab.isWelcome) continue
         for (const widget of tab.widgets ?? []) {
           if (widget.type !== 'text') continue
-          if (!LEGACY_WELCOME_TEXTS.includes(widget.content)) continue
-          widget.content = CURRENT_WELCOME_TEXT
-          updated += 1
+          let changed = false
+
+          if (LEGACY_WELCOME_TEXTS.includes(widget.content)) {
+            widget.content = CURRENT_WELCOME_TEXT
+            changed = true
+          }
+
+          // Altura é checada SEPARADAMENTE do conteúdo: uma guia que já foi
+          // migrada numa rodada anterior tem o texto atual mas a altura antiga,
+          // e cairia de fora se isto dependesse do texto ainda ser legado. Só
+          // redimensiona quando a altura é uma das que o app gerou — quem
+          // arrastou a borda mantém o tamanho que escolheu.
+          if (widget.content === CURRENT_WELCOME_TEXT
+            && LEGACY_WELCOME_HEIGHTS.includes(widget.layout?.h)) {
+            widget.layout.h = CURRENT_WELCOME_HEIGHT
+            changed = true
+          }
+
+          if (changed) updated += 1
         }
       }
     }

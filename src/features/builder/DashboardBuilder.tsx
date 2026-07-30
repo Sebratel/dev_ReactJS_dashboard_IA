@@ -394,7 +394,11 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   if (!dashboard || !tab) return null
 
   return (
-    <div className="space-y-4 animate-slide-up">
+    // O painel da IA é `fixed` na direita: sem abrir espaço aqui, ele cobria a
+    // barra de ferramentas (Abas/Formato/Temas/Salvar/Descartar). Em telas
+    // estreitas o painel ocupa quase tudo e não há o que reservar, por isso o
+    // recuo só vale a partir de lg.
+    <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', aiPanelOpen && 'lg:pr-[31rem]')}>
       {/* Barra de abas + controles de edição */}
       <div className="flex items-center justify-between gap-3 border-b border-app-border">
         <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mb-px scrollbar-thin">
@@ -487,7 +491,10 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         >
           {mounted && (
             displayWidgets.length === 0 ? (
-              canEditCurrentTab ? (
+              // `!aiPanelOpen`: com o painel aberto, o convite vira uma SEGUNDA
+              // entrada para a mesma coisa — dois campos de texto e dois
+              // conjuntos de sugestões na tela ao mesmo tempo.
+              canEditCurrentTab && !aiPanelOpen ? (
                 // Guia vazia convida a conversar, não a montar. Quem não pode
                 // editar continua vendo só o aviso — não há o que oferecer.
                 <AiEmptyState
@@ -538,7 +545,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               pelo contador de widgets, mas também não tem nenhum indicador —
               é justamente o primeiro contato de quem abre a dashboard. Aí o
               convite entra ABAIXO do conteúdo, em vez de substituí-lo. */}
-          {mounted && displayWidgets.length > 0 && canEditCurrentTab
+          {mounted && displayWidgets.length > 0 && canEditCurrentTab && !aiPanelOpen
             && displayWidgets.every((w) => w.type === 'text') && (
             <div className="mt-4">
               <AiEmptyState

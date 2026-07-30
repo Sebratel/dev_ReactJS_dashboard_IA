@@ -1,21 +1,24 @@
-// Convite da guia vazia — o primeiro contato de quem abre uma dashboard nova.
+// Convite da guia vazia — o primeiro contato de quem abre uma dashboard.
 //
-// A intenção aqui é inverter a hierarquia da tela: em vez de "clique em
-// + Widget para adicionar o primeiro gráfico" (que exige entender fonte,
-// dimensão e medida antes de ver qualquer coisa), a guia vazia pergunta o que
-// a pessoa quer ver. Montar à mão continua disponível no botão de sempre —
-// deixou de ser o caminho principal, não deixou de existir.
+// A intenção é inverter a hierarquia da tela: em vez de "clique em + Widget
+// para adicionar o primeiro gráfico" (que exige entender fonte, dimensão e
+// medida antes de ver qualquer coisa), a guia pergunta o que a pessoa quer
+// ver. Montar à mão continua disponível — deixou de ser o caminho principal,
+// não deixou de existir.
+//
+// Só é renderizado quando o painel lateral está FECHADO (ver DashboardBuilder):
+// os dois juntos seriam duas entradas para a mesma coisa.
 import { useEffect, useState } from 'react'
-import { Sparkles, ArrowRight, Plus } from 'lucide-react'
+import { Sparkles, ArrowRight, Plus, BarChart3, TrendingUp, LayoutGrid } from 'lucide-react'
 import { fetchAiStatus } from './aiApi'
 
 // Sugestões escritas como a pessoa fala, não como o app pensa: nenhuma
-// menciona "dimensão", "medida" ou "fonte".
+// menciona "dimensão", "medida" ou "fonte". O ícone dá uma pista do formato
+// do resultado antes de clicar.
 const SUGGESTIONS = [
-  'Quais são os principais indicadores destes dados?',
-  'Analise o churn e me mostre onde estão os problemas.',
-  'Compare o volume por mês e destaque o que mudou.',
-  'Monte uma visão executiva com 4 números e 2 gráficos.',
+  { icon: LayoutGrid, text: 'Quais são os principais indicadores destes dados?' },
+  { icon: TrendingUp, text: 'Analise o churn e identifique onde estão as maiores perdas.' },
+  { icon: BarChart3, text: 'Compare o volume por mês e destaque as variações relevantes.' },
 ]
 
 export function AiEmptyState({ onAsk, onManual }: {
@@ -39,67 +42,79 @@ export function AiEmptyState({ onAsk, onManual }: {
   if (!aiAvailable) {
     // Sem IA configurada no servidor, o convite seria uma promessa falsa.
     return (
-      <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
-        Guia vazia.{' '}
-        <button onClick={onManual} className="font-semibold text-brand-blue hover:underline">
-          Adicione o primeiro gráfico
+      <div className="rounded-xl border border-dashed border-app-border px-5 py-14 text-center">
+        <p className="text-sm text-gray-400">Esta guia ainda não tem nenhum gráfico.</p>
+        <button
+          onClick={onManual}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-brand-blue px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-brand-blueLight"
+        >
+          <Plus size={13} /> Adicionar o primeiro gráfico
         </button>
-        .
       </div>
     )
   }
 
   return (
-    <div className="rounded-2xl border border-app-border bg-app-card px-6 py-10 sm:px-10 sm:py-14">
-      <div className="mx-auto max-w-xl space-y-5">
-        <div className="space-y-1.5 text-center">
-          <div className="flex items-center justify-center gap-2">
-            <Sparkles size={18} className="text-brand-cyan" />
-            <h2 className="text-base font-bold text-white">O que você quer ver nesta tela?</h2>
-          </div>
-          <p className="text-[12px] text-gray-400">
-            Descreva em português. A IA monta os gráficos com os seus dados e você aprova antes de aplicar.
+    <div className="rounded-2xl border border-app-border bg-app-card px-6 py-12 sm:px-10">
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-7 text-center">
+          <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-brand-cyan/10 ring-1 ring-brand-cyan/25">
+            <Sparkles size={20} className="text-brand-cyan" />
+          </span>
+          <h2 className="text-lg font-semibold tracking-tight text-white">O que você quer ver nesta tela?</h2>
+          <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-relaxed text-gray-400">
+            Descreva em português. A IA monta os gráficos com os seus dados e apresenta para aprovação —
+            nada é aplicado sem a sua confirmação.
           </p>
         </div>
 
         <form
           onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAsk(text.trim()) }}
-          className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface px-3 py-2 focus-within:border-brand-blue/50"
+          className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface px-3.5 py-2.5 shadow-sm transition-colors focus-within:border-brand-blue/60"
         >
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
             autoFocus
-            placeholder="ex.: analise o churn e mostre onde estão os problemas"
-            className="flex-1 bg-transparent text-sm text-gray-200 placeholder:text-gray-500 outline-none"
+            placeholder="ex.: analise o churn e mostre onde estão as maiores perdas"
+            className="flex-1 bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
           />
           <button
             type="submit"
             disabled={!text.trim()}
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-blue text-white hover:bg-brand-blueLight disabled:opacity-40"
+            aria-label="Enviar"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-blue text-white transition-colors hover:bg-brand-blueLight disabled:opacity-30"
           >
             <ArrowRight size={15} />
           </button>
         </form>
 
-        <div className="flex flex-wrap justify-center gap-1.5">
-          {SUGGESTIONS.map((s) => (
+        {/* Sugestões em lista, não em "pílulas": frases inteiras ficam legíveis
+            e o alvo de clique é a linha toda, não um texto apertado. */}
+        <div className="mt-3 grid gap-1.5">
+          {SUGGESTIONS.map(({ icon: Icon, text: s }) => (
             <button
               key={s}
               onClick={() => onAsk(s)}
-              className="rounded-full border border-app-border px-3 py-1.5 text-[11px] text-gray-300 transition-colors hover:border-brand-cyan/50 hover:text-brand-cyan"
+              className="group flex items-center gap-2.5 rounded-lg border border-app-border/70 bg-app-surface/40 px-3.5 py-2.5 text-left text-[12px] text-gray-300 transition-colors hover:border-brand-cyan/40 hover:bg-app-surface hover:text-gray-100"
             >
-              {s}
+              <Icon size={14} className="shrink-0 text-gray-500 transition-colors group-hover:text-brand-cyan" />
+              <span className="min-w-0 flex-1">{s}</span>
+              <ArrowRight size={13} className="shrink-0 text-transparent transition-colors group-hover:text-brand-cyan" />
             </button>
           ))}
         </div>
 
-        <p className="pt-1 text-center text-[11px] text-gray-500">
-          Prefere montar você mesmo?{' '}
-          <button onClick={onManual} className="inline-flex items-center gap-1 font-semibold text-gray-300 hover:text-brand-blue">
-            <Plus size={11} /> Adicionar gráfico manualmente
+        <div className="mt-7 flex items-center gap-3">
+          <span className="h-px flex-1 bg-app-border" />
+          <button
+            onClick={onManual}
+            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-gray-500 transition-colors hover:text-gray-300"
+          >
+            <Plus size={11} /> Prefiro montar o gráfico manualmente
           </button>
-        </p>
+          <span className="h-px flex-1 bg-app-border" />
+        </div>
       </div>
     </div>
   )

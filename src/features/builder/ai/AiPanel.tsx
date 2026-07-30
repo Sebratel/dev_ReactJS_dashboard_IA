@@ -30,10 +30,12 @@ const TOOL_LABEL: Record<string, string> = {
   propose_widgets: 'montando a proposta',
 }
 
+// Mesmas frases do convite da guia vazia (ai/AiEmptyState.tsx): a pessoa que
+// clicou no botão "IA" vindo de lá deve reconhecer as opções.
 const SUGGESTIONS = [
-  'Monte uma tela com os principais indicadores desta fonte.',
-  'Quais são os 3 gargalos que os dados mostram?',
-  'Compare o volume por equipe nos últimos meses.',
+  'Quais são os principais indicadores destes dados?',
+  'Analise o churn e identifique onde estão as maiores perdas.',
+  'Compare o volume por mês e destaque as variações relevantes.',
 ]
 
 export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
@@ -159,23 +161,41 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
 
   return (
     <aside className="fixed right-0 top-0 z-40 flex h-svh w-[min(30rem,100vw)] flex-col border-l border-app-border bg-app-card shadow-card-lg">
-      <div className="flex items-center justify-between gap-2 border-b border-app-border px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Sparkles size={14} className="text-brand-cyan" />
-          <h2 className="text-xs font-bold uppercase tracking-wider text-white">Montar com IA</h2>
+      <header className="flex items-center justify-between gap-3 border-b border-app-border px-4 py-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-cyan/10 ring-1 ring-brand-cyan/25">
+            <Sparkles size={13} className="text-brand-cyan" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-[13px] font-semibold leading-tight text-white">Montar com IA</h2>
+            <p className="truncate text-[10px] leading-tight text-gray-500">
+              {conversationId ? 'Conversa em andamento' : 'Descreva o que quer ver'}
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {status && status.budgetUsd > 0 && (
+            // Gasto do dia como badge discreto: informação de contexto, não o
+            // protagonista do cabeçalho — vira alerta só ao estourar.
             <span
-              className={cn('font-mono text-[10px]', overBudget ? 'text-risk-critical' : 'text-gray-500')}
-              title="Gasto de IA hoje, e o limite diário por usuário (AI_DAILY_BUDGET_USD)"
+              className={cn(
+                'rounded-md px-1.5 py-0.5 font-mono text-[10px]',
+                overBudget ? 'bg-risk-critical/15 text-risk-critical' : 'bg-app-surface text-gray-500',
+              )}
+              title="Gasto de IA hoje e o limite diário por usuário (AI_DAILY_BUDGET_USD)"
             >
-              US$ {status.spentUsd.toFixed(2)}/{status.budgetUsd.toFixed(2)}
+              {status.spentUsd.toFixed(2)}/{status.budgetUsd.toFixed(0)}
             </span>
           )}
-          <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-500 hover:text-gray-200"><X size={14} /></button>
+          <button
+            onClick={onClose}
+            aria-label="Fechar"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-app-surface hover:text-gray-200"
+          >
+            <X size={14} />
+          </button>
         </div>
-      </div>
+      </header>
 
       {statusError && (
         <p className="flex items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-risk-critical">
@@ -192,15 +212,15 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
       {/* Seleção de fontes: trava depois do 1º turno, porque o catálogo faz
           parte do prefixo cacheado da conversa — trocar no meio invalidaria o
           cache e confundiria o modelo. Para trocar, é conversa nova. */}
-      <div className="border-b border-app-border px-4 py-3">
-        <div className="mb-1.5 flex items-center gap-1.5">
+      <div className="border-b border-app-border bg-app-surface/30 px-4 py-3">
+        <div className="mb-2 flex items-center gap-1.5">
           <Database size={11} className="text-gray-500" />
-          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-300">
-            {conversationId ? 'Fontes desta conversa' : 'Fontes que a IA pode usar'}
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            {conversationId ? 'Fontes desta conversa' : 'Dados que a IA pode usar'}
           </span>
         </div>
         {sources.length === 0 ? (
-          <p className="text-[10px] text-gray-500">Nenhuma fonte disponível nesta pasta.</p>
+          <p className="text-[11px] text-gray-500">Nenhuma fonte disponível nesta pasta.</p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {sources.map((s) => {
@@ -211,42 +231,58 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
                   type="button"
                   disabled={!!conversationId}
                   onClick={() => toggleSource(s.key)}
-                  title={`${s.fields.length} campos`}
+                  title={`${s.fields.length} campos disponíveis`}
                   className={cn(
-                    'rounded-lg border px-2 py-1 text-[10px] font-medium transition-colors',
-                    on ? 'border-brand-blue bg-brand-blue/10 text-brand-blue' : 'border-app-border text-gray-400',
-                    conversationId ? 'cursor-default opacity-70' : 'hover:border-brand-blue/50',
+                    'flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
+                    on
+                      ? 'border-brand-blue/60 bg-brand-blue/10 text-brand-blue'
+                      : 'border-app-border text-gray-400',
+                    conversationId ? 'cursor-default' : 'hover:border-brand-blue/50 hover:text-gray-200',
                   )}
                 >
+                  {/* Marca de seleção explícita: com uma fonte só pré-marcada,
+                      a cor sozinha não deixava claro que era um estado. */}
+                  <span className={cn(
+                    'flex h-3 w-3 shrink-0 items-center justify-center rounded-[3px] border transition-colors',
+                    on ? 'border-brand-blue bg-brand-blue text-white' : 'border-app-borderLight',
+                  )}
+                  >
+                    {on && <Check size={9} strokeWidth={3} />}
+                  </span>
                   {s.label}
                 </button>
               )
             })}
           </div>
         )}
-        <p className="mt-1.5 text-[10px] text-gray-500">
+        <p className="mt-2 text-[10px] leading-relaxed text-gray-500">
           {conversationId
-            ? 'Para mudar as fontes, comece uma conversa nova.'
-            : 'Só os NOMES e tipos dos campos vão para a IA — nunca as linhas de dados.'}
+            ? 'Para trocar as fontes, comece uma conversa nova.'
+            : 'Só os nomes e os tipos dos campos vão para a IA — nunca as linhas de dados.'}
         </p>
       </div>
 
       <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {turns.length === 0 && (
-          <div className="space-y-2">
-            <p className="text-[11px] text-gray-400">
-              Descreva o que você quer ver. A IA monta os widgets usando os campos reais das fontes marcadas e você aprova antes de ir pra guia.
+          <div className="space-y-3 pt-1">
+            <p className="text-[11px] leading-relaxed text-gray-400">
+              Descreva o que você precisa visualizar. A IA usa os campos reais das fontes marcadas
+              e apresenta a proposta para aprovação antes de aplicar na guia.
             </p>
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => send(s)}
-                disabled={!canChat || busy || overBudget}
-                className="block w-full rounded-lg border border-dashed border-app-border px-3 py-2 text-left text-[11px] text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-40"
-              >
-                {s}
-              </button>
-            ))}
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Sugestões</span>
+              {SUGGESTIONS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => send(s)}
+                  disabled={!canChat || busy || overBudget}
+                  className="group flex w-full items-center gap-2 rounded-lg border border-app-border/70 bg-app-surface/40 px-3 py-2.5 text-left text-[11px] leading-snug text-gray-300 transition-colors hover:border-brand-cyan/40 hover:bg-app-surface hover:text-gray-100 disabled:opacity-40 disabled:hover:border-app-border/70"
+                >
+                  <span className="min-w-0 flex-1">{s}</span>
+                  <Send size={11} className="shrink-0 text-transparent transition-colors group-hover:text-brand-cyan" />
+                </button>
+              ))}
+            </div>
           </div>
         )}
 

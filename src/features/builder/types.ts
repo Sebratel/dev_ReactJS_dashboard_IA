@@ -174,7 +174,21 @@ export interface WidgetConfig {
   // = paleta padrão do app. Só é preenchida ao aplicar um tema (ver
   // themePresets.ts); não tem editor próprio no WidgetEditorModal.
   palette?: string[]
+  // Leitura da IA FIXADA neste gráfico (botão "Fixar" no popover de leitura).
+  // Fica salva junto com a dashboard, então quem abrir depois lê sem gerar de
+  // novo. `fingerprint` é a impressão digital dos dados de quando o texto foi
+  // escrito: se não bater com o que está na tela agora (um ETL passou), a
+  // leitura é marcada como desatualizada em vez de continuar sendo exibida
+  // como se ainda valesse. Ver explainWidget.ts → fingerprintPoints.
+  insight?: PinnedInsight
   layout: WidgetLayout
+}
+
+export interface PinnedInsight {
+  text: string
+  at: string       // ISO — quando foi fixada
+  by?: string      // nome de quem fixou
+  fingerprint: string
 }
 
 export interface FilterConfig {

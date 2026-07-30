@@ -37,7 +37,7 @@ import { WIDGET_SCHEMA, PROPOSE_TOOL_SCHEMA, validateWidget, normalizeWidget } f
 // catálogo de campos e produzir JSON estruturado correto, onde errar custa a
 // confiança do usuário na feature. Trocável por env se você quiser medir
 // custo/qualidade com outro modelo.
-const MODEL = process.env.AI_MODEL || 'claude-opus-5'
+export const MODEL = process.env.AI_MODEL || 'claude-opus-5'
 // `high` é o padrão recomendado para trabalho sensível a inteligência. Vale
 // testar 'medium' e até 'low' depois com os seus casos reais — neste modelo os
 // níveis baixos rendem bem e são o principal controle de custo/latência.
@@ -67,7 +67,11 @@ const FIELD_VALUES_LIMIT = 40
 const PREVIEW_CHARS = 4000
 
 let client = null
-function anthropic() {
+// Exportado porque a leitura de gráfico (server/aiInsight.mjs) usa o MESMO
+// cliente, o MESMO modelo e — o que mais importa — o MESMO teto de gasto
+// diário. Um orçamento por feature seria um teto que não segura nada: o
+// usuário estouraria o dobro só por usar as duas.
+export function anthropic() {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY não configurada no ambiente da API — a montagem com IA fica indisponível.')
   }
@@ -123,7 +127,7 @@ export function usageFor(email) {
   return { spentUsd, budgetUsd: DAILY_BUDGET_USD, model: MODEL, configured: isAiConfigured() }
 }
 
-function assertWithinBudget(email) {
+export function assertWithinBudget(email) {
   if (!(DAILY_BUDGET_USD > 0)) return
   const { spentUsd } = usageFor(email)
   if (spentUsd >= DAILY_BUDGET_USD) {
@@ -133,7 +137,7 @@ function assertWithinBudget(email) {
   }
 }
 
-function recordSpend(email, usage) {
+export function recordSpend(email, usage) {
   const usd = costOf(usage)
   const entry = spendByUser.get(email)
   if (entry && entry.day === today()) entry.usd += usd

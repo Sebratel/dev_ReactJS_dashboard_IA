@@ -46,6 +46,27 @@ export async function startAiConversation(folderId: string, sourceKeys: string[]
   }))
 }
 
+export interface WidgetInsight {
+  text: string
+  usd: number
+  cached: boolean
+}
+
+// Leitura de um gráfico. Sem streaming: são três parágrafos, esperar por eles
+// inteiros é mais simples que montar SSE pra ganhar meio segundo.
+// `calc` são as linhas do "Como foi calculado" que a tela já está mostrando —
+// vão junto pra que o modelo interprete exatamente o gráfico que a pessoa vê.
+export async function fetchWidgetInsight(body: {
+  widget: WidgetConfig
+  tabFilters: unknown[]
+  calc: { label: string; value: string }[]
+  force?: boolean
+}): Promise<WidgetInsight> {
+  return parse(await apiFetch('/api/ai/insight', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }))
+}
+
 // Gerador dos eventos de um turno. Quem consome faz `for await (const ev of
 // streamAiTurn(...))` e reage a cada tipo.
 export async function* streamAiTurn(conversationId: string, text: string): AsyncGenerator<AiEvent> {

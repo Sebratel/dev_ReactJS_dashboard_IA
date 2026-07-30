@@ -30,6 +30,7 @@ import {
 } from './lakehouseSources.mjs'
 import { listFieldDictionary, upsertFieldDescription } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
+import { explainWidgetData } from './aiInsight.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
   getFolder, getTab, hasFolderAccess, canManageFolder, canEditTabWidgets,
@@ -618,6 +619,30 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
     emit({ type: 'error', message: e.message })
   } finally {
     if (!closed) res.end()
+  }
+})
+
+// Leitura de UM gráfico ("que história ele conta"). Uma ida só ao modelo,
+// sem streaming: são três parágrafos, chega junto. O "como foi calculado" que
+// acompanha a resposta na tela não passa por aqui — sai do WidgetConfig no
+// próprio navegador (ver src/features/builder/explainWidget.ts).
+app.post('/api/ai/insight', requireAuth(), async (req, res) => {
+  try {
+    if (!isAiConfigured()) {
+      return res.status(503).json({ error: 'Leitura com IA não configurada no servidor (falta ANTHROPIC_API_KEY).' })
+    }
+    const b = req.body || {}
+    const out = await explainWidgetData({
+      email: req.user.email,
+      widget: b.widget,
+      tabFilters: b.tabFilters ?? [],
+      calc: b.calc ?? [],
+      force: !!b.force,
+      accessToken: req.accessToken,
+    })
+    res.json(out)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
   }
 })
 

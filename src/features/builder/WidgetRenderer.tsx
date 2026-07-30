@@ -12,8 +12,9 @@ import { cn } from '@/utils/cn'
 import { getSourceDef } from './fieldCatalog'
 import { fetchWidgetData, ApiError } from './builderApi'
 import { WidgetCommentsPopover } from './WidgetCommentsPopover'
+import { WidgetInsightPopover } from './WidgetInsightPopover'
 import { resolveConditionalEffect } from './conditionalFormat'
-import type { ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFormat, FilterConfig, MatrixResult, SeriesMeta, TextFormat, WidgetConfig, WidgetDataPoint, WidgetDataResponse } from './types'
+import type { ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFormat, FilterConfig, MatrixResult, SeriesMeta, TextFormat, PinnedInsight, WidgetConfig, WidgetDataPoint, WidgetDataResponse } from './types'
 
 const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
 
@@ -409,10 +410,20 @@ interface WidgetRendererProps {
   // TableBody. Reporta o mapa completo de larguras a cada solto de coluna;
   // quem usa isso (DashboardBuilder) grava direto em tableFormat.columnWidths.
   onColumnWidthsChange?: (widths: Record<string, number>) => void
+  // Fixar/remover a leitura da IA deste gráfico (ver WidgetInsightPopover) —
+  // como o arrasto de coluna acima, o widget pede e o DashboardBuilder grava.
+  onPinInsight?: (insight: PinnedInsight | undefined) => void
 }
 
-function ChartFrame({ widget, editMode, onEdit, onRemove, onDuplicate, cardEffect, children }: {
+function ChartFrame({ widget, tabFilters, dataShape, editMode, onEdit, onRemove, onDuplicate, onPinInsight, cardEffect, children }: {
   widget: WidgetConfig; editMode: boolean; onEdit?: () => void; onRemove?: () => void; onDuplicate?: () => void
+  tabFilters: { filter: FilterConfig; values: string[] }[]
+  // Recorte do resultado que serve de impressão digital pra saber se uma
+  // leitura fixada envelheceu. Deliberadamente SEM as linhas paginadas da
+  // tabela: virar a página não muda o dado, e marcaria a leitura como
+  // desatualizada à toa.
+  dataShape: unknown
+  onPinInsight?: (insight: PinnedInsight | undefined) => void
   // Efeito já avaliado pelo motor de formatação condicional (ver
   // conditionalFormat.ts) contra o valor do KPI — ausente pros demais tipos
   // de widget (a coloração condicional deles é por barra/célula, não pelo
@@ -444,6 +455,10 @@ function ChartFrame({ widget, editMode, onEdit, onRemove, onDuplicate, cardEffec
           {widget.subtitle && <p className="text-[10px] text-gray-500 truncate" style={textFormatStyle(widget.subtitleFormat)}>{widget.subtitle}</p>}
         </div>
         <div className="flex items-center gap-1 shrink-0">
+          <WidgetInsightPopover
+            widget={widget} tabFilters={tabFilters} points={dataShape} editMode={editMode} onPin={onPinInsight}
+            iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined}
+          />
           <WidgetCommentsPopover widgetId={widget.id} iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined} />
           {editMode && (
             <>
@@ -988,7 +1003,7 @@ function TextBody({ content }: { content?: string }) {
 }
 
 // ─── Componente principal ────────────────────────────────────────
-export function WidgetRenderer({ widget, tabFilters, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange }: WidgetRendererProps) {
+export function WidgetRenderer({ widget, tabFilters, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight }: WidgetRendererProps) {
   const [data, setData] = useState<WidgetDataResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1001,6 +1016,9 @@ export function WidgetRenderer({ widget, tabFilters, editMode, refreshKey, onEdi
       axisXFormat: undefined, axisYFormat: undefined, matrixRowFormat: undefined, matrixColumnFormat: undefined, dataLabels: undefined,
       titleFormat: undefined, subtitleFormat: undefined, backgroundColor: undefined, backgroundOpacity: undefined, seriesOpacity: undefined,
       legendFormat: undefined, gridLines: undefined, iconColor: undefined, palette: undefined, tableFormat: undefined,
+      // Fixar uma leitura não muda o dado — sem isto, cada "Fixar" disparava
+      // uma consulta nova ao servidor de graça.
+      insight: undefined,
     },
     f: tabFilters.map((tf) => ({ id: tf.filter.id, v: tf.values })),
     page,
@@ -1060,8 +1078,15 @@ export function WidgetRenderer({ widget, tabFilters, editMode, refreshKey, onEdi
     ? resolveConditionalEffect(data.points[0]?.value ?? 0, widget.conditionalRules)
     : undefined
 
+  // Só o que representa o DADO, sem as linhas paginadas da tabela (virar a
+  // página não é mudança de dado — `total` já denuncia se a base mudou).
+  const dataShape = { points: data?.points, matrix: data?.matrix, total: data?.total }
+
   return (
-    <ChartFrame widget={widget} editMode={editMode} onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} cardEffect={cardEffect}>
+    <ChartFrame
+      widget={widget} tabFilters={tabFilters} dataShape={dataShape} editMode={editMode}
+      onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} onPinInsight={onPinInsight} cardEffect={cardEffect}
+    >
       {body}
     </ChartFrame>
   )

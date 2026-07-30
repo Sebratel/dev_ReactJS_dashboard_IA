@@ -534,6 +534,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                       onRemove={() => removeWidget(w.id)}
                       onDuplicate={() => duplicateWidget(w)}
                       onColumnWidthsChange={(columnWidths) => patchWidget(w.id, { tableFormat: { ...w.tableFormat, columnWidths } })}
+                      onPinInsight={(insight) => patchWidget(w.id, { insight })}
                     />
                   </div>
                 ))}

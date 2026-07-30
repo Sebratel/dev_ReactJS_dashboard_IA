@@ -17,6 +17,17 @@ import type { ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFor
 
 const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
 
+// Cor padrão dos rótulos de eixo. Antes eram dois hexadecimais fixos (#9ca3af e
+// #6b7280) escolhidos olhando só o tema escuro: no claro ficavam lavados sobre o
+// card branco, e o #6b7280 do eixo de medida chegava a ~3:1 de contraste NO
+// PRÓPRIO tema escuro. Passando pelas variáveis de tema, os dois modos ganham a
+// versão certa e o rótulo acompanha a troca de tema sem re-render — `var()` é
+// resolvido pelo navegador direto no atributo `fill` do <text>.
+// A categoria fica um passo mais clara que a medida: é o texto que se lê,
+// enquanto os números do eixo são referência de fundo.
+const AXIS_CATEGORY_FILL = 'rgb(var(--gray-500))'
+const AXIS_VALUE_FILL = 'rgb(var(--gray-600))'
+
 // ─── Formatação de texto (Título/Subtítulo, Eixo X/Y, Linhas/Colunas) ────
 
 // Converte #rrggbb + opacidade (0-100) em rgba(...) — usado em todo lugar que
@@ -43,6 +54,157 @@ function textFormatStyle(fmt: TextFormat | undefined): React.CSSProperties {
     color: fmt.color ? hexToRgba(fmt.color, fmt.opacity) : undefined,
     backgroundColor: fmt.backgroundColor ? hexToRgba(fmt.backgroundColor, fmt.backgroundOpacity) : undefined,
   }
+}
+
+// Tooltip único pra todos os gráficos. O padrão do Recharts é uma caixa branca
+// de borda clara: passável no tema claro, um bloco estourado no escuro. Como
+// tudo aqui é construído sobre as variáveis de tema, a mesma definição atende
+// os dois sem precisar saber qual está ativo.
+//
+// `maxWidth` + `whiteSpace: normal` fazem um rótulo longo quebrar em linhas em
+// vez de esticar a caixa pra fora do card — é aqui que o nome truncado no eixo
+// aparece por inteiro.
+const TOOLTIP_PROPS = {
+  contentStyle: {
+    backgroundColor: 'rgb(var(--app-card))',
+    border: '1px solid rgb(var(--app-border))',
+    borderRadius: 8,
+    boxShadow: '0 8px 24px rgb(0 0 0 / 0.18)',
+    padding: '8px 10px',
+    maxWidth: 260,
+    whiteSpace: 'normal' as const,
+  },
+  labelStyle: {
+    color: 'rgb(var(--gray-300))',
+    fontSize: 11,
+    fontWeight: 600,
+    marginBottom: 4,
+    whiteSpace: 'normal' as const,
+  },
+  itemStyle: { color: 'rgb(var(--gray-200))', fontSize: 11, padding: 0 },
+}
+
+// Rótulo de CATEGORIA no eixo vertical (barras horizontais), em uma linha só,
+// truncado ao que cabe na largura reservada do eixo.
+//
+// Sem isso, um nome longo — "Cancelamento de contrato - Endereço com pendência
+// - Justificativa: quando o endereço de ativação possui pendências..." — é
+// quebrado pelo Recharts em várias linhas, que invadem o espaço do rótulo
+// vizinho. Com meia dúzia de categorias assim o eixo vira um borrão ilegível,
+// que é exatamente o que acontecia em "Top motivos de cancelamento".
+//
+// O texto completo não se perde: vai num <title>, que o navegador mostra ao
+// passar o mouse. O rótulo truncado continua legível por si — a dica no hover
+// complementa, não é a única forma de ler.
+// Quantos caracteres cabem na faixa reservada. 0.58em por caractere é a média
+// medida no pior caso desta base (nomes de plano em CAIXA ALTA, que são mais
+// largos que a média de um texto normal) — com 0.55 o rótulo mais longo
+// estourava a faixa em alguns pixels e encostava na borda do card.
+function labelBudget(axisWidth: number, fontSize: number): number {
+  return Math.max(6, Math.floor(axisWidth / (fontSize * 0.58)))
+}
+
+function truncEnd(s: string, budget: number): string {
+  return s.length > budget ? `${s.slice(0, budget - 1).trimEnd()}…` : s
+}
+
+// Cortar sempre pelo fim resolve a colisão e cria outra: nesta base, quatro
+// motivos começam com "Cancelamento de contrato - Cancelamento - " e viram o
+// MESMO rótulo truncado. Quatro barras de tamanhos diferentes com o mesmo nome
+// não identificam nada — trocamos ilegível por ambíguo.
+//
+// Então: quando um grupo de rótulos colide, a janela desliza até onde eles
+// passam a divergir e o corte à esquerda vira reticência. Sai
+// "…Endereço com pendência - Justi…", "…Desistência - Justificativa: Cl…",
+// que é exatamente a parte que distingue um do outro. Como o corte é feito no
+// primeiro caractere diferente do grupo, o resultado é único por construção.
+function elideCategoryLabels(labels: string[], budget: number): Map<string, string> {
+  const offsets = new Map<string, number>()
+
+  // O que sobra do rótulo depois de descartar `offset` caracteres de prefixo
+  // comum. Agrupa pelo que APARECERIA na tela — é essa string que colide, não
+  // o texto cru (dois rótulos podem divergir no caractere que a reticência come).
+  const show = (l: string, offset: number) =>
+    offset > 0 ? `…${truncEnd(l.slice(offset).trimStart(), budget - 1)}` : truncEnd(l, budget)
+
+  const groupBy = (group: string[], offset: number) => {
+    const m = new Map<string, string[]>()
+    for (const l of group) {
+      const key = show(l, offset)
+      const g = m.get(key)
+      if (g) g.push(l); else m.set(key, [l])
+    }
+    return m
+  }
+
+  // Um nível de cada vez: um único corte não basta quando dois rótulos do grupo
+  // compartilham MAIS prefixo que o grupo inteiro (aqui, dois "Endereço com
+  // pendência" continuam iguais depois de cortar o "Cancelamento de contrato -
+  // Cancelamento - " comum aos quatro). Cada nível avança o offset, então isso
+  // sempre termina.
+  const place = (group: string[], offset: number) => {
+    if (group.length === 1) { offsets.set(group[0], offset); return }
+    let skip = offset
+    while (group.every((l) => l[skip] != null && l[skip] === group[0][skip])) skip++
+    // Prefixo comum curto demais pra pagar o "…" na frente: o empate não se
+    // resolve deslizando a janela. Fica o corte normal.
+    if (skip - offset < 4) { for (const l of group) offsets.set(l, offset); return }
+    for (const g of groupBy(group, skip).values()) place(g, skip)
+  }
+
+  const unique = [...new Set(labels)]
+  for (const g of groupBy(unique, 0).values()) place(g, 0)
+
+  const out = new Map<string, string>()
+  for (const l of unique) out.set(l, show(l, offsets.get(l) ?? 0))
+
+  // Cada grupo cortou o SEU prefixo comum, sem saber dos outros — e dois grupos
+  // podem cair no mesmo texto ("Cancelamento de contrato - …" e "Contrato
+  // Cancelado. …" ambos terminam em "Quando endereço de ativação possui…").
+  // Nesses casos devolvemos o começo distintivo na frente: "Cancelamento…Quando
+  // endereço…" contra "Contrato Can…Quando endereço…". É uma repescagem só; o
+  // que sobrar depois dela é rótulo genuinamente quase-idêntico, e aí o hover
+  // com o texto completo é o desempate.
+  const byShown = new Map<string, string[]>()
+  for (const [l, s] of out) {
+    const g = byShown.get(s)
+    if (g) g.push(l); else byShown.set(s, [l])
+  }
+  const HEAD = 12
+  for (const group of byShown.values()) {
+    if (group.length === 1) continue
+    for (const l of group) {
+      const offset = offsets.get(l) ?? 0
+      if (offset === 0) continue
+      const rest = truncEnd(l.slice(offset).trimStart(), budget - HEAD - 1)
+      out.set(l, `${l.slice(0, HEAD).trimEnd()}…${rest}`)
+    }
+  }
+  return out
+}
+
+function CategoryTick(props: any) {
+  const { x, y, payload, display, fmt, fallbackFill, fallbackFontSize } = props
+  const fontSize = fmt?.fontSize ?? fallbackFontSize
+  const full = String(payload?.value ?? '')
+  const shown = display.get(full) ?? full
+  return (
+    <text
+      x={x}
+      y={y}
+      dy={fontSize / 3}
+      textAnchor="end"
+      fontSize={fontSize}
+      fontWeight={fmt?.bold ? 700 : 400}
+      fontStyle={fmt?.italic ? 'italic' : 'normal'}
+      textDecoration={fmt?.underline ? 'underline' : 'none'}
+      fill={fmt?.color ?? fallbackFill}
+      fillOpacity={fmt?.color && fmt?.opacity != null ? fmt.opacity / 100 : undefined}
+    >
+      <title>{full}</title>
+      {shown}
+    </text>
+  )
 }
 
 // Tick customizado do Eixo X/Y do Recharts — recebe x/y/payload/angle/textAnchor
@@ -162,7 +324,7 @@ function barLabelContent(dl: DataLabelFormat, points: WidgetDataPoint[], key: st
       else if (dl.position === 'center') { cx = x + width / 2 }
       else { cx = x + width + 4; anchor = 'start' } // 'top'/'outside' — fora, à direita
     }
-    return <text x={cx} y={cy} textAnchor={anchor} fontSize={fontSize} {...labelFillProps(dl, '#9ca3af')}>{text}</text>
+    return <text x={cx} y={cy} textAnchor={anchor} fontSize={fontSize} {...labelFillProps(dl, AXIS_CATEGORY_FILL)}>{text}</text>
   }
 }
 
@@ -177,7 +339,7 @@ function pointLabelContent(dl: DataLabelFormat, points: WidgetDataPoint[], key: 
     const name = points[index]?.label ?? ''
     const text = labelText(dl.content, Number(value), name, (Number(value) / total) * 100)
     const dy = dl.position === 'inside' || dl.position === 'center' ? 4 : -8
-    return <text x={x} y={y + dy} textAnchor="middle" fontSize={fontSize} {...labelFillProps(dl, '#9ca3af')}>{text}</text>
+    return <text x={x} y={y + dy} textAnchor="middle" fontSize={fontSize} {...labelFillProps(dl, AXIS_CATEGORY_FILL)}>{text}</text>
   }
 }
 
@@ -195,7 +357,7 @@ function pieLabelRenderer(dl: DataLabelFormat) {
     const y = cy + radius * Math.sin(-midAngle * RADIAN)
     const text = labelText(dl.content, value, name, (percent ?? 0) * 100)
     return (
-      <text x={x} y={y} {...labelFillProps(dl, inside ? '#fff' : '#9ca3af')} fontSize={dl.fontSize ?? 10} textAnchor={x > cx ? 'start' : x < cx ? 'end' : 'middle'} dominantBaseline="central">
+      <text x={x} y={y} {...labelFillProps(dl, inside ? '#fff' : AXIS_CATEGORY_FILL)} fontSize={dl.fontSize ?? 10} textAnchor={x > cx ? 'start' : x < cx ? 'end' : 'middle'} dominantBaseline="central">
         {text}
       </text>
     )
@@ -216,7 +378,7 @@ function funnelLabelContent(dl: DataLabelFormat, points: WidgetDataPoint[]) {
     if (dl.position === 'inside' || dl.position === 'center') {
       return <text x={x + width / 2} y={cy} textAnchor="middle" fontSize={fontSize} {...labelFillProps(dl, '#fff')}>{text}</text>
     }
-    return <text x={x + width + 8} y={cy} textAnchor="start" fontSize={fontSize} {...labelFillProps(dl, '#9ca3af')}>{text}</text>
+    return <text x={x + width + 8} y={cy} textAnchor="start" fontSize={fontSize} {...labelFillProps(dl, AXIS_CATEGORY_FILL)}>{text}</text>
   }
 }
 
@@ -402,7 +564,7 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
           >
             {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={opacity} />)}
           </Pie>
-          <Tooltip />
+          <Tooltip {...TOOLTIP_PROPS} />
           <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />
         </PieChart>
       </ResponsiveContainer>
@@ -412,21 +574,35 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     const stacked = type === 'barHStacked'
     // Aqui os papéis dos eixos se invertem visualmente: XAxis (embaixo) é a
     // medida (axisYFormat), YAxis (esquerda) é a categoria (axisXFormat).
-    const catWidth = axisSize(120, axisXFormat, 9, 3)
+    // A faixa da categoria cresce com o rótulo mais longo, entre 96 e 176px:
+    // "Sul" não precisa de 120px, e um motivo de cancelamento escrito por
+    // extenso não cabe neles. O teto existe pra faixa nunca comer a barra —
+    // passando dele, o CategoryTick trunca com reticência (texto inteiro no hover).
+    const catLabels = points.map((p: any) => String(p?.label ?? ''))
+    const longestLabel = catLabels.reduce((m: number, l: string) => Math.max(m, l.length), 0)
+    const catWidth = axisSize(Math.min(176, Math.max(96, Math.round(longestLabel * 9 * 0.55) + 10)), axisXFormat, 9, 3)
+    const catDisplay = elideCategoryLabels(catLabels, labelBudget(catWidth - 12, axisXFormat?.fontSize ?? 9))
     const valHeight = axisSize(24, axisYFormat, 10, 2)
     return (
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={points} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-          <XAxis type="number" height={valHeight} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <YAxis type="category" dataKey="label" tick={makeAxisTick(axisXFormat, '#9ca3af', 9)} axisLine={false} tickLine={false} width={catWidth} />
-          <Tooltip />
+          <XAxis type="number" height={valHeight} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <YAxis
+            type="category"
+            dataKey="label"
+            tick={(props: any) => <CategoryTick {...props} display={catDisplay} fmt={axisXFormat} fallbackFill={AXIS_CATEGORY_FILL} fallbackFontSize={9} />}
+            axisLine={false}
+            tickLine={false}
+            width={catWidth}
+          />
+          <Tooltip {...TOOLTIP_PROPS} />
           {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
           {target != null && <ReferenceLine x={target} stroke={TARGET_LINE_COLOR} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'top', fontSize: 10, fill: TARGET_LINE_COLOR }} />}
           {series.map((s) => {
             const sDl = resolveSeriesDataLabel(s.dataLabels, dataLabels)
             return (
-              <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} fillOpacity={opacity} radius={stacked ? [0, 0, 0, 0] : [0, 4, 4, 0]} barSize={12} stackId={stacked ? 'stack' : undefined}>
+              <Bar key={s.key} dataKey={s.key} name={s.label} fill={s.color} fillOpacity={opacity} radius={stacked ? [0, 0, 0, 0] : [0, 4, 4, 0]} maxBarSize={22} stackId={stacked ? 'stack' : undefined}>
                 {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0])}
                 {sDl && <LabelList dataKey={s.key} content={barLabelContent(sDl, points, s.key, false)} />}
               </Bar>
@@ -443,9 +619,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
       <ResponsiveContainer width="100%" height="100%">
         <ScatterChart margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-          <XAxis type="number" dataKey="x" name="Eixo X" height={xHeight} tick={makeAxisTick(axisXFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <YAxis type="number" dataKey="value" name="Eixo Y" width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={(v: number) => v.toLocaleString('pt-BR')} labelFormatter={() => ''} />
+          <XAxis type="number" dataKey="x" name="Eixo X" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <YAxis type="number" dataKey="value" name="Eixo Y" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <Tooltip {...TOOLTIP_PROPS} cursor={{ strokeDasharray: '3 3' }} formatter={(v: number) => v.toLocaleString('pt-BR')} labelFormatter={() => ''} />
           <Scatter data={points} fill={color ?? pal[0]} fillOpacity={opacity}>
             {dl && <LabelList dataKey="value" content={pointLabelContent(dl, points, 'value')} />}
           </Scatter>
@@ -457,10 +633,10 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     return (
       <ResponsiveContainer width="100%" height="100%">
         <FunnelChart>
-          <Tooltip />
+          <Tooltip {...TOOLTIP_PROPS} />
           <Funnel data={points} dataKey="value" nameKey="label" isAnimationActive={false}>
             {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={opacity} />)}
-            {dl ? <LabelList dataKey="value" content={funnelLabelContent(dl, points)} /> : <LabelList dataKey="label" position="right" fill="#9ca3af" fontSize={10} />}
+            {dl ? <LabelList dataKey="value" content={funnelLabelContent(dl, points)} /> : <LabelList dataKey="label" position="right" fill={AXIS_CATEGORY_FILL} fontSize={10} />}
           </Funnel>
         </FunnelChart>
       </ResponsiveContainer>
@@ -478,10 +654,10 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, '#9ca3af', 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
-          <YAxis yAxisId="left" width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <YAxis yAxisId="right" orientation="right" width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <Tooltip />
+          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
+          <YAxis yAxisId="left" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <YAxis yAxisId="right" orientation="right" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <Tooltip {...TOOLTIP_PROPS} />
           <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />
           {target != null && <ReferenceLine yAxisId="left" y={target} stroke={TARGET_LINE_COLOR} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'right', fontSize: 10, fill: TARGET_LINE_COLOR }} />}
           {barSeries.map((s) => {
@@ -519,9 +695,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} barCategoryGap="0%" barGap="0%">
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, '#9ca3af', 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
-          <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <Tooltip />
+          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
+          <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <Tooltip {...TOOLTIP_PROPS} />
           <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />
           {target != null && <ReferenceLine y={target} stroke={TARGET_LINE_COLOR} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'right', fontSize: 10, fill: TARGET_LINE_COLOR }} />}
           {barSeries.map((s) => {
@@ -553,9 +729,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
       <ResponsiveContainer width="100%" height="100%">
         <Comp data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-          <Tooltip />
+          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <Tooltip {...TOOLTIP_PROPS} />
           {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
           {target != null && <ReferenceLine y={target} stroke={TARGET_LINE_COLOR} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'right', fontSize: 10, fill: TARGET_LINE_COLOR }} />}
           {series.map((s) => {
@@ -584,9 +760,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     <ResponsiveContainer width="100%" height="100%">
       <BarChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
         {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke="rgb(var(--app-border))" {...grid} />}
-        <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, '#9ca3af', 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
-        <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, '#6b7280', 10)} axisLine={false} tickLine={false} />
-        <Tooltip />
+        <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
+        <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+        <Tooltip {...TOOLTIP_PROPS} />
         {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
         {target != null && <ReferenceLine y={target} stroke={TARGET_LINE_COLOR} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'right', fontSize: 10, fill: TARGET_LINE_COLOR }} />}
         {series.map((s) => {

@@ -399,9 +399,14 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     // estreitas o painel ocupa quase tudo e não há o que reservar, por isso o
     // recuo só vale a partir de lg.
     <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', aiPanelOpen && 'lg:pr-[31rem]')}>
-      {/* Barra de abas + controles de edição */}
+      {/* Abas e ferramentas em LINHAS SEPARADAS no modo edição.
+          Juntas, elas disputavam a mesma largura: com o painel da IA aberto num
+          notebook (1366px), as sete ferramentas comiam o espaço e sobrava uma
+          tira de ~280px pras abas — a segunda aparecia cortada ("Client") e a
+          terceira sumia. Trocar de aba, que é navegação, virava caça ao
+          scroll horizontal. Separadas, cada uma tem a largura toda. */}
       <div className="flex items-center justify-between gap-3 border-b border-app-border">
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 -mb-px scrollbar-thin">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pb-1 -mb-px scrollbar-thin">
           {dashboard.tabs.map((t) => (
             <button
               key={t.id}
@@ -416,13 +421,16 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           ))}
         </div>
         <div className="flex items-center gap-1.5 shrink-0 pb-1">
-          {!editMode ? (
-            canEditCurrentTab && (
-              <button onClick={() => { refreshSources(); setEditMode(true) }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue transition-colors">
-                <Pencil size={11} /> Editar dashboard
-              </button>
-            )
-          ) : (
+          {!editMode && canEditCurrentTab && (
+            <button onClick={() => { refreshSources(); setEditMode(true) }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue transition-colors">
+              <Pencil size={11} /> Editar dashboard
+            </button>
+          )}
+        </div>
+      </div>
+
+      {editMode && (
+        <div className="flex flex-wrap items-center gap-1.5">
             <>
               {canEditCurrentTab && (
                 <>
@@ -446,9 +454,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               </button>
               <button onClick={handleDiscard} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-app-borderLight"><Undo2 size={11} /> Descartar</button>
             </>
-          )}
         </div>
-      </div>
+      )}
 
       {editMode && (
         <p className="text-[11px] text-brand-blue bg-brand-blue/10 border border-brand-blue/25 rounded-lg px-3 py-2">

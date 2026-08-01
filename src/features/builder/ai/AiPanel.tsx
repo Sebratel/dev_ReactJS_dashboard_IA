@@ -10,8 +10,9 @@
 // recebe os widgets aprovados por callback, sem herdar estado nenhum da
 // conversa (o arquivo já tem 500+ linhas).
 import { useEffect, useRef, useState } from 'react'
-import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench } from 'lucide-react'
+import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench, ChevronDown } from 'lucide-react'
 import { cn } from '@/utils/cn'
+import { ModalPortal } from '@/components/ui/ModalPortal'
 import { getAllSources } from '../fieldCatalog'
 import type { WidgetConfig } from '../types'
 import { fetchAiStatus, startAiConversation, streamAiTurn, ApiError, type AiStatus } from './aiApi'
@@ -55,6 +56,9 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
   const [busy, setBusy] = useState(false)
   const [tool, setTool] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Aberto enquanto ninguém falou nada (é quando a escolha importa); recolhe
+  // sozinho no 1º turno, quando a seleção trava e vira só referência.
+  const [sourcesOpen, setSourcesOpen] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const sources = getAllSources()
@@ -96,6 +100,7 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
         const started = await startAiConversation(folderId, Array.from(selected))
         id = started.conversationId
         setConversationId(id)
+        setSourcesOpen(false)
       }
       setTurns((prev) => [...prev, { role: 'user', text }, { role: 'assistant', text: '' }])
 
@@ -159,9 +164,17 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
 
   const canChat = !!conversationId || selected.size > 0
 
+  // Portal obrigatório, não decorativo: a raiz do Builder tem `animate-slide-up`,
+  // que deixa um `transform` (identidade, mas transform) no elemento — e isso o
+  // torna o bloco de contenção de qualquer `position: fixed` descendente. Na
+  // árvore normal, o painel ancorava 78px abaixo do topo da janela em vez de em
+  // 0, e como a altura continuava sendo h-svh (a altura da JANELA), os últimos
+  // 78px vazavam pra fora da tela — levando junto o campo de escrever, sem
+  // rolagem que o trouxesse de volta. Ver ModalPortal.
   return (
+    <ModalPortal>
     <aside className="fixed right-0 top-0 z-40 flex h-svh w-[min(30rem,100vw)] flex-col border-l border-app-border bg-app-card shadow-card-lg">
-      <header className="flex items-center justify-between gap-3 border-b border-app-border px-4 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-app-border px-4 py-3">
         <div className="flex min-w-0 items-center gap-2.5">
           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-cyan/10 ring-1 ring-brand-cyan/25">
             <Sparkles size={13} className="text-brand-cyan" />
@@ -198,12 +211,12 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
       </header>
 
       {statusError && (
-        <p className="flex items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-risk-critical">
+        <p className="flex shrink-0 items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-risk-critical">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" /> {statusError}
         </p>
       )}
       {status && !status.configured && (
-        <p className="flex items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-amber-300">
+        <p className="flex shrink-0 items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-amber-300">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
           IA não configurada no servidor — falta a variável <span className="font-mono">ANTHROPIC_API_KEY</span>.
         </p>
@@ -211,14 +224,36 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
 
       {/* Seleção de fontes: trava depois do 1º turno, porque o catálogo faz
           parte do prefixo cacheado da conversa — trocar no meio invalidaria o
-          cache e confundiria o modelo. Para trocar, é conversa nova. */}
-      <div className="border-b border-app-border bg-app-surface/30 px-4 py-3">
-        <div className="mb-2 flex items-center gap-1.5">
-          <Database size={11} className="text-gray-500" />
+          cache e confundiria o modelo. Para trocar, é conversa nova.
+
+          Por isso ele se recolhe sozinho quando a conversa começa: vira um
+          resumo de uma linha. Aberto, com várias fontes cadastradas, esse
+          bloco come mais de 100px de altura permanentes de um painel que
+          precisa desse espaço pra conversa — e depois do 1º turno não há mais
+          nada a decidir ali. */}
+      <div className="shrink-0 border-b border-app-border bg-app-surface/30 px-4 py-3">
+        <div className="flex items-center gap-1.5">
+          <Database size={11} className="shrink-0 text-gray-500" />
           <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-400">
             {conversationId ? 'Fontes desta conversa' : 'Dados que a IA pode usar'}
           </span>
+          {conversationId && (
+            <button
+              type="button"
+              onClick={() => setSourcesOpen((v) => !v)}
+              className="ml-auto flex items-center gap-1 text-[10px] text-gray-500 transition-colors hover:text-gray-300"
+            >
+              {sourcesOpen ? 'ocultar' : `${selected.size} selecionada${selected.size === 1 ? '' : 's'}`}
+              <ChevronDown size={11} className={cn('transition-transform', sourcesOpen && 'rotate-180')} />
+            </button>
+          )}
         </div>
+        {!sourcesOpen ? (
+          <p className="mt-1.5 truncate text-[11px] text-gray-400" title={sources.filter((s) => selected.has(s.key)).map((s) => s.label).join(', ')}>
+            {sources.filter((s) => selected.has(s.key)).map((s) => s.label).join(', ') || '—'}
+          </p>
+        ) : (
+        <div className="mt-2">
         {sources.length === 0 ? (
           <p className="text-[11px] text-gray-500">Nenhuma fonte disponível nesta pasta.</p>
         ) : (
@@ -260,9 +295,11 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
             ? 'Para trocar as fontes, comece uma conversa nova.'
             : 'Só os nomes e os tipos dos campos vão para a IA — nunca as linhas de dados.'}
         </p>
+        </div>
+        )}
       </div>
 
-      <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
         {turns.length === 0 && (
           <div className="space-y-3 pt-1">
             <p className="text-[11px] leading-relaxed text-gray-400">
@@ -350,7 +387,7 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
 
       <form
         onSubmit={(e) => { e.preventDefault(); send(input) }}
-        className="flex items-end gap-2 border-t border-app-border px-4 py-3"
+        className="flex shrink-0 items-end gap-2 border-t border-app-border px-4 py-3"
       >
         <textarea
           value={input}
@@ -374,5 +411,6 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
         </button>
       </form>
     </aside>
+    </ModalPortal>
   )
 }

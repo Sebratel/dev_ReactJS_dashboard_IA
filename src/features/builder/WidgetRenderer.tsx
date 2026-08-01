@@ -449,17 +449,30 @@ function ChartFrame({ widget, tabFilters, dataShape, editMode, onEdit, onRemove,
   const iconStyle: React.CSSProperties | undefined = widget.iconColor ? { color: widget.iconColor } : undefined
   return (
     <div className={cn('h-full flex flex-col border border-app-border rounded-2xl shadow-card overflow-hidden transition-colors', !bgColor && 'bg-app-card', blinkOn && 'animate-pulse')} style={cardStyle}>
-      <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-app-border shrink-0">
+      {/* `group` serve ao cabeçalho: em modo edição os ícones de LEITURA
+          (leitura da IA, comentários) só aparecem no hover. São cinco ícones
+          somados aos três de edição, e num card estreito — um KPI — sobravam
+          40px pro título, que virava "Total ...". Enquanto se arrasta e
+          redimensiona, ler não é o que se está fazendo; fora do modo edição os
+          dois voltam a ficar sempre visíveis, que é quando importam. */}
+      <div className="group flex items-center justify-between px-4 pt-3 pb-2 border-b border-app-border shrink-0">
         <div className="min-w-0">
           <p className="text-xs font-semibold text-gray-100 truncate" style={textFormatStyle(widget.titleFormat)}>{widget.title}</p>
           {widget.subtitle && <p className="text-[10px] text-gray-500 truncate" style={textFormatStyle(widget.subtitleFormat)}>{widget.subtitle}</p>}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <WidgetInsightPopover
-            widget={widget} tabFilters={tabFilters} points={dataShape} editMode={editMode} onPin={onPinInsight}
-            iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined}
-          />
-          <WidgetCommentsPopover widgetId={widget.id} iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined} />
+          {/* `w-0 overflow-hidden` em vez de `hidden`/`opacity-0`: opacidade
+              zero continuaria ocupando a largura (que é justamente o que falta),
+              e `display:none` tiraria os botões da ordem de tabulação. Clipados,
+              eles somem do layout mas seguem alcançáveis pelo teclado — daí o
+              `focus-within`. */}
+          <div className={cn('flex items-center gap-1', editMode && 'w-0 overflow-hidden transition-[width] focus-within:w-auto group-hover:w-auto')}>
+            <WidgetInsightPopover
+              widget={widget} tabFilters={tabFilters} points={dataShape} editMode={editMode} onPin={onPinInsight}
+              iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined}
+            />
+            <WidgetCommentsPopover widgetId={widget.id} iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined} />
+          </div>
           {editMode && (
             <>
               <button onClick={onEdit} style={iconStyle} className={cn('h-6 w-6 flex items-center justify-center rounded-md hover:text-brand-blue hover:bg-brand-blue/10', !widget.iconColor && 'text-gray-500')} title="Editar widget"><Pencil size={11} /></button>

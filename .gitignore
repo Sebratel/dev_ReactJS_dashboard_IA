@@ -10,4 +10,7 @@ _probe_view.mjs
 public/installData.data
 
 # Estado de runtime: overrides de query editados pela tela (volume do servidor)
-data/
+# Barra inicial = so a pasta data/ da raiz. Sem ela o padrao casava com
+# node_modules/caniuse-lite/data, @babel/compat-data/data etc. e deixava o
+# node_modules versionado incompleto (o build quebrava num clone limpo).
+/data/

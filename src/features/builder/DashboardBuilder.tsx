@@ -13,7 +13,7 @@ import { noOverlapCompactor } from 'react-grid-layout/core'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 import {
-  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles,
+  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles, Link2,
 } from 'lucide-react'
 import { AiPanel } from './ai/AiPanel'
 import { AiEmptyState } from './ai/AiEmptyState'
@@ -29,14 +29,42 @@ import { WidgetRenderer } from './WidgetRenderer'
 import { FilterBar } from './FilterBar'
 import { WidgetEditorModal } from './WidgetEditorModal'
 import { FilterEditorModal } from './FilterEditorModal'
+import { RelationsEditorModal } from './RelationsEditorModal'
 import { TabManager } from './TabManager'
 import { CanvasSettingsModal } from './CanvasSettingsModal'
 import { ThemePickerModal } from './ThemePickerModal'
 import { detectAppliedTheme, newWidgetThemeDefaults, themeTextFormats, THEME_PRESETS, type ThemePreset } from './themePresets'
 import type { ActiveFilters, FilterConfig, MeasureConfig, WidgetConfig } from './types'
 
-const ROW_HEIGHT = 56
-const GRID_COLS = 12
+// Dobrado (26/08/2026): era 56px/12 colunas. O piso de redimensionar de
+// QUALQUER widget cai sempre em 1 unidade da grade (é assim que
+// react-grid-layout resolve o resize — minW/minH abaixo de 1 "funciona" só
+// durante o arrasto, e volta pro inteiro mais próximo ao soltar o mouse,
+// então não dá um piso estável menor de verdade). Dobrar a resolução é a
+// única forma de dar ao Cartão/Texto (ver MIN_SIZE_2X abaixo) um piso
+// genuinamente menor sem mexer em nada mais — o tamanho VISUAL de todo
+// widget já salvo é preservado pela migração em
+// server/workspace.mjs::migrateGridResolution (multiplica x/y/w/h por 2).
+// ROW_HEIGHT NÃO é 56/2=28: a largura da coluna é DERIVADA da largura do
+// container (se reajusta sozinha ao dobrar GRID_COLS), mas a altura da linha
+// é uma constante fixa — a margem entre linhas (12px, inalterada) soma
+// dentro da altura total de um widget de várias linhas, então simplesmente
+// dividir por 2 deixaria todo widget existente ~18% mais alto que antes.
+// 22 = (56 − 12) / 2 é o valor exato que cancela isso — conferido numa sonda
+// reproduzindo a mesma fórmula da lib pra w/h de 1 a 14 unidades.
+const ROW_HEIGHT = 22
+const GRID_COLS = 24
+
+// Tipos que mantêm o piso de redimensionar de sempre (2 unidades novas = 1
+// unidade antiga) — evita que um gráfico com eixos/legenda encolha a ponto
+// de ficar ilegível. Cartão (kpi) e Texto ficam de fora de propósito: são os
+// únicos sem eixo/legenda/cabeçalho de tabela, cabem bem menores, e foi
+// justamente o pedido — usam o piso padrão da lib (1 unidade, agora mais
+// fina) por não estarem aqui.
+const MIN_SIZE_2X: WidgetConfig['type'][] = [
+  'bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area',
+  'pie', 'scatter', 'funnel', 'table', 'matrix', 'histogram',
+]
 
 // Acha o primeiro espaço livre (sem sobrepor nenhum widget existente) do
 // tamanho w×h, varrendo linha a linha, esquerda pra direita — usado pra
@@ -92,6 +120,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // widgets aprovados viram rascunho) e recarrega o catálogo de fontes antes,
   // porque é dele que o painel monta a lista de fontes.
   const askAi = (prompt: string) => {
+    ensureNotOnWelcomeTab()
     refreshSources().then(() => {
       setEditMode(true)
       setAiInitialPrompt(prompt)
@@ -99,6 +128,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     })
   }
   const [filterModalOpen, setFilterModalOpen] = useState(false)
+  const [relationsModalOpen, setRelationsModalOpen] = useState(false)
   const [tabManagerOpen, setTabManagerOpen] = useState(false)
   const [canvasModalOpen, setCanvasModalOpen] = useState(false)
   const [themeModalOpen, setThemeModalOpen] = useState(false)
@@ -214,13 +244,43 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   }, [tab, previewWidget])
 
   const gridLayout: Layout = useMemo(
-    () => displayWidgets.map((w) => ({ i: w.id, ...w.layout })),
+    () => displayWidgets.map((w) => ({
+      i: w.id, ...w.layout,
+      // Ver MIN_SIZE_2X — sem isto, TODO tipo cairia no piso padrão da lib
+      // (1 unidade, agora mais fina), inclusive gráfico com eixo/legenda.
+      ...(MIN_SIZE_2X.includes(w.type) ? { minW: 2, minH: 2 } : null),
+    })),
     [displayWidgets],
   )
 
   const updateTab = (patch: (t: DashboardTab) => DashboardTab) => {
     if (!tab || !dashboard) return
     setDashboard({ ...dashboard, tabs: dashboard.tabs.map((t) => (t.id === tab.id ? patch(t) : t)) })
+  }
+
+  // A guia de boas-vindas é só apresentação — nunca deve acumular widget de
+  // verdade, senão vira a "dashboard principal" por acidente (é a 1ª guia,
+  // sempre aberta, então é onde qualquer criação cairia por padrão). Chamado
+  // no INÍCIO de toda ação que cria widget (+Widget, IA, e os dois pontos de
+  // entrada do convite de guia vazia) enquanto a guia atual é a de
+  // boas-vindas: muda pra uma guia já existente que não seja ela, ou —
+  // só na 1ª vez, quando a dashboard ainda não tem nenhuma outra — cria uma
+  // nova (mesmo formato do "Criar" manual em TabManager.tsx: bloqueada por
+  // padrão, `canEdit: true` porque só quem gerencia a dashboard alcança este
+  // fluxo a partir da guia de boas-vindas — um usuário padrão não tem
+  // `canEdit` nela pra começo de conversa, ver canEditCurrentTab acima).
+  // A guia de boas-vindas em si nunca é criada, editada ou removida por
+  // aqui — só o ponto de partida muda.
+  const ensureNotOnWelcomeTab = () => {
+    if (!dashboard || !tab?.isWelcome) return
+    const existing = dashboard.tabs.find((t) => !t.isWelcome)
+    if (existing) { setActiveTabId(existing.id); return }
+    const newTab: DashboardTab = {
+      id: `tab-${Date.now().toString(36)}`, label: 'Nova guia', filters: [], widgets: [],
+      access: { mode: 'restricted', view: [], edit: [] }, canEdit: true,
+    }
+    setDashboard({ ...dashboard, tabs: [...dashboard.tabs, newTab] })
+    setActiveTabId(newTab.id)
   }
 
   const onLayoutChange = (layout: Layout) => {
@@ -393,12 +453,23 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   }
   if (!dashboard || !tab) return null
 
+  // O painel da IA (30rem) e o editor de widget (440px) são `fixed` na
+  // direita, sem overlay escuro — a grade continua visível/interativa por
+  // trás de propósito (estilo Power BI, ver comentário no WidgetEditorModal),
+  // mas sem abrir espaço aqui ela ficava por baixo do painel, escondida
+  // (relatado pelo usuário com print). Um só recuo por vez — mutuamente
+  // exclusivo via ternário, não dois `&&` somados na classe: dois utilitários
+  // `pr-[...]` conflitantes na mesma lista dependem da ORDEM em que o
+  // Tailwind gera as regras no CSS final (não da ordem na className), então
+  // "o que abriu por último ganha" não é garantido só empilhando classes. Se
+  // por acaso os dois estiverem abertos ao mesmo tempo, o editor de widget
+  // (`z-50`) desenha por cima do painel da IA (`z-40`), então é o dele que
+  // precisa do espaço reservado.
+  const rightPanelPad = widgetModal.open ? 'lg:pr-[440px]' : aiPanelOpen ? 'lg:pr-[31rem]' : undefined
   return (
-    // O painel da IA é `fixed` na direita: sem abrir espaço aqui, ele cobria a
-    // barra de ferramentas (Abas/Formato/Temas/Salvar/Descartar). Em telas
-    // estreitas o painel ocupa quase tudo e não há o que reservar, por isso o
-    // recuo só vale a partir de lg.
-    <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', aiPanelOpen && 'lg:pr-[31rem]')}>
+    // Em telas estreitas o painel ocupa quase tudo e não há o que reservar,
+    // por isso o recuo só vale a partir de lg.
+    <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', rightPanelPad)}>
       {/* Abas e ferramentas em LINHAS SEPARADAS no modo edição.
           Juntas, elas disputavam a mesma largura: com o painel da IA aberto num
           notebook (1366px), as sete ferramentas comiam o espaço e sobrava uma
@@ -429,20 +500,30 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         </div>
       </div>
 
+      {/* Barra de ferramentas + avisos do modo edição, "congelados" no topo
+          (estilo linha congelada do Excel) enquanto o usuário rola a guia pra
+          baixo — sem isso, numa guia com muitos widgets, salvar/descartar ou
+          adicionar mais um widget exigia rolar de volta ao topo toda vez.
+          `top-14` alinha logo abaixo do TopBar (`h-14`, também `sticky
+          top-0`) — sem esse offset o toolbar ficaria por baixo dele. O fundo
+          (opaco + blur) é necessário porque widgets continuam rolando por
+          baixo; sem ele o texto dos botões ficaria ilegível sobre o conteúdo. */}
       {editMode && (
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="sticky top-14 z-20 -mt-1 space-y-3 bg-app-bg/95 backdrop-blur-sm pb-3 pt-1">
+          <div className="flex flex-wrap items-center gap-1.5">
             <>
               {canEditCurrentTab && (
                 <>
-                  <button onClick={() => refreshSources().then(() => setWidgetModal({ open: true, widget: null }))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Plus size={11} /> Widget</button>
+                  <button onClick={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => setWidgetModal({ open: true, widget: null })) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Plus size={11} /> Widget</button>
                   {/* Mesma permissão do "+ Widget": quem pode adicionar widget
                       nesta guia pode pedir pra IA montar. */}
-                  <button onClick={() => refreshSources().then(() => setAiPanelOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
+                  <button onClick={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => setAiPanelOpen(true)) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
                 </>
               )}
               {canManageDashboard && (
                 <>
                   <button onClick={() => refreshSources().then(() => setFilterModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><FilterIcon size={11} /> Filtro</button>
+                  <button onClick={() => refreshSources().then(() => setRelationsModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Relacionar campos de fontes diferentes, pra um filtro de uma propagar pra outra"><Link2 size={11} /> Relacionamentos</button>
                   <button onClick={() => setTabManagerOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Layers size={11} /> Abas</button>
                   <button onClick={() => setCanvasModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Configurações de tela"><Monitor size={11} /> Formato</button>
                   <button onClick={() => setThemeModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Temas prontos de cores"><Palette size={11} /> Temas</button>
@@ -454,20 +535,19 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               </button>
               <button onClick={handleDiscard} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-app-borderLight"><Undo2 size={11} /> Descartar</button>
             </>
-        </div>
-      )}
+          </div>
 
-      {editMode && (
-        <p className="text-[11px] text-brand-blue bg-brand-blue/10 border border-brand-blue/25 rounded-lg px-3 py-2">
-          {canManageDashboard
-            ? <>Modo edição — arraste os widgets para reposicionar, redimensione pelos cantos, e use os botões de lápis/copiar/lixeira em cada widget. As alterações valem para <strong>todos os usuários</strong> com acesso após salvar.</>
-            : <>Modo edição — você pode criar e ajustar widgets nesta guia. As alterações valem para <strong>todos os usuários</strong> com acesso a esta guia após salvar.</>}
-        </p>
-      )}
-      {editMode && !canEditCurrentTab && (
-        <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
-          Você não tem edição liberada nesta guia — peça ao gerente da pasta ou a um administrador.
-        </p>
+          <p className="text-[11px] text-brand-blue bg-brand-blue/10 border border-brand-blue/25 rounded-lg px-3 py-2">
+            {canManageDashboard
+              ? <>Modo edição — arraste os widgets para reposicionar, redimensione pelos cantos, e use os botões de lápis/copiar/lixeira em cada widget. As alterações valem para <strong>todos os usuários</strong> com acesso após salvar.</>
+              : <>Modo edição — você pode criar e ajustar widgets nesta guia. As alterações valem para <strong>todos os usuários</strong> com acesso a esta guia após salvar.</>}
+          </p>
+          {!canEditCurrentTab && (
+            <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+              Você não tem edição liberada nesta guia — peça ao gerente da pasta ou a um administrador.
+            </p>
+          )}
+        </div>
       )}
 
       {/* Filtros da aba */}
@@ -506,7 +586,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                 // editar continua vendo só o aviso — não há o que oferecer.
                 <AiEmptyState
                   onAsk={askAi}
-                  onManual={() => refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) })}
+                  onManual={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) }) }}
                 />
               ) : (
                 <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
@@ -535,6 +615,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                     <WidgetRenderer
                       widget={w}
                       tabFilters={tabFilterValues}
+                      relations={tab.relations ?? []}
                       editMode={editMode && canEditCurrentTab}
                       refreshKey={refreshKey}
                       onEdit={() => refreshSources().then(() => setWidgetModal({ open: true, widget: w }))}
@@ -558,7 +639,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
             <div className="mt-4">
               <AiEmptyState
                 onAsk={askAi}
-                onManual={() => refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) })}
+                onManual={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) }) }}
               />
             </div>
           )}
@@ -577,6 +658,13 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         />
       )}
       {filterModalOpen && <FilterEditorModal onSave={addFilter} onClose={() => setFilterModalOpen(false)} />}
+      {relationsModalOpen && tab && (
+        <RelationsEditorModal
+          relations={tab.relations ?? []}
+          onChange={(relations) => updateTab((t) => ({ ...t, relations }))}
+          onClose={() => setRelationsModalOpen(false)}
+        />
+      )}
       {tabManagerOpen && dashboard && (
         <TabManager
           folderId={folderId}

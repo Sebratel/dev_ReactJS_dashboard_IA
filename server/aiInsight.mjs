@@ -94,12 +94,12 @@ function pointsForPrompt(data) {
  * ataque — quem mentir no payload só engana a própria leitura, e os NÚMEROS não
  * vêm daí: a consulta é refeita aqui no servidor, contra a base real.
  */
-export async function explainWidgetData({ email, widget, tabFilters = [], calc = [], accessToken, force = false }) {
+export async function explainWidgetData({ email, widget, tabFilters = [], relations = [], calc = [], accessToken, force = false }) {
   if (!isAiConfigured()) throw new Error('IA não configurada no servidor (ANTHROPIC_API_KEY).')
   if (!widget?.source) throw new Error('Este widget não consulta dados — não há o que ler.')
   assertWithinBudget(email)
 
-  const data = await runWidgetQuery({ widget, tabFilters, page: 1, pageSize: MAX_POINTS, accessToken })
+  const data = await runWidgetQuery({ widget, tabFilters, relations, page: 1, pageSize: MAX_POINTS, accessToken })
   if (!data) throw new Error('Base ainda não materializada no backend.')
 
   const body = pointsForPrompt(data)

@@ -78,7 +78,43 @@ function buildInitialWorkspace() {
       tabs: [createWelcomeTab()],
     })
   }
-  return { version: 1, folders: [folder] }
+  // version 2 = resolução de grade já na unidade nova (24 colunas/22px) —
+  // um workspace criado do zero não precisa passar por
+  // migrateGridResolution, já nasce migrado.
+  return { version: 2, folders: [folder] }
+}
+
+// Dobra a resolução da grade (12→24 colunas, 56→22px por linha — ver
+// ROW_HEIGHT/GRID_COLS em DashboardBuilder.tsx): multiplica x/y/w/h de TODO
+// widget de TODA guia por 2. Não muda o tamanho VISUAL de nada — é a mesma
+// posição/tamanho, só expresso numa unidade duas vezes mais fina, que passou
+// a existir pra dar ao Cartão/Texto um piso de redimensionar genuinamente
+// menor (os demais tipos mantêm o piso de hoje via minW/minH explícito no
+// front — ver MIN_SIZE_2X em DashboardBuilder.tsx).
+//
+// Diferente de migrateWelcomeText (decide pelo CONTEÚDO, sempre seguro de
+// rodar de novo): dobrar de novo corromperia o layout silenciosamente, então
+// isto é controlado por VERSÃO do arquivo — roda uma única vez, quando
+// `ws.version` ainda é 1 (ou ausente, arquivo de antes desse campo existir).
+function migrateGridResolution(ws) {
+  if ((ws.version ?? 1) >= 2) return false
+  for (const folder of ws.folders ?? []) {
+    for (const dashboard of folder.dashboards ?? []) {
+      for (const tab of dashboard.tabs ?? []) {
+        for (const widget of tab.widgets ?? []) {
+          if (!widget.layout) continue
+          widget.layout = {
+            x: (widget.layout.x ?? 0) * 2,
+            y: (widget.layout.y ?? 0) * 2,
+            w: (widget.layout.w ?? 1) * 2,
+            h: (widget.layout.h ?? 1) * 2,
+          }
+        }
+      }
+    }
+  }
+  ws.version = 2
+  return true
 }
 
 // Atualiza o texto da guia de boas-vindas de dashboards que já existiam.
@@ -133,11 +169,19 @@ function loadWorkspace() {
       const raw = readFileSync(WORKSPACE_PATH, 'utf8')
       const ws = JSON.parse(raw)
       if (ws && Array.isArray(ws.folders)) {
-        const migrated = migrateWelcomeText(ws)
-        if (migrated > 0) {
+        // Resolução da grade primeiro: migrateWelcomeText compara a altura
+        // salva contra LEGACY_WELCOME_HEIGHTS/CURRENT_WELCOME_HEIGHT, que já
+        // estão na unidade NOVA — rodar depois da dobra é o que faz esses
+        // valores baterem.
+        const gridMigrated = migrateGridResolution(ws)
+        const textMigrated = migrateWelcomeText(ws)
+        if (gridMigrated || textMigrated > 0) {
           try { writeFileSync(`${WORKSPACE_PATH}.bak`, raw, 'utf8') } catch { /* backup é bônus, não bloqueia */ }
           saveWorkspace(ws)
-          console.log(`[workspace] texto de boas-vindas atualizado em ${migrated} guia(s) — backup do anterior em ${WORKSPACE_PATH}.bak`)
+          const parts = []
+          if (gridMigrated) parts.push('resolução da grade dobrada (12→24 colunas)')
+          if (textMigrated > 0) parts.push(`texto de boas-vindas atualizado em ${textMigrated} guia(s)`)
+          console.log(`[workspace] ${parts.join(' · ')} — backup do anterior em ${WORKSPACE_PATH}.bak`)
         }
         return ws
       }

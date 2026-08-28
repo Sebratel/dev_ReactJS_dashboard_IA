@@ -9,7 +9,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
-import { fetchFolder, createFolder, createDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
+import { fetchFolder, createFolder, createDashboard, deleteDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
 import type { Folder, WorkspaceTreeDashboard } from './types'
 
 const inputCls = 'rounded-lg border border-app-border bg-app-surface px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-brand-blue/50'
@@ -120,6 +120,8 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
   const [newDashboard, setNewDashboard] = useState('')
   const [creatingDashboard, setCreatingDashboard] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deletingDashboardId, setDeletingDashboardId] = useState<string | null>(null)
+  const [dashboardToDelete, setDashboardToDelete] = useState<WorkspaceTreeDashboard | null>(null)
 
   const treeFolder = currentId ? treeFolders?.find((f) => f.id === currentId) ?? null : null
 
@@ -183,6 +185,21 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
     }
   }
 
+  const confirmDeleteDashboard = async () => {
+    if (!currentId || !dashboardToDelete) return
+    setDeletingDashboardId(dashboardToDelete.id)
+    try {
+      await deleteDashboard(currentId, dashboardToDelete.id)
+      if (fullFolder) setFullFolder({ ...fullFolder, dashboards: fullFolder.dashboards.filter((d) => d.id !== dashboardToDelete.id) })
+      refreshWorkspace()
+    } catch (e) {
+      alert(e instanceof ApiError ? e.message : 'Falha ao remover dashboard.')
+    } finally {
+      setDeletingDashboardId(null)
+      setDashboardToDelete(null)
+    }
+  }
+
   const confirmDeleteFolder = async () => {
     if (!currentId) return
     try {
@@ -242,7 +259,20 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
                   <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1"><LayoutGrid size={11} /> Dashboards</span>
                   {dashboards.length > 0 && (
                     <ul className="space-y-0.5">
-                      {dashboards.map((d) => <li key={d.id} className="text-[11px] text-gray-400">{d.name}</li>)}
+                      {dashboards.map((d) => (
+                        <li key={d.id} className="flex items-center justify-between gap-2 text-[11px] text-gray-400 group">
+                          <span className="truncate">{d.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setDashboardToDelete(d)}
+                            disabled={deletingDashboardId === d.id}
+                            title="Remover dashboard"
+                            className="shrink-0 text-gray-600 hover:text-risk-critical disabled:opacity-50"
+                          >
+                            {deletingDashboardId === d.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                          </button>
+                        </li>
+                      ))}
                     </ul>
                   )}
                   <div className="flex items-center gap-2">
@@ -271,6 +301,16 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
           danger
           onConfirm={confirmDeleteFolder}
           onCancel={() => setConfirmDelete(false)}
+        />
+      )}
+      {dashboardToDelete && (
+        <ConfirmDialog
+          title="Remover dashboard"
+          message={`Remover a dashboard "${dashboardToDelete.name}"? Todas as guias e widgets dentro dela serão perdidos.`}
+          confirmLabel="Remover"
+          danger
+          onConfirm={confirmDeleteDashboard}
+          onCancel={() => setDashboardToDelete(null)}
         />
       )}
     </ModalPortal>

@@ -36,7 +36,7 @@ export function TableColumnsWell({ allFields, columns, columnLabels, onChangeCol
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-1">
           <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Colunas da tabela</span>
-          <InfoHint text="Escolha e ordene (setas) quais colunas aparecem na tabela. Clique no nome de uma coluna selecionada pra renomear o cabeçalho exibido, sem mudar o campo real por trás." />
+          <InfoHint text="Escolha e ordene (setas) quais colunas aparecem na tabela. Clique no nome de uma coluna selecionada pra renomear o cabeçalho exibido, sem mudar o campo real por trás. Um campo de data pode entrar puro (o valor de cada linha) e/ou como Ano/Trimestre/Mês/Dia (Hierarquia de datas) — cada nível vira sua própria coluna." />
         </span>
         {available.length > 0 && (
           <button onClick={() => setSearchOpen((v) => !v)} className={cn('h-5 w-5 flex items-center justify-center rounded transition-colors', searchOpen ? 'bg-brand-blue/15 text-brand-blue' : 'text-brand-blue hover:bg-brand-blue/10')}>

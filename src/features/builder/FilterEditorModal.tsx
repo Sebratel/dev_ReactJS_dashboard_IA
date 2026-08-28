@@ -56,7 +56,7 @@ export function FilterEditorModal({ onSave, onClose }: {
             <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={fieldDef?.label ?? ''} className={cn(inputCls, 'mt-1')} />
           </label>
           <p className="text-[10px] text-gray-500">
-            Tipo: {type === 'daterange' ? 'intervalo de datas' : 'seleção múltipla de valores'} · O filtro afeta apenas widgets da mesma fonte de dados.
+            Tipo: {type === 'daterange' ? 'intervalo de datas' : 'seleção múltipla de valores'} · O filtro afeta widgets desta fonte, e também widgets de outras fontes relacionadas a ela (ver botão "Relacionamentos").
           </p>
         </div>
         <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-app-border">

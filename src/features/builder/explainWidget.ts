@@ -11,7 +11,7 @@
 // WidgetInsightPopover). Deixar o modelo narrar também o "como" seria pagar
 // para arriscar erro numa informação que temos exata.
 import { getSourceDef } from './fieldCatalog'
-import type { FilterConfig, MeasureConfig, WidgetConfig, WidgetFilter } from './types'
+import type { FilterConfig, MeasureConfig, TabRelation, WidgetConfig, WidgetFilter } from './types'
 
 export interface CalcLine {
   label: string
@@ -31,11 +31,15 @@ const AGG_LABEL: Record<string, string> = {
   avg: 'Média',
 }
 
-// Uma dimensão pode vir como 'month:campo' / 'day:campo' (bucket de data).
-function splitBucket(dim: string): { field: string; bucket?: 'day' | 'month' } {
-  const m = /^(day|month):(.+)$/.exec(dim)
-  return m ? { field: m[2], bucket: m[1] as 'day' | 'month' } : { field: dim }
+// Uma dimensão pode vir como 'year:campo'/'quarter:campo'/'month:campo'/
+// 'day:campo' (nível da Hierarquia de datas — ver HIERARCHY_LEVELS,
+// WidgetEditorModal.tsx, e dimensionKeyFn, server/widgetQuery.mjs).
+export function splitBucket(dim: string): { field: string; bucket?: 'year' | 'quarter' | 'month' | 'day' } {
+  const m = /^(year|quarter|month|day):(.+)$/.exec(dim)
+  return m ? { field: m[2], bucket: m[1] as 'year' | 'quarter' | 'month' | 'day' } : { field: dim }
 }
+
+const BUCKET_LABEL: Record<'year' | 'quarter' | 'month' | 'day', string> = { year: 'Ano', quarter: 'Trimestre', month: 'Mês', day: 'Dia' }
 
 function fieldLabel(source: string | undefined, key: string): string {
   const def = source ? getSourceDef(source as never) : undefined
@@ -53,12 +57,10 @@ function hintFor(source: string | undefined, keys: string[]): string | undefined
   return hints.length ? Array.from(new Set(hints)).join(' · ') : undefined
 }
 
-function dimensionLabel(source: string | undefined, dim: string): string {
+export function dimensionLabel(source: string | undefined, dim: string): string {
   const { field, bucket } = splitBucket(dim)
   const base = fieldLabel(source, field)
-  if (bucket === 'month') return `${base} (por mês)`
-  if (bucket === 'day') return `${base} (por dia)`
-  return base
+  return bucket ? `${base} · ${BUCKET_LABEL[bucket]}` : base
 }
 
 function measureLabel(source: string | undefined, m: MeasureConfig): string {
@@ -77,6 +79,25 @@ function filterLine(source: string | undefined, f: WidgetFilter | { field: strin
   return `${fieldLabel(source, f.field)} ${verb} ${shown}`
 }
 
+// Existe uma TabRelation ligando estas duas fontes (em qualquer ordem) E o
+// campo-chave do lado da fonte `b` (a do widget) realmente existe nela? —
+// mesma checagem do servidor (resolveIndirectFilter, server/widgetQuery.mjs,
+// que ignora uma relação cujo campo do lado do widget não existe mais —
+// drift de schema, fonte reinferida diferente etc.). Sem espelhar essa
+// segunda checagem aqui, este painel poderia rotular um filtro como "via
+// relação" justamente no caso em que o servidor silenciosamente NÃO aplicou
+// nada — a explicação mentiria sobre o próprio cálculo, o que este painel
+// promete nunca fazer (ver comentário no topo do arquivo).
+function relatesSource(relations: TabRelation[], a: string, b: string): boolean {
+  return relations.some((r) => {
+    let widgetKeyField: string | undefined
+    if (r.sourceA === a && r.sourceB === b) widgetKeyField = r.fieldB
+    else if (r.sourceB === a && r.sourceA === b) widgetKeyField = r.fieldA
+    else return false
+    return !!getSourceDef(b as never)?.fields.some((f) => f.key === widgetKeyField)
+  })
+}
+
 /**
  * Monta as linhas do "Como foi calculado". Devolve lista vazia para widgets
  * que não consultam dado (texto), onde não há cálculo a explicar.
@@ -84,6 +105,7 @@ function filterLine(source: string | undefined, f: WidgetFilter | { field: strin
 export function describeCalculation(
   widget: WidgetConfig,
   tabFilters: { filter: FilterConfig; values: string[] }[] = [],
+  relations: TabRelation[] = [],
 ): CalcLine[] {
   if (widget.type === 'text' || !widget.source) return []
   const src = widget.source
@@ -143,11 +165,24 @@ export function describeCalculation(
   }
   for (const t of tabFilters) {
     if (!t.values?.length) continue
-    lines.push({
-      label: 'Filtro da tela',
-      value: filterLine(src, { field: t.filter.field, op: 'in', values: t.values }),
-      hint: hintFor(src, [t.filter.field]),
-    })
+    if (t.filter.source === src) {
+      lines.push({
+        label: 'Filtro da tela',
+        value: filterLine(src, { field: t.filter.field, op: 'in', values: t.values }),
+        hint: hintFor(src, [t.filter.field]),
+      })
+    } else if (relatesSource(relations, t.filter.source, src)) {
+      // Filtro de OUTRA fonte, alcançando este widget via relação da aba —
+      // descrito nos termos da fonte de origem do filtro (é lá que os
+      // valores foram escolhidos), não da fonte deste widget.
+      lines.push({
+        label: 'Filtro da tela (via relação)',
+        value: filterLine(t.filter.source, { field: t.filter.field, op: 'in', values: t.values }),
+        hint: hintFor(t.filter.source, [t.filter.field]),
+      })
+    }
+    // Sem relação e fonte diferente: o filtro não alcança este widget —
+    // omitido de propósito (mostrar aqui seria enganoso).
   }
 
   if (widget.limit) {

@@ -167,8 +167,11 @@ export const CURRENT_WELCOME_TEXT = WELCOME_TEXT
 // 12 esteve aqui por engano: contei as LINHAS do texto e concluí que 14 dava
 // folga demais, mas os parágrafos longos quebram em várias linhas na tela e o
 // card cortou a última seção. 14 é a altura que cabe o texto inteiro.
-export const LEGACY_WELCOME_HEIGHTS: number[] = [12]
-export const CURRENT_WELCOME_HEIGHT = 14
+// Valores em unidades da grade ANTIGA (12 colunas/56px) — dobrados abaixo
+// pra unidade nova (24 colunas/22px, ver ROW_HEIGHT/GRID_COLS em
+// DashboardBuilder.tsx), mesmo tamanho visual de sempre.
+export const LEGACY_WELCOME_HEIGHTS: number[] = [24]
+export const CURRENT_WELCOME_HEIGHT = 28
 
 export function createWelcomeTab(): TabConfig {
   return {
@@ -184,7 +187,7 @@ export function createWelcomeTab(): TabConfig {
         type: 'text',
         title: 'Bem-vindo(a)',
         content: WELCOME_TEXT,
-        layout: { x: 0, y: 0, w: 12, h: 14 },
+        layout: { x: 0, y: 0, w: 24, h: 28 },
       },
     ],
   }

@@ -8,6 +8,38 @@ import type { SourceTable } from './types'
 
 export type FieldKind = 'dimension' | 'date' | 'number'
 
+// Tipo de dado (estilo Power BI, ver Configurações → Dicionário & Tipo de
+// dado) que um admin pode atribuir a um campo, sobrescrevendo o `kind` que
+// o backend infere sozinho a partir da amostra real (ver inferSourceDef,
+// server/widgetQuery.mjs). Espelha EXATAMENTE server/fieldDictionary.mjs —
+// mesmas chaves, mesmo `kind` de destino — mudar um lado sem o outro quebra
+// a tradução. Só o `kind` de destino (dimension/date/number) muda
+// comportamento hoje (em quais seletores o campo aparece, tipo de filtro,
+// como a IA o descreve); várias opções aqui mapeiam pro mesmo `kind` de
+// propósito — não existe formatação por subtipo (casas decimais, %, hora
+// sem data) nesta versão, ver DOCUMENTACAO.md.
+export type DataTypeKey =
+  | 'decimal' | 'fixedDecimal' | 'wholeNumber' | 'percentage'
+  | 'dateTime' | 'date' | 'time' | 'dateTimeTz' | 'duration'
+  | 'text' | 'boolean' | 'binary'
+
+export const DATA_TYPES: { key: DataTypeKey; label: string; group: string; kind: FieldKind }[] = [
+  { key: 'decimal', label: 'Número Decimal', group: 'Número', kind: 'number' },
+  { key: 'fixedDecimal', label: 'Número decimal fixo', group: 'Número', kind: 'number' },
+  { key: 'wholeNumber', label: 'Número Inteiro', group: 'Número', kind: 'number' },
+  { key: 'percentage', label: 'Percentual', group: 'Número', kind: 'number' },
+  { key: 'dateTime', label: 'Data/hora', group: 'Data e hora', kind: 'date' },
+  { key: 'date', label: 'Data', group: 'Data e hora', kind: 'date' },
+  { key: 'time', label: 'Hora', group: 'Data e hora', kind: 'date' },
+  { key: 'dateTimeTz', label: 'Data/Hora/Fuso Horário', group: 'Data e hora', kind: 'date' },
+  { key: 'duration', label: 'Duração', group: 'Data e hora', kind: 'number' },
+  { key: 'text', label: 'Texto', group: 'Outros', kind: 'dimension' },
+  { key: 'boolean', label: 'Verdadeiro/Falso', group: 'Outros', kind: 'dimension' },
+  { key: 'binary', label: 'Binário', group: 'Outros', kind: 'dimension' },
+]
+
+export const FIELD_KIND_LABEL: Record<FieldKind, string> = { dimension: 'Texto/Categoria', date: 'Data', number: 'Número' }
+
 export interface FieldDef {
   key: string
   label: string
@@ -17,6 +49,12 @@ export interface FieldDef {
   // (Configurações) — ausente na maioria dos campos (só preenchido onde
   // faz sentido explicar). Mostrada como InfoHint nos seletores do Builder.
   description?: string
+  // Tipo de dado escolhido à mão (ver DataTypeKey acima) — presente só
+  // quando um admin sobrescreveu o tipo. `kindAuto` guarda o que a
+  // inferência automática tinha decidido ANTES da sobrescrita, só pra
+  // mostrar os dois lado a lado na tela do dicionário.
+  dataType?: DataTypeKey
+  kindAuto?: FieldKind
 }
 
 export interface SourceDef {

@@ -52,6 +52,30 @@ export interface TableFormat {
   columnWidths?: Record<string, number>
 }
 
+// Formatação condicional POR COLUNA da Tabela — diferente do motor de Meta e
+// alertas (ConditionalRule/ConditionalEffect, mais abaixo), que compara um
+// VALOR NUMÉRICO agregado contra um limiar (barra, KPI, célula da matriz).
+// Aqui cada regra escolhe uma COLUNA e compara o texto de cada célula DAQUELA
+// coluna contra uma palavra/frase/valor — pensado pra coluna de texto/
+// categoria (ex. "Sim"/"Não", "Concluído"/"Pendente"), não pra métrica.
+// Comparação sempre sem diferenciar maiúsculas/case (mesmo problema real já
+// visto neste projeto: "Concluído" vs "CONCLUIDO" vs "concluido" no dado de
+// origem). Avaliadas em ORDEM, a ÚLTIMA regra da MESMA coluna que bater
+// vence — mesma semântica do motor numérico, aplicada por coluna em vez de
+// pro widget inteiro.
+export type TableRuleOperator = 'equals' | 'contains'
+export interface TableConditionalRule {
+  id: string
+  column: string            // chave do campo (coluna) a que a regra se aplica
+  operator: TableRuleOperator // 'equals' = célula igual ao texto; 'contains' = célula contém o texto
+  match: string               // palavra/frase/valor a comparar
+  color?: string               // cor da fonte quando bate
+  backgroundColor?: string     // cor de fundo da célula quando bate
+  blink?: boolean
+  blinkSpeed?: BlinkSpeed       // velocidade do piscar (ver BlinkSpeed) — só relevante com `blink: true`
+  applyTo?: 'cell' | 'row'      // 'cell' (padrão) = só a célula que bateu; 'row' = a linha inteira
+}
+
 // Formatação de texto genérica — usada pelo cabeçalho do Eixo X/Eixo Y (nos
 // gráficos) e pelas Linhas/Colunas da Matriz. `backgroundColor` desenha um
 // fundo atrás do texto (só nos eixos: exige um tick customizado com <rect>,
@@ -71,6 +95,11 @@ export interface TextFormat {
   // números grandes cortando mesmo na fonte padrão); aceita negativo, pra
   // apertar o espaço quando o automático reserva mais do que precisa.
   margin?: number
+  // Alinhamento horizontal do texto — só exposto no editor pra Título/
+  // Subtítulo/Linhas/Colunas (ver `showAlign` em TextFormatEditor,
+  // WidgetEditorModal.tsx); Eixo X/Y e Legenda ignoram este campo mesmo se
+  // presente, por não terem uma "largura" clara pra alinhar dentro.
+  align?: 'left' | 'center' | 'right'
 }
 
 // Rótulos de dados sobre o próprio gráfico (valor/nome/% em cada barra,
@@ -93,10 +122,32 @@ export interface DataLabelFormat {
 // avaliadas em ORDEM, a ÚLTIMA que bater vence (dá pra empilhar regras em
 // cascata, ex. "verde se >= meta" seguida de "vermelho se < meta").
 export type ConditionalOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'
+// Velocidade do piscar de uma regra (KPI/gráficos/matriz/tabela) — controla
+// o `animationDuration` do CSS, não só o delay de sincronia (ver
+// BLINK_SPEED_MS/pulseSyncStyle em WidgetRenderer.tsx). Ausente = 'normal'
+// (2000ms, o mesmo `animate-pulse` de sempre — comportamento de quem salvou
+// a regra antes deste campo existir).
+export type BlinkSpeed = 'slower' | 'slow' | 'normal' | 'fast' | 'faster'
+// Velocidade do ciclo de "Gráfico dinâmico" (WidgetConfig.dynamicAnimation)
+// — mesma escala de 5 níveis do BlinkSpeed acima, mas um tipo PRÓPRIO: são
+// conceitos independentes (uma pisca uma célula, a outra redesenha o
+// gráfico inteiro) com durações-base bem diferentes (ver CHART_ANIM_MS em
+// WidgetRenderer.tsx) — mantidos separados de propósito, pra um não
+// arrastar o outro numa mudança futura.
+export type ChartAnimationSpeed = 'slower' | 'slow' | 'normal' | 'fast' | 'faster'
 export interface ConditionalEffect {
   backgroundColor?: string // cor de fundo (card do KPI / barra do gráfico / célula da matriz)
   blink?: boolean          // pisca (animação de opacidade)
+  blinkSpeed?: BlinkSpeed  // velocidade do piscar — só relevante com `blink: true`
   glow?: boolean           // brilho (sombra colorida ao redor)
+  // Só relevante em bar/barH/barStacked/barHStacked/comboBarLine/histograma
+  // — os únicos tipos com barra E rótulo de dados como elementos separados
+  // na tela. Decide onde a cor/piscar deste efeito aparece: só na barra
+  // (rótulo fica na cor de sempre), só no rótulo (barra fica na cor de
+  // sempre), ou nos dois — sincronizados (ver pulseSyncStyle em
+  // WidgetRenderer.tsx). Ausente = 'both' (comportamento de quem salvou a
+  // regra antes deste campo existir).
+  applyTo?: 'bar' | 'label' | 'both'
 }
 export interface ConditionalRule {
   id: string
@@ -116,6 +167,30 @@ export interface LookupColumn {
   foreignKey: string // campo correspondente na fonte relacionada
   field: string       // campo a trazer da fonte relacionada
   label: string
+}
+
+// Relacionamento entre DUAS fontes, declarado na ABA (TabConfig.relations) —
+// não no widget. Diferente de LookupColumn (que só traz UM campo extra pra
+// DENTRO de um widget), uma relação existe pra fazer o FILTRO DA ABA
+// propagar entre widgets de fontes diferentes: quando um filtro bate numa
+// fonte que tem relação declarada com a fonte de outro widget, o servidor
+// resolve um semi-join de verdade (busca as chaves reais na fonte
+// relacionada, não reaplica o texto do filtro) e filtra o widget pela
+// chave correspondente (ver resolveIndirectFilter, server/widgetQuery.mjs).
+// Simétrica — não importa qual lado é "A" ou "B". Uma mesma fonte pode
+// aparecer em várias relações (ex. "BASES" relacionada com 4 fontes de
+// fato diferentes, cada uma sua própria TabRelation) — dashboards com até
+// ~10 fontes relacionadas nesse padrão "várias fato → poucas dimensão"
+// funcionam assim, sem precisar de um conceito de "hub" à parte. Não
+// encadeia (fato → dimensão → outro fato): só relações DIRETAS entre duas
+// fontes propagam filtro.
+export interface TabRelation {
+  id: string
+  sourceA: SourceTable
+  fieldA: string   // campo-chave na Fonte A
+  sourceB: SourceTable
+  fieldB: string   // campo-chave correspondente na Fonte B
+  label?: string    // rótulo opcional, só pra identificar a relação na lista (ex. "Base")
 }
 
 export interface WidgetConfig {
@@ -140,6 +215,7 @@ export interface WidgetConfig {
   columns?: string[]          // type 'table' — ordem define a ordem das colunas exibidas
   lookups?: LookupColumn[]    // type 'table' — colunas mescladas de outras fontes
   tableFormat?: TableFormat   // type 'table' — fonte/alinhamento/cabeçalho/renomear coluna
+  tableConditionalRules?: TableConditionalRule[] // type 'table' — formatação condicional por coluna (ver TableConditionalRule)
   matrixRows?: string[]       // type 'matrix' — 1+ campos, hierarquia de linhas (com subtotal por nível)
   matrixColumns?: string[]    // type 'matrix' — 1+ campos, agrupamento de colunas (combinados em rótulo composto)
   matrixValue?: MeasureConfig // type 'matrix' — medida única, uma célula por (linha × coluna)
@@ -152,23 +228,42 @@ export interface WidgetConfig {
   subtitleFormat?: TextFormat     // formatação do texto do subtítulo do widget
   legendFormat?: TextFormat       // formatação do texto da legenda (embaixo do gráfico)
   gridLines?: 'both' | 'horizontal' | 'vertical' | 'none' // linhas de grade pontilhadas do fundo — padrão 'both'
+  gridLinesColor?: string         // cor das linhas de grade (ausente = cor neutra padrão do tema)
+  gridLinesOpacity?: number       // 0-100 — opacidade das linhas de grade (só com `gridLinesColor` definido)
+  // "Gráfico dinâmico" — o gráfico se desenha do início ao fim (linha/área
+  // traçando, barra crescendo da esquerda pra direita uma de cada vez,
+  // pizza/funil varrendo) e reinicia em loop, sem depender do dado mudar.
+  // Só nos tipos com forma geométrica pra desenhar — ver DATA_LABEL_TYPES em
+  // WidgetEditorModal.tsx (kpi/table/matrix/text não têm o que animar assim).
+  dynamicAnimation?: boolean
+  dynamicAnimationSpeed?: ChartAnimationSpeed // velocidade do ciclo — padrão 'normal'
   backgroundColor?: string        // cor de fundo do card do widget (ausente = padrão do tema)
   backgroundOpacity?: number      // 0-100 — opacidade do fundo do card (só com `backgroundColor` definido)
   seriesOpacity?: number          // 0-100 — opacidade das colunas/linhas/fatias do gráfico
   iconColor?: string              // cor dos ícones de editar/duplicar/excluir no cabeçalho (modo edição)
   color?: string
+  valueAlign?: 'left' | 'center' | 'right' // type 'kpi' — posição horizontal do número (e da meta) dentro do card; ausente = esquerda
   // Meta e alertas (motor de formatação condicional — ver ConditionalRule):
   // `target` desenha uma linha de referência no gráfico (bar/line/area/
   // comboBarLine) e é o valor comparado no KPI; `conditionalRules` decide
   // cor de fundo/pisca/brilho conforme o valor (do KPI, de cada barra do
   // gráfico, ou do card do widget) em relação às regras.
   target?: number
+  targetLineColor?: string        // cor da linha de meta (ausente = vermelho padrão)
+  targetLineOpacity?: number      // 0-100 — opacidade da linha de meta (só com `targetLineColor` definido)
   conditionalRules?: ConditionalRule[]
   // Efeitos visuais estáticos (sempre ativos, independente de dado) — aba
-  // Formato → Aparência do widget.
+  // Formato → Aparência do widget. Cada um tem a própria cor — um seletor só
+  // pros três juntos não dava pra expressar, por exemplo, "sombra cinza
+  // padrão mas brilho azul". Cor ausente com o efeito ligado (widget salvo
+  // antes desse campo existir) cai no padrão de cada um (ver ChartFrame em
+  // WidgetRenderer.tsx): sombra neutra, brilho no fundo do widget (ou âmbar).
   shadow?: boolean
+  shadowColor?: string
   glow?: boolean
+  glowColor?: string
   blink?: boolean
+  blinkColor?: string
   // Sequência de cores usada nas séries/fatias sem cor própria definida (pizza,
   // funil, dispersão, ou barra/linha sem `color`/`measures[].color`) — ausente
   // = paleta padrão do app. Só é preenchida ao aplicar um tema (ver
@@ -238,6 +333,7 @@ export interface TabConfig {
   canvas?: CanvasConfig
   autoRefresh?: TabAutoRefresh
   filters: FilterConfig[]
+  relations?: TabRelation[]    // relacionamentos entre fontes desta aba — ver TabRelation
   widgets: WidgetConfig[]
   access?: TabAccess           // ausente = tratado como 'open' (guias legadas/migradas)
   isWelcome?: boolean          // guia de boas-vindas auto-criada — não pode ser removida
@@ -258,6 +354,7 @@ export interface ActiveFilters {
 export interface WidgetDataRequest {
   widget: WidgetConfig
   tabFilters: { filter: FilterConfig; values: string[] }[]
+  relations?: TabRelation[]   // relacionamentos da aba — propaga filtro de outra fonte (ver TabRelation)
   page?: number               // type 'table'
   pageSize?: number
 }

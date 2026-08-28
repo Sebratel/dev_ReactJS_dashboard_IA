@@ -117,4 +117,35 @@
     backdrop-filter: blur(14px) saturate(140%);
     -webkit-backdrop-filter: blur(14px) saturate(140%);
   }
+
+  /* "Piscar" com cor própria (Formato → Aparência do widget, `blinkColor`) —
+     um anel que cresce/some ao redor do card, em vez do `animate-pulse`
+     padrão do Tailwind (que só desbota a opacidade, sem cor nenhuma). A cor
+     em si vem de `--blink-color` via style inline (ver ChartFrame em
+     WidgetRenderer.tsx) — já pronta em rgba(), então só usada aqui. */
+  @keyframes blinkColor {
+    0%, 100% { box-shadow: 0 0 0 0 var(--blink-color, transparent); }
+    50% { box-shadow: 0 0 0 6px var(--blink-color, transparent); }
+  }
+  .animate-blink-color {
+    animation: blinkColor 1.6s ease-in-out infinite;
+  }
+
+  /* "Gráfico dinâmico" (Formato → Gráfico dinâmico, `dynamicAnimation`) —
+     crescimento escalonado de UMA barra por vez (ver conditionalCells/
+     growAnim em WidgetRenderer.tsx). Sem classe utilitária própria: o
+     `animation` de cada barra é montado como string inline (pode precisar
+     coexistir com o piscar de uma regra condicional na MESMA property, ver
+     comentário em conditionalCells) — só o `@keyframes` mora aqui, referenciado
+     por nome. Line/Area/Bar/Pie/Funil/Scatter nativos (Recharts) já desenham
+     sozinhos; só a barra precisa de um `@keyframes` próprio porque a Recharts
+     cresce todas as barras juntas, nunca uma de cada vez. */
+  @keyframes chartBarGrowV {
+    from { transform: scaleY(0); }
+    to { transform: scaleY(1); }
+  }
+  @keyframes chartBarGrowH {
+    from { transform: scaleX(0); }
+    to { transform: scaleX(1); }
+  }
 }

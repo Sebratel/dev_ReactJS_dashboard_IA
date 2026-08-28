@@ -65,6 +65,7 @@
 
 - [x] **12. Meta dentro do próprio gráfico, com cor dinâmica da coluna/linha/célula** — implementado em 28/07/2026, ver `HISTORICO_ALTERACOES.md`.
   `ReferenceLine` na meta pra bar/barH/barStacked/barHStacked/comboBarLine/histogram/line/area; cor dinâmica por barra individual (bar-family + combo/histograma) e por célula da matriz. Line/area só desenham a linha de meta (sem coloração por trecho). Tabela não entrou nesta rodada.
+  **Atualização 26/08/2026:** Tabela ganhou o próprio motor de formatação condicional — não o mesmo (o dado de tabela costuma ser texto/categoria, não número contra um limiar), um motor separado por TEXTO de célula (palavra/frase/valor por coluna). Ver `HISTORICO_ALTERACOES.md` (26/08/2026) e `DOCUMENTACAO.md` 3.6.3.
 
 - [x] **13. Formato: sombra de fundo, piscar, brilho, cor de fundo dinâmica** — implementado em 28/07/2026, ver `HISTORICO_ALTERACOES.md`.
   Sombra/brilho/piscar como toggles fixos em "Aparência do widget"; "fundo dinâmico" usa o motor condicional (2.1), hoje aplicado ao card do KPI.

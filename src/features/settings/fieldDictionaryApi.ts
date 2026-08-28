@@ -1,11 +1,13 @@
 import { apiFetch, ApiError } from '@/lib/apiClient'
+import type { DataTypeKey } from '@/features/builder/fieldCatalog'
 
 export { ApiError }
 
 export interface FieldDictionaryEntry {
   source: string
   field: string
-  description: string
+  description?: string
+  dataType?: DataTypeKey
   updatedBy: string | null
   updatedAt: string
 }
@@ -22,10 +24,12 @@ export async function fetchFieldDictionary(): Promise<FieldDictionaryEntry[]> {
   return body.entries
 }
 
-// Descrição vazia remove a entrada no servidor (ver server/fieldDictionary.mjs).
-export async function saveFieldDescription(source: string, field: string, description: string): Promise<FieldDictionaryEntry | null> {
+// Descrição vazia E tipo ausente juntos removem a entrada no servidor (ver
+// server/fieldDictionary.mjs) — os dois valores sempre viajam juntos aqui
+// (a linha inteira é uma unidade), pra uma mudança num não apagar o outro.
+export async function saveFieldDictionaryEntry(source: string, field: string, description: string, dataType: DataTypeKey | undefined): Promise<FieldDictionaryEntry | null> {
   const body = await parse<{ entry: FieldDictionaryEntry | null }>(await apiFetch('/api/field-dictionary', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, field, description }),
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source, field, description, dataType }),
   }))
   return body.entry
 }

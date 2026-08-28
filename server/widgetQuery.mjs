@@ -13,7 +13,7 @@
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource, sheetSourceId, sourceKey as sheetSourceKey, listSheetSources, resolveSheetRows } from './sheetSources.mjs'
 import { listLakehouseSources, sourceKey as lakehouseSourceKey } from './lakehouseSources.mjs'
-import { fieldDictionaryMap } from './fieldDictionary.mjs'
+import { fieldDictionaryMap, DATA_TYPE_KIND } from './fieldDictionary.mjs'
 
 const MAX_POINTS = 100
 const MAX_FIELD_VALUES = 500
@@ -99,11 +99,24 @@ function getSourceDef(source, snap) {
 }
 
 // Planilhas do Google (server/sheetSources.mjs) referenciadas por um widget —
-// fonte principal + qualquer lookup — identificadas pelo prefixo `sheet:`.
-function collectWidgetSheetKeys(widget) {
+// fonte principal, qualquer lookup, E qualquer TabRelation que ligue a fonte
+// do widget a uma planilha (ver resolveIndirectFilter) — identificadas pelo
+// prefixo `sheet:`. Faltar aqui uma fonte usada só numa relação (nunca como
+// source/lookup do próprio widget) é o bug real que motivou este comentário:
+// sem carregar a planilha no snapshot, resolveIndirectFilter recebia
+// `getRows(...) → null → []` pra ela — um array VAZIO indistinguível de "o
+// filtro realmente não bateu com nada" — e zerava o widget relacionado
+// inteiro, mesmo com a própria fonte do widget saudável. O caso de uso
+// central da feature (uma planilha tipo "Bases" relacionada com várias
+// fontes-fato do Data Hub) é justamente onde isso batia.
+function collectWidgetSheetKeys(widget, relations = []) {
   const keys = new Set()
   if (isSheetSource(widget?.source)) keys.add(widget.source)
   for (const lk of widget?.lookups ?? []) if (isSheetSource(lk.source)) keys.add(lk.source)
+  for (const rel of relations) {
+    if (rel.sourceA === widget?.source && isSheetSource(rel.sourceB)) keys.add(rel.sourceB)
+    if (rel.sourceB === widget?.source && isSheetSource(rel.sourceA)) keys.add(rel.sourceA)
+  }
   return Array.from(keys)
 }
 
@@ -161,9 +174,13 @@ export async function listSourceDefs(folderId, accessToken) {
     titles.set(key, sh.label)
   }
 
-  // Anota cada campo com a descrição escrita no dicionário de dados (admin,
-  // Configurações) — ausente pra maioria dos campos, já que é preenchido à
-  // mão só onde faz sentido explicar.
+  // Anota cada campo com a descrição e o tipo de dado escritos no dicionário
+  // (admin, Configurações) — ausentes pra maioria dos campos, já que são
+  // preenchidos à mão só onde faz sentido. Um `dataType` presente SOBRESCREVE
+  // o `kind` inferido sozinho pela amostra (ex. campo de data num formato
+  // que a inferência não reconhece, ou código numérico que deve ser tratado
+  // como texto/dimensão) — `kindAuto` guarda o valor original inferido, pra
+  // a tela do dicionário poder mostrar os dois lado a lado.
   const dict = fieldDictionaryMap()
   return Object.entries(data)
     .filter(([id]) => {
@@ -175,8 +192,15 @@ export async function listSourceDefs(folderId, accessToken) {
     .map(([id, rows]) => {
       const def = inferSourceDef(id, rows ?? [], titles.get(id))
       def.fields = def.fields.map((f) => {
-        const description = dict.get(`${id}::${f.key}`)
-        return description ? { ...f, description } : f
+        const entry = dict.get(`${id}::${f.key}`)
+        if (!entry) return f
+        const next = entry.description ? { ...f, description: entry.description } : { ...f }
+        if (entry.dataType && DATA_TYPE_KIND[entry.dataType]) {
+          next.kindAuto = f.kind
+          next.dataType = entry.dataType
+          next.kind = DATA_TYPE_KIND[entry.dataType]
+        }
+        return next
       })
       return def
     })
@@ -217,36 +241,95 @@ function applyFilters(rows, tabFilters = [], widgetFilters = []) {
   return out
 }
 
-// Dimensão: campo puro, ou bucket de data 'day:campo' | 'month:campo'.
+// "Hierarquia de datas" (estilo Power BI) — 4 buckets de data disponíveis:
+// 'year' | 'quarter' | 'month' | 'day'. Cada um é CUMULATIVO (inclui o ano
+// na própria chave) igual ao 'day'/'month' originais — importante pra não
+// mudar o comportamento de widgets JÁ salvos com 'month:'/'day:', e pra
+// qualquer um dos 4 continuar correto e sem ambiguidade quando usado
+// SOZINHO (sem os níveis "pais" da hierarquia), mesmo numa série cobrindo
+// vários anos. BUCKET_RANK é a ordem natural da hierarquia (ano é o nível
+// mais "de fora"), usada só pra reordenar níveis quando o usuário marca as
+// caixinhas fora de ordem no editor (ver toggleHierarchyLevel no cliente) —
+// o motor de agregação em si não presume ordem nenhuma no array.
+const BUCKET_RE = /^(year|quarter|month|day):(.+)$/
+const BUCKET_RANK = { year: 0, quarter: 1, month: 2, day: 3 }
+const MONTH_NAMES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
+
+// Dimensão: campo puro, ou bucket de data 'year:campo'|'quarter:campo'|
+// 'month:campo'|'day:campo'. `prettyOf` é uma versão SÓ do próprio nível
+// (sem o ano embutido) — só usada quando 2+ buckets do MESMO campo compõem
+// uma hierarquia de verdade (ver compositeDimensionFn) — nesse caso o nível
+// "Ano" já aparece como coluna irmã, então repetir o ano dentro de
+// "Trimestre"/"Mês"/"Dia" seria redundante. Um bucket usado SOZINHO nunca
+// passa por `prettyOf` — mantém a chave cumulativa como rótulo, exatamente
+// o comportamento de sempre (não regride widget já salvo com month:/day:).
 function dimensionKeyFn(dimension) {
-  const m = /^(day|month):(.+)$/.exec(dimension)
-  if (!m) return { field: dimension, keyOf: (r) => (r[dimension] == null ? null : String(r[dimension])) }
+  const m = BUCKET_RE.exec(dimension)
+  if (!m) return { field: dimension, bucket: null, keyOf: (r) => (r[dimension] == null ? null : String(r[dimension])), prettyOf: (k) => k }
   const [, bucket, field] = m
-  return {
-    field,
-    keyOf: (r) => {
-      const v = r[field]
-      if (!v) return null
-      const iso = String(v)
-      return bucket === 'day' ? iso.slice(0, 10) : iso.slice(0, 7)
-    },
+  // Extrai ano/mês/dia por regex (não por posição fixa) e sempre zero-
+  // preenche mês/dia — robusto mesmo se a string não vier em ISO
+  // estritamente 'AAAA-MM-DD' (ex. campo marcado como 'date' manualmente
+  // no dicionário de campos sobre uma data 'AAAA-M-D' sem zero à esquerda).
+  const parseDate = (v) => {
+    const dm = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(String(v))
+    if (!dm) return null
+    return { y: dm[1], mo: dm[2].padStart(2, '0'), d: dm[3].padStart(2, '0') }
   }
+  const keyOf = (r) => {
+    const v = r[field]
+    if (!v) return null
+    const p = parseDate(v)
+    if (!p) return null
+    if (bucket === 'year') return p.y
+    if (bucket === 'quarter') return `${p.y}-Q${Math.ceil(Number(p.mo) / 3)}`
+    return bucket === 'day' ? `${p.y}-${p.mo}-${p.d}` : `${p.y}-${p.mo}`
+  }
+  const prettyOf = (key) => {
+    if (bucket === 'year') return key
+    if (bucket === 'quarter') return `${key.slice(-1)}º Trim`
+    if (bucket === 'month') return MONTH_NAMES_PT[Number(key.slice(5, 7)) - 1] ?? key
+    return key.slice(8, 10) // day: só o dia do mês
+  }
+  return { field, bucket, keyOf, prettyOf }
 }
 
 // Eixo X com 1+ campos (estilo Power BI): compõe as chaves de cada campo num
 // único rótulo "A / B / C". Se qualquer campo vier vazio na linha, a linha é
-// descartada do agrupamento (mesmo comportamento de 1 campo só). isDateDim
-// (pra ordenação cronológica automática) só se aplica com exatamente 1 campo
-// e ele sendo um bucket de data — com múltiplos campos não há ordem "natural".
+// descartada do agrupamento (mesmo comportamento de 1 campo só).
+//
+// isDateDim (pra ordenação/recorte cronológico automático) vale em dois
+// casos: (1) exatamente 1 campo, sendo qualquer um dos 4 buckets de data —
+// com múltiplos campos NÃO relacionados não há ordem "natural" nenhuma; (2)
+// 2+ campos que são TODOS buckets do MESMO campo-base — uma Hierarquia de
+// datas de verdade (ex. ['year:x','month:x','day:x']) — mistura de anos,
+// trimestres, meses e dias do mesmo campo continua tendo uma ordem
+// cronológica única, só que composta.
+//
+// `labelOf` só reformata o rótulo (nunca a chave de agrupamento/ordenação,
+// que continua sempre a cumulativa de sempre) — e só entra em ação no caso
+// (2) acima: uma hierarquia de verdade. Nela, se 'year:' também estiver
+// presente entre os campos, os demais níveis mostram só o PRÓPRIO
+// incremento (sem repetir o ano, que já é coluna irmã); sem 'year:', cada
+// nível mantém a chave cumulativa (com ano embutido) — evita rótulo
+// ambíguo numa hierarquia Trimestre+Mês sem Ano cobrindo vários anos.
 function compositeDimensionFn(dimensions) {
   const parts = dimensions.map(dimensionKeyFn)
+  const bucketFields = parts.filter((p) => p.bucket)
+  const isHierarchy = dimensions.length > 1 && bucketFields.length === parts.length
+    && new Set(bucketFields.map((p) => p.field)).size === 1
+  const hasYearSibling = isHierarchy && parts.some((p) => p.bucket === 'year')
   return {
     fields: parts.map((p) => p.field),
-    isDateDim: dimensions.length === 1 && /^(day|month):/.test(dimensions[0]),
+    isDateDim: (dimensions.length === 1 && !!parts[0].bucket) || isHierarchy,
     keyOf: (r) => {
       const vals = parts.map((p) => p.keyOf(r))
       if (vals.some((v) => v == null || v === '')) return null
       return vals.join(' / ')
+    },
+    labelOf: !isHierarchy ? (label) => label : (label) => {
+      const rawVals = label.split(' / ')
+      return rawVals.map((v, i) => (hasYearSibling && parts[i].bucket !== 'year' ? parts[i].prettyOf(v) : v)).join(' / ')
     },
   }
 }
@@ -292,6 +375,58 @@ function mergeLookups(rows, lookups) {
 function assertFieldOrLookup(sourceDef, lookups, field) {
   if (lookups.some((lk) => lk.outKey === field)) return
   assertField(sourceDef, field)
+}
+
+// Propaga um filtro de aba entre fontes DIFERENTES, via TabRelation (ver
+// types.ts) — o mecanismo que faz "filtrar uma tabela filtra as
+// relacionadas", pedido pelo usuário (2 a 10+ fontes relacionadas num
+// dashboard, uma delas podendo se relacionar com várias outras ao mesmo
+// tempo — ex. BASES recebendo relação de Saldo Voalle, Consumo Produtos,
+// Requisições Almox etc.). Simétrica: procura uma `rel` em qualquer ordem
+// (sourceA/sourceB) que ligue a fonte do FILTRO à fonte do WIDGET.
+//
+// Faz um SEMI-JOIN de verdade, não reaplica o texto do filtro cru: filtra a
+// fonte do filtro pelos valores escolhidos (mesmo `applyFilters` de sempre,
+// então funciona pra multiselect E daterange), e extrai o conjunto de
+// chaves REAIS (`filterKeyField`) das linhas que sobraram — evita o risco
+// de "Base SP" estar grafado diferente em cada sistema de origem, já que a
+// comparação final é por CHAVE (o campo da relação), não pelo valor exibido
+// no filtro. Sem relação encontrada pra aquele par de fontes: `undefined`
+// — o filtro simplesmente não alcança o widget, mesmo silêncio de sempre
+// quando um filtro de aba não bate com a fonte do widget. Não encadeia
+// (fato → dimensão → outro fato): só relações DIRETAS entre as duas fontes.
+function resolveIndirectFilter(tf, widgetSourceDef, relations, snap) {
+  if (!tf.values?.length) return undefined
+  for (const rel of relations) {
+    let filterKeyField, widgetKeyField
+    if (rel.sourceA === tf.filter.source && rel.sourceB === widgetSourceDef.key) {
+      filterKeyField = rel.fieldA; widgetKeyField = rel.fieldB
+    } else if (rel.sourceB === tf.filter.source && rel.sourceA === widgetSourceDef.key) {
+      filterKeyField = rel.fieldB; widgetKeyField = rel.fieldA
+    } else continue
+    if (!widgetSourceDef.fields.some((f) => f.key === widgetKeyField)) continue // relação mal configurada — ignora em vez de derrubar o widget
+    // A fonte do FILTRO pode estar ausente do snapshot agora (ciclo do ETL
+    // falhou, planilha desregistrada etc.) — `getRows` devolve `null` nesse
+    // caso, DIFERENTE de "a fonte existe mas o filtro bateu em zero linhas".
+    // Sem distinguir os dois, um `?? []` colapsava ambos no mesmo array
+    // vazio — e um conjunto de chaves vazio ainda é um filtro "está em []"
+    // válido pro applyFilters, que zerava TODAS as linhas do widget
+    // relacionado mesmo com a fonte do PRÓPRIO widget saudável (o bug real
+    // que motivou este comentário). Fonte ausente: `undefined` (o filtro
+    // não alcança o widget agora, mesmo silêncio de sempre). Fonte presente
+    // com zero linhas batendo: segue normal, filtro "está em []" mesmo —
+    // esse zerar é o comportamento CORRETO de um semi-join.
+    const sourceRows = getRows(snap, tf.filter.source)
+    if (!Array.isArray(sourceRows)) return undefined
+    const relatedRows = applyFilters(sourceRows, [tf], [])
+    const keySet = new Set()
+    for (const r of relatedRows) {
+      const v = r[filterKeyField]
+      if (v != null) keySet.add(String(v))
+    }
+    return { field: widgetKeyField, values: [...keySet] }
+  }
+  return undefined
 }
 
 function makeAggregator(measure, pkField) {
@@ -396,7 +531,13 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
       .sort((a, b) => a[1].labelParts[depth].localeCompare(b[1].labelParts[depth], 'pt-BR'))
       .slice(0, MAX_MATRIX_ROWS)
     return entries.map(([key, node]) => {
-      const result = { key, label: node.labelParts[depth], level: depth, values: nodeValues(node), total: aggregator.value(node.rowAcc) }
+      // Ordena pela chave CRUA (zero-padded, cronológica pra bucket de data)
+      // mas EXIBE a versão bonita (Ano/Trimestre por extenso/nome do mês/dia
+      // do mês) — cada nível já é sua própria linha/sub-linha na árvore, sem
+      // o risco de string composta ambígua que o rótulo de gráfico tem (ver
+      // compositeDimensionFn), então prettifica sempre, incondicionalmente.
+      const label = rowKeyFns[depth].prettyOf(node.labelParts[depth])
+      const result = { key, label, level: depth, values: nodeValues(node), total: aggregator.value(node.rowAcc) }
       if (depth + 1 < rowKeyFns.length) {
         const children = buildLevel(depth + 1, key)
         if (children.length) result.children = children
@@ -409,15 +550,15 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
   for (const ck of columnKeys) grandTotal[ck] = grandPerCol.has(ck) ? aggregator.value(grandPerCol.get(ck)) : 0
 
   return {
-    columns: colFn ? columnKeys.map((k) => ({ key: k, label: k })) : [{ key: SINGLE_COL, label: defaultMeasureLabel(measure) }],
+    columns: colFn ? columnKeys.map((k) => ({ key: k, label: colFn.labelOf(k) })) : [{ key: SINGLE_COL, label: defaultMeasureLabel(measure) }],
     rows: buildLevel(0, ''),
     grandTotal,
     grandTotalAll: aggregator.value(grandAcc),
   }
 }
 
-export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSize = 50, accessToken }) {
-  const snap = await withSheetSources(getSnapshot(), collectWidgetSheetKeys(widget), accessToken)
+export async function runWidgetQuery({ widget, tabFilters = [], relations = [], page = 1, pageSize = 50, accessToken }) {
+  const snap = await withSheetSources(getSnapshot(), collectWidgetSheetKeys(widget, relations), accessToken)
   if (!snap) return null
   if (!widget?.source) throw new Error('Widget sem fonte de dados (source).')
   const sourceDef = getSourceDef(widget.source, snap)
@@ -425,7 +566,10 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
 
   // Uma ou mais medidas (widget.measures = séries múltiplas; widget.measure = legado/single).
   const measuresIn = widget.measures?.length ? widget.measures : [widget.measure ?? { agg: 'countDistinct' }]
-  const legendField = widget.legendDimension ? dimensionKeyFn(widget.legendDimension).field : null
+  // legendKeyFn preserva bucket/keyOf — legendField (só o campo-base) segue
+  // existindo à parte pra validação de campo (assertFieldOrLookup).
+  const legendKeyFn = widget.legendDimension ? dimensionKeyFn(widget.legendDimension) : null
+  const legendField = legendKeyFn ? legendKeyFn.field : null
   const lookups = buildLookups(widget, sourceDef, snap)
 
   // Valida campos referenciados contra o catálogo (dimensão, legenda, medidas,
@@ -448,24 +592,92 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
   }
 
   const relevantTabFilters = tabFilters.filter((tf) => tf.filter.source === widget.source)
-  const filteredRows = applyFilters(getRows(snap, widget.source) ?? [], relevantTabFilters, widget.widgetFilters ?? [])
+  // Filtros de aba de OUTRA fonte, propagados via relação da aba (ver
+  // TabRelation/resolveIndirectFilter) — semi-join real contra a chave,
+  // devolvido como um filtro "in" comum, no mesmo formato de widgetFilters.
+  const indirectFilters = []
+  for (const tf of tabFilters) {
+    if (tf.filter.source === widget.source) continue
+    const resolved = resolveIndirectFilter(tf, sourceDef, relations, snap)
+    if (resolved) indirectFilters.push({ field: resolved.field, op: 'in', values: resolved.values })
+  }
+  const filteredRows = applyFilters(getRows(snap, widget.source) ?? [], relevantTabFilters, [...(widget.widgetFilters ?? []), ...indirectFilters])
   // Mescla os campos de widget.lookups em cada linha (${source}.${field}),
   // disponíveis a partir daqui como se fossem campos nativos.
   const rows = mergeLookups(filteredRows, lookups)
 
-  // Tabela: paginação simples sobre as linhas filtradas/mescladas.
+  // Tabela: SEMPRE combinações DISTINTAS das colunas escolhidas — não linha
+  // crua. Com 1 coluna, já é o mesmo espírito de uma "Linha" da Matriz
+  // (valores únicos); cada coluna a mais amplia a granularidade (o produto
+  // dos valores distintos de cada uma, só que limitado às combinações que
+  // realmente existem nos dados — nunca inventa uma combinação que não
+  // ocorre). Chega a listar tudo cru sozinho se as colunas escolhidas, juntas,
+  // já identificam cada registro (ex. um id único entre elas). Decisão
+  // deliberada (a pedido do usuário): sem toggle — todo widget de tabela,
+  // novo ou já salvo, passa a se comportar assim.
   if (widget.type === 'table') {
     const cols = widget.columns?.length ? widget.columns : sourceDef.fields.map((f) => f.key)
-    for (const c of cols) assertFieldOrLookup(sourceDef, lookups, c)
+    // Coluna com prefixo de bucket ('year:'/'quarter:'/'month:'/'day:', ver
+    // Hierarquia de datas) valida contra o campo-base, não a chave literal
+    // (que não existe em nenhuma linha crua).
+    for (const c of cols) assertFieldOrLookup(sourceDef, lookups, BUCKET_RE.test(c) ? dimensionKeyFn(c).field : c)
 
-    const total = rows.length
+    // Chave de dedup é só `cols` (o que aparece na tela) — os outKeys de
+    // lookup abaixo continuam sendo carregados na linha projetada mesmo
+    // quando não estão em `cols` (mesmo comportamento de sempre), mas não
+    // participam da chave: senão duas linhas visualmente idênticas nas
+    // colunas mostradas poderiam aparecer separadas por causa de um valor
+    // que não está nem sendo exibido. Primeira ocorrência vence quando a
+    // combinação se repete (mesmo padrão já usado no índice de lookup).
+    const seen = new Map()
+    for (const r of rows) {
+      const projected = {}
+      const sortVals = {}
+      for (const c of cols) {
+        // Coluna de bucket: computa o valor (não existe como chave literal
+        // na linha crua) e SEMPRE mostra a forma "bonita" (Ano/Trimestre
+        // por extenso/nome do mês/dia do mês) — diferente do rótulo de
+        // gráfico (ver compositeDimensionFn), aqui não tem ambiguidade de
+        // "esconder o ano redundante": cada bucket é a PRÓPRIA coluna,
+        // separada de qualquer coluna-irmã de Ano que exista ao lado. Mas
+        // dedup/ordenação usam a chave CRUA (cumulativa, com ano embutido),
+        // NUNCA a "bonita" — senão datas de anos diferentes com o mesmo
+        // trimestre/mês/dia colidiriam e uma sumiria silenciosamente da
+        // tabela, e 'month:' ordenaria pelo NOME do mês (alfabético, não
+        // cronológico).
+        if (BUCKET_RE.test(c)) {
+          const dimFn = dimensionKeyFn(c)
+          const raw = dimFn.keyOf(r)
+          projected[c] = raw == null ? null : dimFn.prettyOf(raw)
+          sortVals[c] = raw
+        } else {
+          projected[c] = r[c] ?? null
+          sortVals[c] = projected[c]
+        }
+      }
+      for (const lk of lookups) projected[lk.outKey] = r[lk.outKey] ?? null
+      const key = JSON.stringify(cols.map((c) => sortVals[c]))
+      if (!seen.has(key)) seen.set(key, { projected, sortVals })
+    }
+    // Ordenado (não na ordem de chegada dos dados crus) — mesmo critério
+    // alfabético (pt-BR) já usado pras linhas da Matriz, pra uma lista de
+    // valores distintos ficar previsível em vez de espelhar a ordem
+    // arbitrária do dataset de origem. Compara coluna por coluna (não um
+    // texto único concatenado) — sem separador nenhum, então sem risco de
+    // colisão entre valores de colunas vizinhas.
+    const distinctRows = Array.from(seen.values())
+      .sort((a, b) => {
+        for (const c of cols) {
+          const cmp = String(a.sortVals[c] ?? '').localeCompare(String(b.sortVals[c] ?? ''), 'pt-BR')
+          if (cmp !== 0) return cmp
+        }
+        return 0
+      })
+      .map((e) => e.projected)
+
+    const total = distinctRows.length
     const startIdx = (page - 1) * pageSize
-    const pageRows = rows.slice(startIdx, startIdx + pageSize).map((r) => {
-      const o = {}
-      for (const c of cols) o[c] = r[c] ?? null
-      for (const lk of lookups) o[lk.outKey] = r[lk.outKey] ?? null
-      return o
-    })
+    const pageRows = distinctRows.slice(startIdx, startIdx + pageSize)
     return { rows: pageRows, total, page, pageSize }
   }
 
@@ -482,7 +694,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
   // agregados independentemente sobre as mesmas linhas do grupo.
   if (widget.type === 'scatter') {
     if (!widget.dimensions?.length) return { points: [] }
-    const { keyOf: scatterKeyOf } = compositeDimensionFn(widget.dimensions)
+    const { keyOf: scatterKeyOf, labelOf: scatterLabelOf } = compositeDimensionFn(widget.dimensions)
     const xAgg = makeAggregator(widget.measureX ?? { agg: 'countDistinct' }, pkField)
     const yAgg = makeAggregator(measuresIn[0], pkField)
     const groups = new Map()
@@ -495,7 +707,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
     }
     const scatterLimit = Math.min(widget.limit ?? 15, MAX_POINTS)
     const points = Array.from(groups.entries())
-      .map(([label, g]) => ({ label, value: yAgg.value(g.y), x: xAgg.value(g.x) }))
+      .map(([label, g]) => ({ label: scatterLabelOf(label), value: yAgg.value(g.y), x: xAgg.value(g.x) }))
       .sort((a, b) => b.value - a.value)
       .slice(0, scatterLimit)
     return { points }
@@ -557,7 +769,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
     return { points: [{ label: 'total', value: aggregator.value(acc) }] }
   }
 
-  const { keyOf, isDateDim } = compositeDimensionFn(widget.dimensions)
+  const { keyOf, isDateDim, labelOf } = compositeDimensionFn(widget.dimensions)
   const limit = Math.min(widget.limit ?? 15, MAX_POINTS)
 
   // Quebra por legenda (2ª dimensão): uma série por valor distinto da legenda,
@@ -569,7 +781,11 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
     for (const r of rows) {
       const pKey = keyOf(r)
       if (pKey == null || pKey === '') continue
-      const lVal = r[legendField]
+      // keyOf (não o valor cru da célula) — respeita o bucket de data se
+      // a legenda for 'year:'/'quarter:'/'month:'/'day:<campo>'; senão a
+      // quebra por legenda ignorava o bucket e agrupava pelo valor exato da
+      // célula (ex. timestamp completo em vez do mês).
+      const lVal = legendKeyFn.keyOf(r)
       if (lVal == null || lVal === '') continue
       const lKey = String(lVal)
 
@@ -601,6 +817,11 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
       return point
     })
     points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
+    // Reformata o RÓTULO só depois de ordenar/recortar — a ordenação usa a
+    // chave cumulativa de sempre (ver compositeDimensionFn); só o texto
+    // exibido muda numa Hierarquia de datas de verdade (sem efeito nos
+    // demais casos, `labelOf` é a identidade).
+    points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
     return { points, seriesKeys: topLegendKeys.map((k) => ({ key: k, label: k })) }
   }
 
@@ -630,6 +851,8 @@ export async function runWidgetQuery({ widget, tabFilters = [], page = 1, pageSi
     return point
   })
   points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
+  // Ver comentário equivalente no bloco de legenda acima.
+  points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
   // Sempre gera o(s) seriesKey(s) do lado das colunas — mesmo com 1 medida só
   // (usa a chave 'value', que já é onde o valor mora no ponto) — senão o
   // rótulo/cor customizados na pílula do Eixo Y ficam sem efeito (só

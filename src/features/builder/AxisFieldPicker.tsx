@@ -11,7 +11,18 @@ import { InfoHint } from './InfoHint'
 export interface AxisFieldGroup {
   key: string
   label: string
-  fields: { key: string; label: string; description?: string }[]
+  fields: {
+    key: string; label: string; description?: string
+    // Nível de uma "Hierarquia de datas" (Ano/Trimestre/Mês/Dia, ver
+    // buildGroups em WidgetEditorModal.tsx) — `indent` dá o recuo visual
+    // que agrupa os 4 níveis como filhos do mesmo campo; `toggle` faz o
+    // clique alternar adicionar/remover (em vez de só adicionar e ficar
+    // desabilitado depois de selecionado, como qualquer campo comum) —
+    // sem isso não teria como desmarcar um nível direto na árvore, só pelo
+    // chip lá em cima.
+    indent?: boolean
+    toggle?: boolean
+  }[]
   // true = fonte ainda não usada neste widget (nem principal, nem mesclada)
   // — aqui não dá pra "ver as colunas" direto (não haveria como cruzar com
   // a fonte principal); clicar troca a fonte principal do widget pra essa.
@@ -113,14 +124,18 @@ export function AxisFieldPicker({ label, hint, info, groups, selectedKeys, onAdd
                       {g.fields.length === 0 && <p className="text-[10px] text-gray-600 italic py-1">sem colunas</p>}
                       {g.fields.map((f) => {
                         const isSelected = selectedKeys.includes(f.key)
+                        const disabled = isSelected && !f.toggle
                         return (
-                          <div key={f.key} className="flex items-center gap-0.5">
+                          <div key={f.key} className={cn('flex items-center gap-0.5', f.indent && 'ml-3 border-l border-app-border/60 pl-1.5')}>
                             <button
-                              disabled={isSelected}
-                              onClick={() => { onAdd(f.key); setSearch(''); if (!multiple) setOpen(false) }}
+                              disabled={disabled}
+                              onClick={() => {
+                                if (isSelected && f.toggle) { onRemove(f.key); return }
+                                onAdd(f.key); setSearch(''); if (!multiple) setOpen(false)
+                              }}
                               className={cn(
                                 'flex-1 min-w-0 flex items-center justify-between gap-1 text-left px-2 py-1 rounded-md text-[11px] transition-colors',
-                                isSelected ? 'text-brand-blue/50 cursor-default' : 'text-gray-300 hover:bg-brand-blue/10 hover:text-brand-blue',
+                                disabled ? 'text-brand-blue/50 cursor-default' : isSelected ? 'text-brand-blue hover:bg-brand-blue/10' : 'text-gray-300 hover:bg-brand-blue/10 hover:text-brand-blue',
                               )}
                             >
                               <span className="truncate">{f.label}</span>

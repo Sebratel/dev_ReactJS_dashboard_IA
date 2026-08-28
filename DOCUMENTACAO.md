@@ -1,6 +1,6 @@
 # Indicadores Sebratel — Documentação do Projeto
 
-> Documento gerado em 24/07/2026, refletindo o estado do projeto até essa data. Não é atualizado automaticamente — quando o projeto mudar de forma relevante, peça para revisar este arquivo. Para o histórico de mudanças, veja [`HISTORICO_ALTERACOES.md`](HISTORICO_ALTERACOES.md).
+> Documento gerado em 24/07/2026 e revisado em 28/08/2026, refletindo o estado do projeto até essa data (revisão de 28/08 acrescentou a seção 2.1–2.5, de estrutura técnica/requisitos/front/back — as seções de funcionalidade já estavam em dia, conferidas contra o código nesta mesma revisão). Não é atualizado automaticamente — quando o projeto mudar de forma relevante, peça para revisar este arquivo. Para o histórico de mudanças, veja [`HISTORICO_ALTERACOES.md`](HISTORICO_ALTERACOES.md).
 
 ---
 
@@ -34,6 +34,133 @@ Dashboard Builder (React) — menu de pastas/dashboards, guias, filtros, widgets
 
 Não existe um "esquema" fixo de dados: cada fonte cadastrada traz as colunas que o dataset tem, e o tipo de cada uma (número, data ou texto) é **inferido automaticamente** a partir dos dados reais. Coluna nova no dataset aparece sozinha no Builder, sem configuração manual.
 
+### 2.1 Stack técnica
+
+**Frontend**: React 18 + TypeScript, build com Vite 5, roteamento com `react-router-dom` 6, estado global com `zustand` 4, gráficos com `recharts` 2, grade de widgets arrastável/redimensionável com `react-grid-layout` 2, estilização com Tailwind CSS 3 (modo escuro via atributo `data-theme`, ver 3.10), ícones `lucide-react`, animações pontuais com `framer-motion`, formatação de data `date-fns`.
+
+**Backend**: Node.js + Express 4, todo em arquivos `.mjs` (ESM puro) rodados direto por `tsx` — sem etapa de build/transpilação no servidor (o `tsc` do `npm run build` checa só o TypeScript do frontend). `googleapis` cobre OAuth e Google Sheets; `@anthropic-ai/sdk` fala com a IA (3.7-quater); `dotenv` carrega as variáveis de ambiente. Sem ORM nem driver de banco — o "banco" é o próprio snapshot em memória descrito em 2.3.
+
+### 2.2 Estrutura de pastas
+
+```
+src/                    — frontend (React + Vite + TypeScript)
+  router/                 rotas (React Router), 1 arquivo
+  store/                  estado global (Zustand): sessão, workspace, preferências de UI
+  features/               1 pasta por área da aplicação
+    auth/                   tela de login (o fluxo OAuth em si acontece todo no servidor)
+    access/                 aba "Acessos" — usuários, online, log de auditoria (3.11)
+    dashboard/              casca fina: resolve a URL (pasta/dashboard) e delega ao builder
+    builder/                o editor de dashboards em si — a maior pasta do projeto (3.2 em diante)
+    settings/               cadastro de fontes (Data Hub) e Dicionário & Tipo de dado (3.7)
+    workspace/              modal de configuração de pasta + client HTTP de pastas/dashboards
+  components/             layout (Sidebar/TopBar/MainLayout) e UI genérica (Card, modais, skeleton)
+  hooks/                  só useHeartbeat (mantém o usuário "online", ver 3.11)
+  lib/                    apiClient (client HTTP central) e constante do escopo OAuth
+  utils/                  cn() (classnames) e formatadores de número/data em pt-BR
+  types/                  ver nota abaixo
+
+server/                 — backend Express (.mjs, ESM, sem build) — ver 2.3
+scripts/                — processos batch: ETL (fetch-install.mjs, etl-scheduler.mjs)
+data/                   — estado persistente em JSON (fontes, sessões, workspace, comentários...)
+public/                 — assets estáticos + installData.data (o snapshot em si, gzip)
+docker/                 — nginx.conf (produção)
+Dockerfile / Dockerfile.api / docker-compose.yml / DEPLOY-PORTAINER.md — build e deploy (ver 2.5)
+```
+
+> `src/types/index.ts` guarda um modelo de domínio fixo (`ProtocoloGeral`, `Turno`, `Grupo`...) que parece resquício de uma versão anterior do app — hoje nada em `src/` importa esse arquivo, já que o schema de cada fonte é inferido ao vivo (3.7), não declarado num tipo fixo. Deixado como está; sinalizado aqui só pra não confundir quem for explorar a pasta.
+
+### 2.3 Backend — módulos, rotas e fluxo de dados
+
+Cada arquivo de `server/` tem uma responsabilidade:
+
+| Arquivo | Responsabilidade |
+|---|---|
+| `index.mjs` | Monta o Express, CORS, cookies, os middlewares de autenticação/permissão e todas as rotas. |
+| `dataset.mjs` | Mantém o snapshot (`public/installData.data`) em memória, recarregando sozinho quando o arquivo muda. |
+| `widgetQuery.mjs` | O motor: infere o schema de cada fonte por amostra, filtra/agrupa/agrega/pivota conforme o `WidgetConfig`. |
+| `lakehouseSources.mjs` | Catálogo de fontes do Data Hub (CRUD, 3.7-ter) + cliente HTTP paginado da API pública. |
+| `sheetSources.mjs` / `googleSheets.mjs` | Catálogo de planilhas cadastradas (3.7-bis) + cliente REST da Google Sheets API. |
+| `googleOAuth.mjs` / `sessions.mjs` | Fluxo de login (código de autorização) e persistência/renovação da sessão. |
+| `secretBox.mjs` | Cifra AES-256-GCM usada em todo segredo salvo em disco (tokens do Data Hub, tokens do Google). |
+| `accessLog.mjs` | Papéis (admin/padrão), status "online" e o log de auditoria (3.11). |
+| `fieldDictionary.mjs` | Descrições e sobrescrita de tipo de dado por campo (3.7). |
+| `widgetComments.mjs` | Comentários por widget (3.13). |
+| `workspace.mjs` | A árvore Pasta → Dashboard → Guia, permissões e migrações de schema do `workspace.json`. |
+| `aiAssistant.mjs` / `aiWidgetSchema.mjs` | A conversa com a IA (3.7-quater): orquestração de ferramentas + o contrato/validação do `WidgetConfig` que ela propõe. |
+| `aiInsight.mjs` | A leitura "O que os dados dizem" (3.14). |
+
+**Rotas** (todas sob `/api`, exigindo sessão salvo onde marcado "público"):
+
+| Área | Rotas | Observação |
+|---|---|---|
+| Auth | `auth/google/start`, `auth/google/callback` (públicas), `auth/me`, `auth/logout` | Início/callback são o próprio login — não podem exigir sessão. |
+| Dataset | `health` (público), `dataset/status`, `sources` | `sources` é o catálogo de campos que alimenta o Builder. |
+| Widget | `widget-data`, `field-values` | O motor de agregação e a busca de valores distintos de um campo. |
+| Planilhas | `sheet-sources` (CRUD) + `:id/usage`, `:id/refresh` | Qualquer usuário cadastra (3.7-bis); editar/remover exige dono ou admin. |
+| Data Hub | `lakehouse-sources` (CRUD) + `test`, `:id/enabled\|refresh\|sync\|usage`, `:id/folders` | Igual às planilhas; `:id/folders` é admin-only (3.7-ter). |
+| IA | `ai/status`, `ai/conversations`, `ai/conversations/:id/messages` (streaming) | 3.7-quater. |
+| Insight | `ai/insight` | 3.14. |
+| Dicionário | `field-dictionary` (GET/PUT) | Leitura livre, escrita admin-only (3.7). |
+| Comentários | `widget-comments` (listar/contar/criar/apagar) | 3.13. |
+| Workspace | `workspace/tree`, `workspace/folders[/:fid[/dashboards[/:did[/tabs/:tid...]]]]` | Camadas de permissão por rota — acesso à pasta, gerente da pasta, ou edição da guia (3.12). |
+| Acessos | `access/is-admin`, `access/users`, `access/users/:email/role`, `access/log`, `access/heartbeat` | Tudo admin-only, exceto `is-admin` e `heartbeat` (3.11). |
+
+**Fluxo, do lakehouse até a tela**: `scripts/fetch-install.mjs` lê o catálogo de fontes, decifra cada token, pagina a API pública do Data Hub e grava **um único snapshot** (gzip, `public/installData.data`) — preservando o dado anterior de qualquer fonte que ainda não venceu seu ciclo, ou que falhou na última tentativa. `dataset.mjs` mantém esse arquivo em memória, recarregado sozinho quando o mtime muda: é o único "banco" do processo da API. Uma chamada a `POST /api/widget-data` lê esse snapshot, injeta ao vivo linhas de planilha do Google se o widget referenciar uma, valida os campos contra o catálogo, e devolve o resultado já agregado — pronto pro gráfico desenhar.
+
+**Autenticação**: login por OAuth do Google (código de autorização, nunca implícito) grava `{accessToken, refreshToken}` cifrados em `data/sessions.json`; o navegador recebe só um cookie `HttpOnly` com um id opaco (ver 3.9 pra visão do usuário final). Toda rota autenticada busca a sessão pelo cookie, confere o domínio `@sebratel.com.br` e renova o token do Google sozinha quando necessário. Rotas do workspace têm três camadas extras de permissão (acesso à pasta / gerente da pasta / edição da guia), refletindo 3.12.
+
+**Processo em segundo plano**: `scripts/etl-scheduler.mjs` roda em ciclo fixo (`ETL_BASE_INTERVAL_MINUTES`, padrão 2 minutos) chamando `fetch-install.mjs`; dentro dele, cada fonte decide sozinha se é a vez dela (tempo real roda todo ciclo; agendada, só quando o próprio intervalo configurado já passou desde a última vez). Criar/editar/(des)ativar/sincronizar uma fonte do Data Hub pela tela também dispara uma atualização imediata, sem esperar o próximo ciclo (3.8).
+
+### 2.4 Frontend — rotas, estado e comunicação com o backend
+
+**Rotas** (`src/router/index.tsx`, `react-router-dom`, páginas carregadas sob demanda):
+
+| Caminho | Página | Acesso |
+|---|---|---|
+| `/login` | Login (Google SSO) | Pública |
+| `/` | Redireciona pra dashboard atual/primeira visível | Sessão |
+| `/dashboard/:folderId/:dashboardId` | O Builder (3.2 em diante) | Sessão |
+| `/configuracoes` | Fontes de dados + Dicionário (3.7) | Sessão |
+| `/acessos` | Gestão de acessos (3.11) | Sessão + admin |
+
+A proteção de verdade mora sempre no servidor — cada rota da API confere de novo quem está pedindo; o React Router só evita mostrar a tela errada por um instante enquanto a sessão carrega.
+
+**Estado global** (`src/store/`, Zustand): `authStore` guarda só "quem está logado" (identidade em memória — não é a sessão de verdade, essa é o cookie do servidor); `workspaceStore` guarda a árvore de pastas/dashboards visíveis ao usuário atual, sempre recarregada do servidor a cada mudança relevante; `appStore` guarda preferências puramente locais (tema, barra lateral recolhida), persistidas no `localStorage` do navegador — não compartilhadas entre pessoas nem dispositivos. Não existe um "store" do builder: o estado de um dashboard sendo editado (rascunho, ver 3.2) vive local ao próprio componente do editor.
+
+**Comunicação com o backend**: um client HTTP central (`src/lib/apiClient.ts`) usa `fetch` nativo, sempre com o cookie de sessão automático (nenhum token é manipulado no front); uma resposta `401` desloga sozinho e manda pro login. Cada feature tem seu próprio arquivo `*Api.ts` (`builderApi.ts`, `workspaceApi.ts`, `accessApi.ts` etc.) por cima desse client central. Sem axios nem react-query — sem cache/retry automático de requisição.
+
+### 2.5 Requisitos, instalação e deploy
+
+**Para rodar em desenvolvimento**: Node 20 (a versão usada nas imagens Docker; não há um mínimo declarado à parte pro ambiente de dev) e npm. Pelo menos dois processos em paralelo:
+
+| Comando | O que faz |
+|---|---|
+| `npm run dev` | Sobe o Vite (porta 5173 por padrão), com proxy de `/api` pro backend. |
+| `npm run api` | Sobe a API Express com recarga automática ao salvar arquivo em `server/`/`scripts/` — **não observa mudança no `.env`**, reinicie na mão depois de editá-lo. |
+| `npm run fetch:install` | Roda o ETL uma vez, materializando o snapshot (`public/installData.data`) — sem isso o Builder não tem dado nenhum pra mostrar em dev. |
+| `npm run build` | `tsc` (checagem de tipos) + `vite build` — o mesmo processo que roda em produção. |
+
+O ciclo automático de ETL (`scripts/etl-scheduler.mjs`) não faz parte do `npm run dev`; em desenvolvimento, popular o snapshot é manual (`fetch:install`), ou pode-se rodar o scheduler à parte se quiser o ciclo automático local.
+
+**Variáveis de ambiente** (todas comentadas, linha a linha, em `.env.example`):
+
+| Grupo | Chaves | Obrigatória? |
+|---|---|---|
+| Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Sim — sem elas não há login. |
+| | `APP_BASE_URL`, `SESSION_TTL_DAYS` (30 dias), `ALLOWED_DOMAIN` (`sebratel.com.br`), `ADMIN_EMAILS` | Não — todas com padrão razoável. |
+| IA (3.7-quater) | `ANTHROPIC_API_KEY` | Não — sem ela só a feature "IA" fica indisponível, o resto do app funciona normal. |
+| | `AI_MODEL`, `AI_EFFORT`, `AI_MAX_TOKENS`, `AI_MAX_ITERATIONS`, `AI_DAILY_BUDGET_USD` | Não — todas com padrão. |
+| Cifra de segredos | `SECRETS_KEY` | Não (gera uma sozinha em `data/.secret-key`), mas **precisa ser igual** entre os serviços `api` e `etl` — senão um não decifra o que o outro cifrou. |
+| Data Hub | `DHUB_BASE_URL`, `DHUB_PAGE_SIZE`, `DHUB_MAX_ROWS`, `DHUB_TIMEOUT_MS` | Não — todas com padrão (os mesmos números da tabela de limites, seção 5). |
+| API/ETL | `API_PORT` (8788), `SNAPSHOT_PATH`, `ETL_BASE_INTERVAL_MINUTES` (2 min), `ETL_RUN_ON_START` | Não. |
+| Deploy | `WEB_PORT` (8081) | Só em produção. |
+
+Planilhas do Google não têm variável própria — reusam o Client ID acima e o token OAuth do próprio usuário logado (3.7-bis).
+
+**Produção**: três serviços no `docker-compose.yml` — **web** (compila o frontend e serve com Nginx), **api** (a API Express) e **etl** (mesma imagem da API, rodando só o scheduler). `docker/nginx.conf` serve a SPA e repassa `/api/` pro serviço `api`. Não existe registry de imagem: o próprio Portainer builda a partir do repositório GitHub a cada deploy (ver `DEPLOY-PORTAINER.md`), e as variáveis de ambiente entram pelo campo da stack — não existe `.env` no servidor de produção.
+
+**Estado persistente**: dois volumes nomeados, montados nos serviços `api` e `etl` **ao mesmo tempo** — um pro snapshot (`installData.data`) e outro pra `data/` (fontes cadastradas, sessões, workspace, comentários, a chave de cifra). Os dois serviços precisam enxergar os mesmos volumes: se `etl` não tivesse acesso ao mesmo `data/` do `api`, não veria as fontes cadastradas pela tela nem conseguiria decifrar os tokens que o `api` salvou.
+
 ---
 
 ## 3. Funcionalidades
@@ -52,19 +179,34 @@ O conteúdo do app tem 3 níveis, pensados pra organizar setores/equipes diferen
 
 Um gerente **não** precisa ser administrador global — o poder dele vale só dentro da pasta em que foi nomeado.
 
-Toda dashboard nova (criada por um admin ou por um gerente de pasta) já nasce com uma **guia de boas-vindas**, sempre visível pra qualquer um que acesse a pasta, com um texto explicando o funcionamento do app. Todas as outras guias — criadas junto ou depois — nascem **bloqueadas**, e só aparecem pra um usuário padrão depois que um admin ou o gerente da pasta libera o acesso dele especificamente naquela guia.
+Toda dashboard nova (criada por um admin ou por um gerente de pasta) já nasce com uma **guia de boas-vindas**, sempre visível pra qualquer um que acesse a pasta, com um texto explicando o funcionamento do app — o texto começa pelo caminho de conversar com a IA (3.7-quater), com exemplos prontos de pergunta, e apresenta montar manualmente como o segundo caminho. Guias de boas-vindas criadas antes dessa mudança recebem o texto novo automaticamente na primeira carga da pasta, sem precisar recriar a dashboard — desde que ninguém tenha editado manualmente o texto padrão (uma edição manual é sempre preservada). Todas as outras guias — criadas junto ou depois — nascem **bloqueadas**, e só aparecem pra um usuário padrão depois que um admin ou o gerente da pasta libera o acesso dele especificamente naquela guia.
+
+A guia de boas-vindas nunca acumula widget de verdade: criar um gráfico (manual ou pela IA) estando nela leva automaticamente pra outra guia — a primeira que já existir na dashboard, ou, só na primeira vez (dashboard recém-criada, ainda sem nenhuma outra guia), uma nova guia criada na hora pra esse fim. A guia de boas-vindas em si nunca é criada, editada ou removida por esse mecanismo — continua existindo do jeito que sempre esteve, e só quem gerencia a dashboard pode removê-la manualmente depois, pelo gerenciador de abas (3.12), se quiser.
 
 ### 3.2 Guias — filtros e layout
 
 - Cada guia tem seu próprio conjunto de widgets e filtros.
-- Cada guia pode ter **filtros no topo** (seleção múltipla de valores, ou intervalo de datas), que afetam todos os widgets daquela guia que usam a mesma fonte de dados.
+- Cada guia pode ter **filtros no topo** (seleção múltipla de valores, ou intervalo de datas), que afetam todos os widgets daquela guia que usam a mesma fonte de dados — e também widgets de **fontes diferentes**, quando existe um relacionamento declarado entre elas (ver 3.2-bis).
 - **Modo edição**: um botão liga/desliga a edição. Fora dele, a tela é só visualização. O que aparece dentro dele depende de quem está editando (ver 3.12):
   - Quem **gerencia a dashboard** (admin ou gerente da pasta) vê tudo: adicionar/editar/duplicar/remover widgets, arrastar e redimensionar, adicionar/remover filtros, gerenciar guias (criar/renomear/remover/reordenar/controlar acesso), e configurar tamanho de tela/atualização automática.
   - Um usuário padrão com **edição liberada numa guia específica** só vê "+ Widget" e "Salvar" — mexe só nos widgets daquela guia, sem acesso a filtros, outras guias ou configurações de tela.
   - Sobrepor um widget em cima de outro é permitido deliberadamente (a grade não empurra os outros sozinha).
+  - **Cartão (KPI) e Texto redimensionam bem menores** que os demais tipos — não têm eixo, legenda nem cabeçalho de tabela, então cabem num espaço bem mais compacto. Os outros tipos mantêm um piso maior, pra não virar algo ilegível.
+  - A barra de ferramentas do modo edição (botões + aviso "Modo edição") fica **fixa no topo da tela** (como uma linha congelada de planilha) enquanto se rola a guia pra baixo — numa guia com muitos widgets, dá pra salvar/descartar ou adicionar mais um widget sem precisar rolar de volta ao topo.
 - **Salvar/Descartar**: as edições ficam num rascunho local até clicar em "Salvar" — só aí vão para o servidor e passam a valer pra todo mundo com acesso àquela guia/dashboard. "Descartar" volta ao último estado salvo.
-- **Pré-visualização em tempo real**: enquanto o painel de edição de um widget está aberto, o próprio widget na tela (atrás do painel) já mostra o resultado das mudanças (cor, tipo de gráfico, campo, formatação) — sem precisar salvar para ver o efeito. Só o botão "Salvar" persiste de verdade.
+- **Pré-visualização em tempo real**: enquanto o painel de edição de um widget está aberto, o próprio widget na tela (atrás do painel) já mostra o resultado das mudanças (cor, tipo de gráfico, campo, formatação) — sem precisar salvar para ver o efeito. Só o botão "Salvar" persiste de verdade. Em telas grandes, a grade encolhe pra abrir espaço pro painel (em vez de ficar por baixo dele, escondida) — o mesmo vale pro painel da IA (3.7-quater); em telas estreitas não há espaço pra reservar, então o painel só sobrepõe.
 - **Indicador visual**: o widget que está sendo editado no momento ganha um contorno colorido na grade, para ficar claro qual card corresponde ao painel aberto.
+
+### 3.2-bis Relacionamentos entre fontes — filtro cruzado
+
+Um dashboard costuma reunir mais de uma fonte de dados (uma tabela de solicitações, outra de bases/filiais, outra de usuários...). Por padrão, um filtro da guia só afeta widgets que usam a **mesma** fonte do filtro. O botão **"Relacionamentos"** (barra do modo edição, só quem gerencia a dashboard) resolve isso: declare que um campo de uma fonte é a **mesma chave** de um campo de outra fonte, e um filtro aplicado numa das duas passa a filtrar também os widgets que usam a outra.
+
+- **Como declarar**: Fonte 1 + campo-chave, Fonte 2 + campo-chave correspondente (ex. "Saldo Voalle → Base de Origem" com "Bases → Base de Origem"), e um rótulo opcional só pra identificar a relação na lista. Uma fonte pode entrar em **quantas relações forem necessárias** — o padrão comum é uma fonte "dimensão" (ex. Bases, Usuários) relacionada com várias fontes "fato" ao mesmo tempo (Consumo, Requisições, Romaneio, etc.), cada uma sua própria relação. O que não dá é relacionar o MESMO PAR de fontes duas vezes (só a primeira relação entre duas fontes tem efeito) — o formulário bloqueia e explica quando isso é tentado.
+- **Comparação por chave, não por texto**: o motor busca as chaves REAIS na fonte relacionada — não reaplica o texto exibido no filtro. Isso importa quando o mesmo valor do mundo real está grafado diferente em cada sistema de origem (ex. um código de base numa fonte, o nome por extenso em outra) — desde que o CAMPO-CHAVE escolhido seja o de fato comum às duas, o filtro funciona mesmo que o campo usado no seletor do filtro seja outro (ex. filtrar por "Nome da base", relacionar pela "Base de Origem").
+- **Limite deliberado — sem encadear**: a propagação só vale entre duas fontes com relação **direta**. Se A se relaciona com B, e B se relaciona com C, filtrar A não propaga pra C automaticamente (precisaria de uma relação direta A↔C). Na prática isso cobre bem o padrão mais comum (uma dimensão compartilhada por várias fontes-fato); um encadeamento fato→dimensão→outro fato não é suportado nesta versão.
+- **Sem aviso de relação faltando**: se você esquecer de relacionar uma fonte, o widget dela simplesmente não reage ao filtro — sem mensagem de erro na tela. Vale a pena conferir a lista de relações ao montar um dashboard com várias fontes. **Relação apontando pra uma fonte removida** (ex. um admin excluiu a fonte do Data Hub depois que a relação foi criada) é sinalizada, essa sim: aparece destacada em âmbar na lista, com o aviso "fonte não encontrada, esta relação não tem efeito".
+- **Escopo por guia**: relações são declaradas por guia, não por dashboard inteira nem globalmente — guias diferentes que usam as mesmas fontes redeclaram as próprias relações.
+- A **leitura da IA** (3.14) e o painel "Como foi calculado" também respeitam as relações — um filtro cruzado aparece lá como "Filtro da tela (via relação)", e a explicação da IA reflete o dado já filtrado corretamente.
 
 ### 3.3 Construção de um widget — as três abas do editor
 
@@ -88,11 +230,41 @@ Ao criar/editar um widget, o painel lateral tem três abas:
 | Dispersão (scatter) | Pontos posicionados por dois valores numéricos (eixo X e Y). |
 | Funil | Estágios em sequência decrescente. |
 | Histograma | Distribuição de frequência de UM campo numérico: os valores são divididos automaticamente em faixas de tamanho igual (padrão 10, ajustável), a barra mostra quantos registros caem em cada faixa e a linha mostra a curva normal (gaussiana) ajustada à média/desvio-padrão reais dos dados — barra e linha compartilham o mesmo eixo, estilo histograma do Excel/Power BI ("distribuição normalizada"). |
-| Tabela | Lista de linhas com colunas escolhidas manualmente, incluindo colunas mescladas de outras fontes. |
+| Tabela | Combinações **distintas** das colunas escolhidas manualmente (não linha crua — ver 3.4-bis), incluindo colunas mescladas de outras fontes. |
 | Matriz | Tabela dinâmica (pivot): 1+ campos nas linhas (com hierarquia e subtotal por nível), 1+ campos nas colunas (dinâmicas), uma medida por célula. |
 | Texto | Bloco de texto livre, sem ligação com nenhuma fonte de dados — usado, por exemplo, na guia de boas-vindas de cada dashboard. Sem markdown; preserva quebras de linha. |
 
 Cada tipo mostra no editor só os campos que ele realmente usa (ex.: Dispersão não tem Legenda; Tabela/Matriz/Texto não têm Eixo X/Y convencionais; Texto não tem aba "Modificadores", já que não depende de nenhuma fonte).
+
+### 3.4-bis Tabela — combinações distintas, não linha crua
+
+O widget Tabela não lista um registro por linha do dataset — mostra as combinações **distintas** das colunas escolhidas, como um "SELECT DISTINCT" nas colunas visíveis:
+
+- Com **1 coluna** (ex. "Status"), cada linha da tabela é um valor distinto daquela coluna — mesmo espírito de uma "Linha" da Matriz (3.4), só que sem hierarquia/subtotal.
+- Cada coluna **a mais** amplia a granularidade: com "Status" (10 valores distintos) + "Finalizado" (2 valores distintos), a tabela mostra até 10 × 2 = 20 linhas — exatamente as combinações de (Status, Finalizado) que de fato existem nos dados, nunca uma combinação inventada que não ocorre.
+- Continuar adicionando colunas de alta cardinalidade (ex. um número de protocolo, que já é único por linha) faz a tabela se aproximar — ou chegar — da lista completa e crua de registros, porque a combinação de colunas passa a identificar cada linha sozinha.
+- Não há opção pra desligar esse comportamento e voltar à lista crua — vale pra toda tabela, inclusive as já salvas antes dessa mudança.
+
+### 3.4-ter Hierarquia de datas (Ano/Trimestre/Mês/Dia)
+
+Todo campo do tipo **Data** pode ser usado de duas formas ao montar um widget, e as duas convivem lado a lado no seletor de campos:
+
+- **Puro** — o valor de data de cada linha, sem nenhum agrupamento (só aparece como opção de **coluna da Tabela**; gráfico e matriz nunca oferecem o campo de data puro como dimensão, porque um ponto por data exata não seria útil).
+- **Hierarquia de datas** — o mesmo campo quebrado em até 4 níveis: **Ano, Trimestre, Mês, Dia**. Cada nível tem sua própria caixinha de marcar no seletor de campos (abaixo do campo de data, com um leve recuo) e pode ser ligado/desligado independentemente, em qualquer combinação — só Ano, Ano+Mês, Trimestre+Dia, os 4 juntos, etc.
+
+Onde cada forma se aplica:
+
+- **Tabela** — o campo puro e os 4 níveis da hierarquia aparecem juntos no "+" de colunas; dá pra usar a data puro **e** um ou mais níveis como colunas separadas ao mesmo tempo (ex. "Data Saída" + "Ano" + "Mês" como 3 colunas distintas).
+- **Gráfico (Eixo X) e Matriz (Linhas/Colunas)** — só os 4 níveis da hierarquia aparecem como dimensão (o campo puro não entra nessa lista, pelo motivo acima). Marcar mais de um nível ao mesmo tempo empilha os níveis marcados numa única dimensão hierárquica.
+
+O efeito de marcar níveis diferentes num gráfico é justamente controlar a granularidade — mesma lógica do Power BI: um gráfico de colunas com Ano+Mês marcados mostra uma barra por mês; adicionar Dia faz o mesmo gráfico virar uma barra por dia, sem precisar trocar de widget nem remontar o gráfico do zero.
+
+Detalhes de comportamento:
+
+- A ordem em que você marca os níveis não importa — o sistema sempre reordena para Ano → Trimestre → Mês → Dia por trás dos panos, tanto no agrupamento/ordenação quanto no rótulo exibido.
+- Cada nível soma no rótulo do ponto/coluna: só "Mês" marcado mostra "Agosto"; "Ano"+"Mês" mostra "Agosto/2026" (o ano só aparece repetido no rótulo quando "Ano" **não** está marcado, pra evitar ambiguidade entre anos diferentes).
+- Na Tabela e na Matriz cada nível vira sua própria coluna/linha (sempre com o nome por extenso, ex. "Agosto", "2º Trimestre"), sem esse ajuste — não há string composta pra desambiguar.
+- **Fora de escopo por enquanto**: não marcamos "Trimestre" ou "Dia" como dependentes de um nível pai estar marcado (diferente do Power BI, que expande a árvore hierarquicamente) — os 4 níveis são independentes entre si, cabe a quem monta o widget escolher a combinação que faz sentido. Também não há uma visualização em "árvore expansível" dentro do próprio gráfico (drill-down clicável) — a granularidade é fixada na hora de montar o widget, marcando os níveis desejados.
 
 ### 3.5 Medidas e agregações
 
@@ -107,17 +279,20 @@ Um gráfico de barras/linha/área pode ter **múltiplas medidas** (cada uma vira
 
 ### 3.6 Formatação visual (aba Formato)
 
-- **Título e Subtítulo**: texto + tamanho de fonte, negrito/itálico/sublinhado, cor do texto (com opacidade) e cor de fundo (com opacidade).
+- **Título e Subtítulo**: texto + tamanho de fonte, negrito/itálico/sublinhado, cor do texto (com opacidade), cor de fundo (com opacidade) e **alinhamento** (esquerda/centro/direita).
 - **Cor principal**: cor do gráfico quando há uma única série (não afeta título nem séries com cor própria).
+- **Alinhamento do valor** (só KPI): posição horizontal do número (e da meta, se houver) dentro do card.
 - **Opacidade das colunas/linhas/fatias**: um slider que deixa todo o preenchimento do gráfico mais transparente.
-- **Aparência do widget**: cor de fundo do card inteiro (com opacidade), cor dos ícones de editar/duplicar/excluir, e três efeitos visuais fixos — **sombra**, **brilho** e **piscar** — sempre ativos quando ligados (independente do dado).
+- **Aparência do widget**: cor de fundo do card inteiro (com opacidade), cor dos ícones de editar/duplicar/excluir, e três efeitos visuais fixos — **sombra**, **brilho** e **piscar** — sempre ativos quando ligados (independente do dado), cada um com o próprio seletor de cor (não dá pra ter, por exemplo, sombra numa cor e brilho em outra com um seletor só). Efeito ligado sem cor escolhida usa um padrão neutro (sombra) ou a cor de fundo do widget (brilho).
 - **Meta e alertas** (motor de formatação condicional — ver 3.6.2): meta (linha de referência no gráfico) e regras de cor/pisca/brilho conforme o valor.
 - **Eixo X / Eixo Y**: mesmo conjunto de opções de texto do título (fonte, estilo, cor, fundo) — os eixos reservam espaço extra automaticamente quando a fonte é grande, para não vazar para fora do card. Um campo **"Recuo"** (inferior no Eixo X, lateral no Eixo Y) soma manualmente mais pixels a esse espaço reservado — use quando o cálculo automático ainda não é suficiente (ex. números grandes que aparecem cortados); aceita valor negativo, para apertar o espaço se o automático estiver reservando mais do que precisa.
-- **Linhas de grade**: todas, só horizontal, só vertical, ou nenhuma.
+- **Linhas de grade**: todas, só horizontal, só vertical, ou nenhuma — com cor e opacidade próprias, opcionais (sem cor escolhida, usa a cor neutra padrão do tema).
 - **Legenda**: mesma formatação de texto, aplicada aos rótulos da legenda embaixo do gráfico.
-- **Linhas / Colunas (só Matriz)**: formatação de texto para a hierarquia de linhas e o cabeçalho de colunas.
+- **Linhas / Colunas (só Matriz)**: formatação de texto para a hierarquia de linhas e o cabeçalho de colunas, incluindo alinhamento.
 - **Rótulos de dados**: liga/desliga rótulos sobre o próprio gráfico (valor de cada barra/ponto/fatia), com posição (dentro/fora/em cima/centralizado), conteúdo (só número / nome / percentual / nome+número / tudo), tamanho de fonte, cor e opacidade. Esse é o padrão do **widget inteiro**; quando há mais de uma medida no Eixo Y (ou uma "Eixo Y - Linha" no combo), a mesma seção mostra uma lista **"Por série"**, embaixo do padrão, onde cada série pode sobrescrever individualmente ("Padrão acima" / "Sempre mostrar" / "Nunca mostrar") — sem precisar ligar/desligar tudo junto.
-- **Tabela** (só tipo Tabela): tamanho de fonte, alinhamento do texto, cabeçalho em negrito. **Largura das colunas**: em modo edição, arraste a borda direita de qualquer cabeçalho de coluna para ajustar a largura manualmente (estilo planilha) — cada coluna é independente, então encolher uma não afeta a coluna vizinha (pode truncar bastante o texto, inclusive além do que caberia, sem nenhum mínimo além de um valor bem pequeno). Fora do modo edição a alça não aparece; a largura ajustada fica salva junto com o widget.
+  - **Colunas/Barras empilhadas são um caso à parte**: ligar "Mostrar rótulos" nesses dois tipos sempre mostra a **soma de todos os segmentos**, uma vez, no topo de cada barra (ex. segmentos 5, 8 e 2 mostram "15") — não é uma opção, é o único comportamento disponível, porque um rótulo por segmento se sobrepõe e quebra a leitura assim que a pilha tem várias séries. Por isso "Posição" e o "Por série" não aparecem pra esses dois tipos.
+- **Tabela** (só tipo Tabela): tamanho de fonte, alinhamento do texto, cabeçalho em negrito. **Largura das colunas**: em modo edição, arraste a borda direita de qualquer cabeçalho de coluna para ajustar a largura manualmente (estilo planilha) — cada coluna é independente, então encolher uma não afeta a coluna vizinha (pode truncar bastante o texto, inclusive além do que caberia, sem nenhum mínimo além de um valor bem pequeno). Fora do modo edição a alça não aparece; a largura ajustada fica salva junto com o widget. **Formatação condicional por texto**: ver 3.6.3.
+- **Gráfico dinâmico** (linha, área, barra/coluna, combo, pizza, funil, dispersão, histograma): ver 3.6.4.
 
 ### 3.6.1 Temas prontos (botão "Temas", modo edição)
 
@@ -134,14 +309,37 @@ Ao escolher e aplicar um tema, essas cores são sobrepostas em **todos os widget
 
 Seção "Meta e alertas" em Formato, disponível conforme o tipo de widget:
 
-- **Meta** (KPI, barra/coluna, colunas empilhadas, combo, histograma, linha, área): um número opcional que desenha uma **linha de referência tracejada** no gráfico e, no KPI, aparece ao lado do valor pra comparação direta ("meta: 100").
-- **Regras** (KPI, barra/coluna, colunas empilhadas, combo, histograma, matriz): uma lista de "se o valor for {maior que / maior ou igual a / menor que / menor ou igual a / igual a / diferente de} {número}, aplica {cor de fundo / piscar / brilho}" — avaliadas na ordem da lista, a **última que bater vence** (dá pra empilhar regras em cascata, ex. "verde se ≥ meta" seguida de "vermelho se < meta"). O brilho só é visível no KPI (é o card inteiro que brilha); nos demais tipos, o efeito visível é a cor de fundo da barra/célula e o piscar.
+- **Meta** (KPI, barra/coluna, colunas empilhadas, combo, histograma, linha, área): um número opcional que desenha uma **linha de referência tracejada** no gráfico e, no KPI, aparece ao lado do valor pra comparação direta ("meta: 100"). Fora do KPI (que não desenha linha), a linha tem **cor e opacidade próprias**, opcionais — sem cor escolhida, usa o vermelho padrão.
+- **Regras** (KPI, barra/coluna, colunas empilhadas, combo, histograma, matriz): uma lista de "se o valor for {maior que / maior ou igual a / menor que / menor ou igual a / igual a / diferente de} {número}, aplica {cor de fundo / piscar / brilho}" — avaliadas na ordem da lista, a **última que bater vence** (dá pra empilhar regras em cascata, ex. "verde se ≥ meta" seguida de "vermelho se < meta"). O brilho só é visível no KPI (é o card inteiro que brilha); nos demais tipos, o efeito visível é a cor de fundo da barra/célula e o piscar. Com "Piscar" marcado, aparece a **velocidade** (Super lento / Lento / Normal / Rápido / Super rápido) — padrão "Normal", o mesmo ritmo de sempre.
 - Onde o efeito aparece, por tipo de widget:
   - **KPI**: o card inteiro (fundo, piscar, brilho) muda conforme o valor.
-  - **Barra/coluna, colunas empilhadas, combo, histograma**: cada barra individual muda de cor conforme o próprio valor (uma barra vermelha ao lado de uma verde, por exemplo) — linha e área do combo não coloram por trecho, só a(s) série(s) de barra.
+  - **Barra/coluna, colunas empilhadas, combo, histograma**: cada barra individual muda de cor conforme o próprio valor (uma barra vermelha ao lado de uma verde, por exemplo) — linha e área do combo não coloram por trecho, só a(s) série(s) de barra. Quando essas barras também têm **rótulo de dados** ligado, cada regra tem um campo **"Aplica em"** (Barra / Rótulo / Ambos, padrão "Ambos") que decide onde a cor e o piscar aparecem: só na barra (o número ao lado fica sempre na cor de sempre), só no rótulo (a barra fica sempre na cor de sempre), ou nos dois — e nesse caso o piscar dos dois é **sincronizado** (mesma fase, não cada um piscando por conta própria).
   - **Matriz**: cada célula (linha × coluna) muda de cor e pode piscar conforme o próprio valor.
   - **Linha, área**: só a linha de meta (referência) — sem coloração condicional (uma linha contínua não tem "pedaços" discretos pra colorir).
 - Regras e meta são independentes — dá pra usar só uma das duas, ou as duas juntas.
+
+### 3.6.3 Formatação condicional por texto (só Tabela)
+
+Seção **"Formatação condicional (tabela)"** em Formato, só no tipo Tabela — motor separado do de 3.6.2: em vez de comparar um número contra um limiar, compara o **texto** de cada célula contra uma palavra, frase ou valor.
+
+- Cada regra escolhe uma **coluna** (dentre as já adicionadas à tabela), um **operador** ("é igual a" ou "contém"), o **texto** a comparar, e o efeito: **cor da fonte**, **cor de fundo**, e/ou **piscar** — qualquer combinação dos três.
+- Não diferencia maiúsculas de minúsculas nem espaço nas pontas: uma regra para "sim" também bate em "Sim", "SIM" ou " sim ".
+- Quantas regras quiser, por quantas colunas quiser. Dentro da mesma coluna, se mais de uma regra bater na mesma célula, a **última da lista vence** (mesma lógica de "última regra vence" de 3.6.2). Regras de colunas diferentes nunca competem entre si.
+- Exemplo: uma regra "coluna Status é igual a **sim** → fonte verde + piscar" e outra "coluna Status é igual a **não** → fonte vermelha" aplicam o efeito certo em toda célula daquela coluna que tiver exatamente aquele texto — sem precisar editar linha por linha.
+- **Aplica em** (Célula / Linha inteira): por padrão a regra colore só a célula que bateu. Trocando para "Linha inteira", quando a coluna escolhida bate, **todas as colunas daquela linha** recebem a mesma cor/fundo/piscar — não só a coluna avaliada. Se uma regra de linha e uma regra de célula (de outra coluna) baterem na mesma linha ao mesmo tempo, a regra de **linha** vence.
+- Quando o piscar está ligado em mais de uma célula ao mesmo tempo, todas piscam **sincronizadas** (mesmo mecanismo de 3.6.2/relatado no piscar de barra+rótulo). Com "Piscar" marcado, aparece a mesma **velocidade** de 3.6.2 (Super lento / Lento / Normal / Rápido / Super rápido) — células/linhas de velocidades diferentes continuam cada uma no próprio ritmo, só as do MESMO ritmo ficam em fase.
+
+### 3.6.4 Gráfico dinâmico
+
+Seção **"Gráfico dinâmico"** em Formato — disponível em todo tipo com uma forma pra desenhar: linha, área, barra/coluna (simples e empilhada), combo, pizza, funil, dispersão e histograma. **Não existe em KPI, Tabela e Matriz** (número, texto e grade não têm o que "desenhar" desse jeito).
+
+- **Ativar**: liga um ciclo que se repete sozinho, pra sempre, enquanto o widget estiver na tela — não depende do dado mudar. Cada tipo de gráfico "desenha" à própria maneira:
+  - **Linha / Área**: a linha (ou a área preenchida) traça do início ao fim do eixo X e, ao terminar, desaparece e recomeça do início.
+  - **Barra / Coluna** (simples, empilhada, e as barras de um combo/histograma): cada categoria cresce até o próprio valor, na ordem em que aparece no gráfico (esquerda → direita) — uma termina de crescer, a próxima começa. Empilhada: os segmentos daquela categoria crescem juntos, como uma coluna só.
+  - **Pizza / Funil / Dispersão**: a própria animação de entrada de cada um (a pizza varre as fatias, o funil desce os segmentos, a dispersão distribui os pontos), só que repetindo em loop.
+- **Velocidade do ciclo** (Super lento / Lento / Normal / Rápido / Super rápido, aparece só com "Ativar" marcado): controla quanto tempo o ciclo INTEIRO leva — do começo do desenho até o fim, sem pausa parado no cheio; ele termina de desenhar bem na hora de recomeçar.
+- Puramente visual: não muda o dado, não afeta o que a IA lê do gráfico (3.7-quater) nem a leitura/explicação do widget (3.14).
+- Uma barra que também obedece uma regra de "Meta e alertas" (3.6.2, cor/pisca condicional) continua obedecendo normalmente — as duas animações (crescer + piscar) tocam juntas na mesma barra quando os dois estão ativos.
 
 ### 3.7 Fontes de dados — visão geral
 
@@ -157,7 +355,8 @@ Existem **dois** tipos de fonte, e a principal é o Data Hub:
 Dois recursos valem para qualquer fonte:
 
 - **Mesclar campos entre fontes** (só em widgets de tabela e como campo extra em qualquer papel do widget): funciona como um JOIN simples — casa uma chave em comum entre duas fontes e traz um campo da fonte relacionada.
-- **Dicionário de dados** (Configurações, só admin edita): uma descrição livre por campo de qualquer fonte — o que ele significa, de onde vem. Aparece automaticamente como um balão de informação (i), igual aos que já explicam Dados/Modificadores/Formato, ao lado do campo em qualquer seletor do Builder (Eixo X/Y, Legenda, Filtro, colunas de tabela) — pra qualquer usuário, não só quem escreveu. Campo sem descrição não mostra nada extra. É também o que a IA lê para entender o significado de cada coluna (3.7-quater).
+- **Dicionário & Tipo de dado** (Configurações, só admin edita): uma descrição livre por campo de qualquer fonte — o que ele significa, de onde vem. Aparece automaticamente como um balão de informação (i), igual aos que já explicam Dados/Modificadores/Formato, ao lado do campo em qualquer seletor do Builder (Eixo X/Y, Legenda, Filtro, colunas de tabela) — pra qualquer usuário, não só quem escreveu. Campo sem descrição não mostra nada extra. É também o que a IA lê para entender o significado de cada coluna (3.7-quater).
+  - **Tipo de dado** (mesma tela, ao lado da descrição): o app **infere sozinho** se um campo é número, data ou texto/categoria, olhando uma amostra dos dados reais — e às vezes erra (uma data num formato que não é "AAAA-MM-DD" vira texto; um código numérico de identificação vira "número", como se pudesse ser somado). Um seletor **estilo Power BI** (Número Decimal/Decimal fixo/Inteiro/Percentual, Data/Hora/Data e hora/Data-Hora-Fuso/Duração, Texto/Verdadeiro-Falso/Binário) deixa sobrescrever isso campo a campo. A sobrescrita muda de verdade: em quais seletores o campo aparece (medida numérica vs. dimensão), se um filtro daquele campo nasce como intervalo de datas ou seleção múltipla, e como a IA descreve o campo pra si mesma. Selecionar "Automático" de volta remove a sobrescrita. **Limite desta versão**: várias das opções do menu (ex. Decimal/Decimal fixo/Inteiro, ou Data/Data-Hora/Hora) mudam o comportamento da MESMA forma — ainda não existe formatação visual por subtipo (casas decimais, símbolo de %, hora sem data junto); o valor escolhido fica salvo, pronto pra uma formatação futura usar.
 
 ### 3.7-bis Fontes de dados — planilhas do Google (qualquer usuário)
 
@@ -189,10 +388,12 @@ A fonte **principal** do app, e o caminho para todo dado corporativo. O lakehous
 No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (mesma permissão: quem pode adicionar widget na guia pode usar). Ele abre um painel de conversa lateral onde você descreve o que quer ver e a IA monta os widgets.
 
 - **Como se usa**: marque quais fontes a IA pode usar, escreva o pedido ("monte uma tela com os principais indicadores", "compare o volume por equipe nos últimos meses", "quais os 3 gargalos que os dados mostram?") e a resposta vai aparecendo enquanto ela pensa. Ao terminar, ela apresenta os widgets propostos com tipo e título.
+- **Convite em guia vazia**: além do botão "IA", qualquer guia sem nenhum widget (ou com só o widget de texto da guia de boas-vindas) mostra um convite com sugestões de pergunta prontas — clicar numa delas já abre o painel com a pergunta preenchida e enviada, sem precisar digitar do zero. O convite some enquanto o painel estiver aberto.
 - **Nada é aplicado sozinho**: você clica em **"Adicionar à guia"** (ou "Descartar"). Aprovar coloca os widgets no rascunho da guia — e, como qualquer edição manual, **ainda depende do "Salvar"** da barra de edição. É deliberado: o modelo pode interpretar mal um pedido ambíguo.
 - **Depois de aprovado é um widget normal**: abre no editor de sempre, muda cor, tipo, campo, formatação. A IA dá o ponto de partida, não um objeto especial.
-- **O que a IA vê**: apenas os **nomes** dos campos das fontes marcadas, o tipo de cada um (número/data/texto) e a descrição escrita no dicionário de dados (3.7). **As linhas de dados nunca são enviadas.** Quando ela precisa de valores reais — por exemplo, para saber se o status é "Concluído" ou "CONCLUIDO" antes de criar um filtro — ela consulta os valores distintos daquele campo, e só aquilo sobe. Para escrever um insight, ela lê o resultado **já agregado** do widget (as mesmas centenas de números que o gráfico mostra), não o dataset.
+- **O que a IA vê**: os **nomes** dos campos das fontes marcadas, o tipo de cada um (número/data/texto), a descrição escrita no dicionário de dados (3.7) e, para campos de texto, alguns valores de exemplo (até 6) já anexados ao catálogo — junto de um aviso quando o campo parece ser um identificador (muitos valores distintos, tipo nome ou número de protocolo), pra ela saber que não faz sentido usá-lo como dimensão. **As linhas de dados nunca são enviadas** — os exemplos vêm de uma amostra, não da base inteira. Quando precisa de um valor que não apareceu nos exemplos — por exemplo, confirmar se o status é "Concluído" ou "CONCLUIDO" antes de montar um filtro — ela ainda pode consultar os valores distintos daquele campo especificamente, e só aquilo sobe. Para escrever uma leitura de gráfico (3.14) ou um insight dentro da conversa, ela lê o resultado **já agregado** (as mesmas dezenas/centenas de números que o gráfico mostra), não o dataset.
 - **Não invento campo**: o que a IA propõe é validado contra o catálogo real antes de chegar na tela. Campo ou fonte inexistente é recusado e devolvido pra ela corrigir na mesma conversa — em vez de gerar um widget quebrado.
+- **Aparência**: por padrão os widgets nascem com a aparência padrão do app/tema da guia, igual a um widget feito à mão — a IA não mexe nisso sozinha, e widgets "todos no mesmo padrão" é o comportamento esperado quando ninguém pediu nada sobre visual. Se o pedido incluir algo sobre cor, visual, design, tamanho ou variedade ("cores diferentes", "deixa mais variado", "títulos maiores", "fica vermelho se passar de tal valor"), ela tem acesso a **tudo que o editor manual permite ajustar na aba Formato** — cor e paleta de série, fundo do card e sua opacidade, opacidade do gráfico, cor dos ícones, linhas de grade, sombra/brilho/piscar, formatação de texto completa (título, subtítulo, eixos, legenda, linhas/colunas da matriz), rótulos de dado (gerais e por série), formatação de tabela, meta/alertas (3.6.2), formatação condicional por texto da tabela (3.6.3) e Gráfico dinâmico (3.6.4) — e aplica o que fizer sentido pro pedido, variando de verdade entre os widgets propostos. Posição na grade (x/y) nunca é decidida pela IA, sempre pelo mesmo mecanismo anti-sobreposição usado no resto do Builder.
 - **Insights**: peça uma análise e ela pode devolver um widget de **texto** com o que os números mostram — que fica salvo na guia como qualquer outro widget.
 - **Acesso**: a conversa só alcança fontes que você já veria no Builder daquela pasta (as mesmas regras de 3.7 e 3.12 valem, sem exceção).
 - **Custo e limite**: cada interação custa centavos e o painel mostra, no canto, quanto você já gastou hoje e qual o limite diário. Batendo o limite, o campo de mensagem bloqueia até o dia seguinte (ajustável em `AI_DAILY_BUDGET_USD`).
@@ -237,7 +438,7 @@ Resumo de quem pode fazer o quê (ver 3.1 pra contexto):
 | Definir quem acessa uma pasta (aberta a todos ou lista de e-mails) | Administrador |
 | Nomear gerente(s) de uma pasta | Administrador |
 | Criar dashboard dentro de uma pasta | Administrador ou gerente daquela pasta |
-| Gerenciar a estrutura de uma dashboard (guias, filtros, formato) | Administrador ou gerente da pasta |
+| Gerenciar a estrutura de uma dashboard (guias, filtros, relacionamentos entre fontes, formato) | Administrador ou gerente da pasta |
 | Definir quem vê e quem edita cada guia | Administrador ou gerente da pasta |
 | Ver uma guia | Administrador, gerente da pasta, ou usuário liberado (visualização ou edição) naquela guia especificamente |
 | Editar os widgets de uma guia | Administrador, gerente da pasta, ou usuário com edição liberada naquela guia |
@@ -251,6 +452,14 @@ O seletor de e-mails usado pra liberar acesso de guia mostra só quem **já tem 
 ### 3.13 Comentários em widgets
 
 Todo widget tem um ícone de balão de comentário no cabeçalho, visível tanto em modo visualização quanto em edição. Clicar mostra os comentários já deixados (autor, data, texto) e um campo pra escrever um novo. Qualquer usuário autenticado pode comentar — não precisa ter permissão de editar aquele widget, já que é uma anotação de leitura/colaboração ("esse pico em março foi por causa da campanha X"), não uma mudança na configuração do widget. Remover um comentário é restrito a quem escreveu ou a um administrador. Um número no ícone indica quantos comentários existem.
+
+### 3.14 Leitura e explicação de um widget
+
+Ao lado do ícone de comentário, todo widget tem um ícone de leitura no cabeçalho (visível em qualquer modo). Ele abre um popover com duas respostas diferentes, cada uma resolvida do jeito que faz sentido para o que promete:
+
+- **Como foi calculado**: não passa pela IA. É o próprio `WidgetConfig` traduzido em texto — fonte, agregação, agrupamento, filtros (do widget e da guia) e recorte de datas, incluindo as descrições já escritas no dicionário de dados (3.7). Por não depender de nenhum modelo, é instantâneo, grátis, e não é uma explicação plausível do cálculo — é o cálculo.
+- **O que os dados dizem**: aqui sim é a IA, sob demanda (um clique, nunca automático ao abrir a tela — um gráfico não pode gerar custo só por estar na dashboard). Sobe pro modelo só o resultado já agregado que o próprio gráfico desenha (as dezenas/centenas de pontos, não a base). Usa o mesmo teto de gasto diário do assistente de montagem (3.7-quater), não um orçamento separado. A resposta fica em cache por alguns minutos — reabrir o mesmo gráfico sem mudar nada responde na hora, sem custo.
+- **Fixar a leitura**: em modo edição, a leitura gerada pode ser fixada no widget — passa a ficar salva com a dashboard (depende do "Salvar", como qualquer edição) e todo mundo que abre o widget lê o mesmo texto, sem gerar de novo. Se os dados mudarem depois de fixado, o texto não desaparece nem passa por atual: aparece um aviso de que a leitura pode estar desatualizada.
 
 ---
 

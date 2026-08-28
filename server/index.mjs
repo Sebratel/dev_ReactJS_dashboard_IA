@@ -28,7 +28,7 @@ import {
   setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, resolveCredentials,
   sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
 } from './lakehouseSources.mjs'
-import { listFieldDictionary, upsertFieldDescription } from './fieldDictionary.mjs'
+import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
 import { explainWidgetData } from './aiInsight.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
@@ -305,6 +305,7 @@ app.post('/api/widget-data', requireAuth(), async (req, res) => {
     const data = await runWidgetQuery({
       widget: b.widget,
       tabFilters: b.tabFilters ?? [],
+      relations: Array.isArray(b.relations) ? b.relations : [],
       page: Number(b.page) || 1,
       pageSize: Math.min(200, Number(b.pageSize) || 50),
       accessToken: req.accessToken,
@@ -636,6 +637,7 @@ app.post('/api/ai/insight', requireAuth(), async (req, res) => {
       email: req.user.email,
       widget: b.widget,
       tabFilters: b.tabFilters ?? [],
+      relations: Array.isArray(b.relations) ? b.relations : [],
       calc: b.calc ?? [],
       force: !!b.force,
       accessToken: req.accessToken,
@@ -646,7 +648,7 @@ app.post('/api/ai/insight', requireAuth(), async (req, res) => {
   }
 })
 
-// ─── Dicionário de dados (descrição/origem por coluna) ────────────
+// ─── Dicionário & Tipo de dado (descrição/origem e tipo por coluna) ────
 // Leitura liberada pra qualquer usuário (é o que alimenta o InfoHint nos
 // seletores de campo do Builder); só admin escreve.
 app.get('/api/field-dictionary', requireAuth(), (_req, res) => {
@@ -656,7 +658,7 @@ app.get('/api/field-dictionary', requireAuth(), (_req, res) => {
 app.put('/api/field-dictionary', requireAuth(), requireAdmin(), (req, res) => {
   try {
     const b = req.body || {}
-    const entry = upsertFieldDescription({ source: b.source, field: b.field, description: b.description }, req.user.email)
+    const entry = upsertFieldDictionaryEntry({ source: b.source, field: b.field, description: b.description, dataType: b.dataType }, req.user.email)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'fieldDictionary.update', target: `${b.source}::${b.field}` })
     res.json({ ok: true, entry })
   } catch (e) {

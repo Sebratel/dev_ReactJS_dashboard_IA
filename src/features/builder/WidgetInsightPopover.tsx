@@ -21,7 +21,7 @@ import { useAuthStore } from '@/store/authStore'
 import { ModalPortal } from '@/components/ui/ModalPortal'
 import { describeCalculation, fingerprintPoints, type CalcLine } from './explainWidget'
 import { fetchWidgetInsight, ApiError } from './ai/aiApi'
-import type { FilterConfig, PinnedInsight, WidgetConfig } from './types'
+import type { FilterConfig, PinnedInsight, TabRelation, WidgetConfig } from './types'
 
 const PANEL_WIDTH = 384 // w-96
 const EDGE_MARGIN = 8
@@ -31,9 +31,10 @@ function formatWhen(iso: string): string {
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })
 }
 
-export function WidgetInsightPopover({ widget, tabFilters, points, editMode, onPin, iconClassName, iconStyle }: {
+export function WidgetInsightPopover({ widget, tabFilters, relations, points, editMode, onPin, iconClassName, iconStyle }: {
   widget: WidgetConfig
   tabFilters: { filter: FilterConfig; values: string[] }[]
+  relations: TabRelation[]
   // Os pontos que o widget JÁ desenhou. Servem só para a impressão digital que
   // detecta leitura fixada envelhecida — nenhuma consulta a mais por causa
   // disto, e os números que a IA lê vêm do servidor, não daqui.
@@ -53,7 +54,7 @@ export function WidgetInsightPopover({ widget, tabFilters, points, editMode, onP
   const panelRef = useRef<HTMLDivElement>(null)
   const userName = useAuthStore((s) => s.user?.name ?? undefined)
 
-  const calc: CalcLine[] = describeCalculation(widget, tabFilters)
+  const calc: CalcLine[] = describeCalculation(widget, tabFilters, relations)
   const fingerprint = fingerprintPoints(points)
   const pinned = widget.insight
   const pinnedStale = !!pinned && pinned.fingerprint !== fingerprint
@@ -99,7 +100,7 @@ export function WidgetInsightPopover({ widget, tabFilters, points, editMode, onP
     setLoading(true)
     setError(null)
     try {
-      const out = await fetchWidgetInsight({ widget, tabFilters, calc, force })
+      const out = await fetchWidgetInsight({ widget, tabFilters, relations, calc, force })
       setText(out.text)
       setUsd(out.cached ? 0 : out.usd)
     } catch (e) {

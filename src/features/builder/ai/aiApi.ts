@@ -5,7 +5,7 @@
 // esperar o modelo terminar. Não uso EventSource porque ele só faz GET — e o
 // turno precisa mandar a mensagem no corpo; então é fetch + leitura do corpo.
 import { apiFetch, ApiError } from '@/lib/apiClient'
-import type { WidgetConfig } from '../types'
+import type { TabRelation, WidgetConfig } from '../types'
 
 export { ApiError }
 
@@ -59,6 +59,7 @@ export interface WidgetInsight {
 export async function fetchWidgetInsight(body: {
   widget: WidgetConfig
   tabFilters: unknown[]
+  relations?: TabRelation[]
   calc: { label: string; value: string }[]
   force?: boolean
 }): Promise<WidgetInsight> {

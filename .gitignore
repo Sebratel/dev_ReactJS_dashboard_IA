@@ -1,6 +1,3 @@
-node_modules
-dist
-
 # Scripts de debug avulsos (não fazem parte do projeto)
 _probe_view.mjs
 

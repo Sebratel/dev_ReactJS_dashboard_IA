@@ -1,0 +1,23 @@
+[
+  {
+    "source": "dhub:dh_mt7n9xt8odg8m",
+    "field": "Protocolo",
+    "description": "solicitação de infra",
+    "updatedBy": "gustavo.santos@sebratel.com.br",
+    "updatedAt": "2026-08-24T20:04:05.676Z"
+  },
+  {
+    "source": "dhub:dh_mt7n9xt8odg8m",
+    "field": "Data Inicio",
+    "dataType": "date",
+    "updatedBy": "gustavo.santos@sebratel.com.br",
+    "updatedAt": "2026-08-28T11:57:48.936Z"
+  },
+  {
+    "source": "dhub:dh_mt7n9xt8odg8m",
+    "field": "Data Fim",
+    "dataType": "date",
+    "updatedBy": "gustavo.santos@sebratel.com.br",
+    "updatedAt": "2026-08-28T11:57:51.157Z"
+  }
+]

@@ -1,0 +1,882 @@
+[
+  {
+    "ts": "2026-08-24T19:33:17.779Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "auth.login",
+    "target": "gustavo.santos@sebratel.com.br",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:44:15.986Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "lakehouseSource.create",
+    "target": "dh_mt7n9xt8odg8m",
+    "meta": {
+      "label": "Geral",
+      "dataset": "infra-teste"
+    }
+  },
+  {
+    "ts": "2026-08-24T19:45:59.272Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "auth.logout",
+    "target": "gustavo.santos@sebratel.com.br",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:48:01.357Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "auth.login",
+    "target": "gustavo.santos@sebratel.com.br",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:48:23.170Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "folder.create",
+    "target": "folder-mt7nf8jh-gnx4",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:49:04.263Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "workspace.dashboard.create",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:49:13.089Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "workspace.dashboard.create",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ngb24-k446",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:52:10.421Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "739215c5-29d4-4ced-b1cb-b3e737e1bebc",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-24T19:53:01.856Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "bd7ae35b-2d99-4805-92e1-3fb55e84bea6",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-24T19:53:27.111Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T19:57:51.321Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:01:33.054Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:04:05.681Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "fieldDictionary.update",
+    "target": "dhub:dh_mt7n9xt8odg8m::Protocolo",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:39:38.322Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:40:09.832Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:41:56.211Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:42:14.489Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:44:20.731Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:44:55.646Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:47:10.467Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:49:59.801Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T20:58:53.468Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-24T21:07:17.748Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-25T19:37:36.578Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "10195a88-d2c6-4fa0-adbd-becb219cfd2c",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-25T19:53:19.315Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "4912f11c-0c59-44e9-91a1-c19cedac31c3",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-25T20:15:45.753Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "1b42c5bf-299f-42fb-8967-847249a572ec",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-25T20:28:25.333Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "10ded07d-5df3-4fae-88fe-53bd4b7f625b",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-25T20:30:30.242Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ngb24-k446",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-25T20:52:04.294Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ngb24-k446",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T11:44:48.197Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "workspace.dashboard.delete",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ngb24-k446",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T11:55:08.555Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "workspace.dashboard.create",
+    "target": "folder-mt7nf8jh-gnx4/dash-mta1ecg7-k7so",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T11:56:08.756Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "a42dcd18-93b1-4123-a2da-cbdebadf429e",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-26T11:57:50.847Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mta1ecg7-k7so",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T18:15:10.716Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T18:24:03.896Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T18:40:19.415Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T18:41:18.379Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T19:12:17.995Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T19:15:23.661Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T19:55:13.479Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:00:23.557Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:07:23.405Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:12:53.084Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:15:37.743Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:19:15.999Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:25:09.806Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:30:07.878Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:30:43.215Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:31:09.788Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T20:54:52.516Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T21:11:39.950Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T21:12:47.082Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T21:15:20.190Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-26T21:17:42.041Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T11:57:48.938Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "fieldDictionary.update",
+    "target": "dhub:dh_mt7n9xt8odg8m::Data Inicio",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T11:57:51.163Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "fieldDictionary.update",
+    "target": "dhub:dh_mt7n9xt8odg8m::Data Fim",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T11:58:39.148Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "workspace.dashboard.delete",
+    "target": "folder-mt7nf8jh-gnx4/dash-mta1ecg7-k7so",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T12:50:29.748Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "5b405ae6-5475-449b-92f4-95133deacea6",
+    "meta": {
+      "folderId": "geral",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-28T12:55:18.713Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "fcfa641b-c489-48b9-9712-0cdb11431383",
+    "meta": {
+      "folderId": "geral",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-28T12:56:16.373Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "geral/principal",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T13:19:54.967Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-28T13:24:28.793Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T17:54:25.533Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T17:54:45.172Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T17:58:20.971Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T17:59:22.327Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:02:23.270Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:02:38.518Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:04:08.847Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:04:34.023Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:04:44.325Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-08-31T18:11:13.672Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "a57587f2-9e31-4760-9441-ac0731f95b19",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-08-31T18:13:14.368Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T11:35:02.305Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T11:40:23.986Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T11:41:59.645Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:00:33.431Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:10:38.801Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:12:27.290Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:31:02.619Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:31:51.302Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T17:36:09.872Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T18:25:48.155Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "7e7d007d-56fa-4cf6-a2c7-333385d0859e",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T18:33:14.372Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T18:36:04.432Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T18:41:57.227Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "1035da44-21e5-4034-be4f-f9d1e1d1897a",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T18:43:55.472Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:42:49.704Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:43:24.032Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:47:24.660Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "d2fbbfd2-8548-4e2b-a41f-0be3aaaadc3e",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T19:52:37.697Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:52:41.293Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "09b8a91d-e98b-4f2c-8fcc-a7c2d1854036",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T19:53:06.226Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "eb13d30b-0a74-40bb-8cbd-eb78d6a1f911",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T19:53:34.001Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "8a4440f3-dcc4-44ed-b590-31ac8d5d182d",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T19:54:00.645Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:54:13.744Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:55:02.024Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  },
+  {
+    "ts": "2026-09-01T19:55:04.392Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "ai.conversation.start",
+    "target": "a03778f7-c9b6-4264-b575-3f6380d32b0d",
+    "meta": {
+      "folderId": "folder-mt7nf8jh-gnx4",
+      "sources": [
+        "dhub:dh_mt7n9xt8odg8m"
+      ]
+    }
+  },
+  {
+    "ts": "2026-09-01T19:55:36.454Z",
+    "email": "gustavo.santos@sebratel.com.br",
+    "name": "Gustavo Leite Dos Santos",
+    "action": "dashboard.save",
+    "target": "folder-mt7nf8jh-gnx4/dash-mt7ng48z-yv6g",
+    "meta": null
+  }
+]

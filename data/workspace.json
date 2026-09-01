@@ -1,0 +1,2033 @@
+{
+  "version": 2,
+  "folders": [
+    {
+      "id": "geral",
+      "name": "Geral",
+      "icon": "LayoutDashboard",
+      "order": 0,
+      "accessEmails": null,
+      "managers": [],
+      "createdBy": null,
+      "createdAt": "2026-08-24T19:33:17.984Z",
+      "updatedBy": null,
+      "updatedAt": null,
+      "dashboards": [
+        {
+          "id": "principal",
+          "name": "Dashboard Principal",
+          "order": 0,
+          "createdBy": null,
+          "createdAt": "2026-08-24T19:33:17.984Z",
+          "updatedBy": "gustavo.santos@sebratel.com.br",
+          "updatedAt": "2026-08-28T12:56:16.365Z",
+          "tabs": [
+            {
+              "id": "tab-mt7mvu3k-9qlc",
+              "label": "Boas-vindas",
+              "icon": "Sparkles",
+              "filters": [],
+              "isWelcome": true,
+              "access": {
+                "mode": "open",
+                "view": [],
+                "edit": []
+              },
+              "widgets": [
+                {
+                  "id": "w-mt7mvu3k-zikb",
+                  "type": "text",
+                  "title": "Bem-vindo(a)",
+                  "content": "INDICADORES SEBRATEL\n\nPlataforma interna para acompanhamento de indicadores operacionais. As telas são montadas pelas próprias áreas, descrevendo o que precisa ser acompanhado — sem depender de desenvolvimento.\n\nCOMO MONTAR UMA TELA\n\nEm uma guia sem conteúdo, ou pelo botão \"IA\" no modo de edição, descreva o que você precisa visualizar. Por exemplo:\n\n- Quais são os principais indicadores destes dados?\n- Analise o churn e identifique onde estão as maiores perdas.\n- Compare o volume por mês e destaque as variações relevantes.\n\nA IA consulta os dados disponíveis, monta os gráficos e apresenta a proposta para aprovação. Nada é aplicado à tela sem a sua confirmação.\n\nGráficos aprovados são editáveis como qualquer outro: tipo de visual, campos, cores e formatação. Para configurar cada detalhe desde o início, o botão \"+ Widget\" abre o editor manual.\n\nESTRUTURA\n\n- Pasta: a área ou setor (Comercial, Instalação, Financeiro), no menu lateral.\n- Dashboard: uma tela dentro da pasta.\n- Guia: uma aba dentro da dashboard, como esta.\n\nPERMISSÕES\n\n- Administradores acessam todas as pastas.\n- Gerentes administram o próprio setor.\n- Demais usuários acessam o que lhes for liberado.\n\nGuias novas nascem restritas até que o acesso seja concedido. Esta guia permanece sempre visível.\n\nEDIÇÃO\n\nO botão \"Editar dashboard\" libera os controles da tela: IA, + Widget, Filtro, Abas, Formato e Temas. Nenhuma alteração é gravada até que você clique em \"Salvar\"; \"Descartar\" reverte as alterações não salvas.\n\nORIGEM DOS DADOS\n\nOs conjuntos de dados são publicados no Data Hub e cadastrados em Configurações. Para incluir uma informação ainda não disponível, solicite a publicação a um administrador.\n\nSUPORTE\n\nDúvidas sobre acesso ou utilização: consulte o gerente da sua área ou um administrador.",
+                  "layout": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 24,
+                    "h": 28
+                  }
+                }
+              ],
+              "canEdit": true
+            },
+            {
+              "id": "tab-mtcyffbb",
+              "label": "Nova guia",
+              "filters": [],
+              "widgets": [
+                {
+                  "type": "kpi",
+                  "title": "Total de Solicitações",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "backgroundColor": "#0f172a",
+                  "backgroundOpacity": 95,
+                  "color": "#38bdf8",
+                  "valueAlign": "center",
+                  "titleFormat": {
+                    "fontSize": 22,
+                    "bold": true,
+                    "color": "#e2e8f0",
+                    "align": "center"
+                  },
+                  "glow": true,
+                  "glowColor": "#38bdf8",
+                  "id": "ai-mtcyg78m-0-9rn1",
+                  "layout": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 8,
+                    "h": 6
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Solicitações Atrasadas",
+                  "subtitle": "SLA fora do prazo",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "widgetFilters": [
+                    {
+                      "field": "sla_status",
+                      "op": "in",
+                      "values": [
+                        "Atrasada"
+                      ]
+                    }
+                  ],
+                  "backgroundColor": "#fef2f2",
+                  "valueAlign": "center",
+                  "titleFormat": {
+                    "fontSize": 16,
+                    "bold": true,
+                    "color": "#b91c1c"
+                  },
+                  "subtitleFormat": {
+                    "fontSize": 11,
+                    "italic": true,
+                    "color": "#7f1d1d"
+                  },
+                  "color": "#dc2626",
+                  "conditionalRules": [
+                    {
+                      "operator": "gt",
+                      "value": 100,
+                      "effect": {
+                        "backgroundColor": "#fee2e2",
+                        "blink": true,
+                        "blinkSpeed": "slow",
+                        "glow": true
+                      },
+                      "id": "ai-rule-mtcyg78m-1-0-hi8r"
+                    }
+                  ],
+                  "id": "ai-mtcyg78m-1-hybg",
+                  "layout": {
+                    "x": 8,
+                    "y": 0,
+                    "w": 8,
+                    "h": 6
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Cidades Atendidas",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "countDistinct",
+                    "field": "Cidade"
+                  },
+                  "backgroundColor": "#ecfdf5",
+                  "color": "#047857",
+                  "valueAlign": "center",
+                  "titleFormat": {
+                    "fontSize": 16,
+                    "bold": true,
+                    "color": "#065f46",
+                    "align": "center"
+                  },
+                  "shadow": true,
+                  "shadowColor": "#10b981",
+                  "id": "ai-mtcyg78m-2-ukah",
+                  "layout": {
+                    "x": 16,
+                    "y": 0,
+                    "w": 8,
+                    "h": 6
+                  }
+                },
+                {
+                  "type": "area",
+                  "title": "Evolução mensal das solicitações",
+                  "subtitle": "Volume por mês de criação",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "label": "Solicitações"
+                    }
+                  ],
+                  "color": "#6366f1",
+                  "seriesOpacity": 45,
+                  "gridLines": "horizontal",
+                  "gridLinesColor": "#c7d2fe",
+                  "gridLinesOpacity": 60,
+                  "dataLabels": {
+                    "show": true,
+                    "content": "value",
+                    "fontSize": 11,
+                    "color": "#4338ca",
+                    "position": "top"
+                  },
+                  "titleFormat": {
+                    "fontSize": 20,
+                    "bold": true,
+                    "color": "#312e81"
+                  },
+                  "subtitleFormat": {
+                    "fontSize": 11,
+                    "italic": true,
+                    "color": "#6366f1"
+                  },
+                  "axisXFormat": {
+                    "fontSize": 11,
+                    "color": "#4b5563"
+                  },
+                  "axisYFormat": {
+                    "fontSize": 11,
+                    "color": "#4b5563"
+                  },
+                  "dynamicAnimation": true,
+                  "dynamicAnimationSpeed": "slow",
+                  "id": "ai-mtcyg78m-3-hsum",
+                  "layout": {
+                    "x": 0,
+                    "y": 6,
+                    "w": 24,
+                    "h": 9
+                  }
+                },
+                {
+                  "type": "barH",
+                  "title": "Top 10 Equipes por volume",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Equipe"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "palette": [
+                    "#f97316",
+                    "#0ea5e9",
+                    "#22c55e",
+                    "#a855f7",
+                    "#ef4444",
+                    "#eab308",
+                    "#14b8a6",
+                    "#ec4899"
+                  ],
+                  "dataLabels": {
+                    "show": true,
+                    "content": "value",
+                    "position": "outside",
+                    "fontSize": 11
+                  },
+                  "gridLines": "vertical",
+                  "titleFormat": {
+                    "fontSize": 18,
+                    "bold": true,
+                    "color": "#7c2d12"
+                  },
+                  "backgroundColor": "#fffbeb",
+                  "backgroundOpacity": 80,
+                  "id": "ai-mtcyg78m-4-g2y0",
+                  "layout": {
+                    "x": 0,
+                    "y": 15,
+                    "w": 14,
+                    "h": 10
+                  }
+                },
+                {
+                  "type": "pie",
+                  "title": "Distribuição por Categoria 2",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Categoria 2"
+                  ],
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "palette": [
+                    "#2563eb",
+                    "#f43f5e",
+                    "#10b981",
+                    "#f59e0b",
+                    "#8b5cf6"
+                  ],
+                  "dataLabels": {
+                    "show": true,
+                    "content": "percent",
+                    "fontSize": 12
+                  },
+                  "legendFormat": {
+                    "fontSize": 11,
+                    "bold": true,
+                    "color": "#1f2937"
+                  },
+                  "titleFormat": {
+                    "fontSize": 18,
+                    "bold": true,
+                    "italic": true,
+                    "color": "#1e3a8a",
+                    "align": "center"
+                  },
+                  "backgroundColor": "#f8fafc",
+                  "shadow": true,
+                  "shadowColor": "#94a3b8",
+                  "id": "ai-mtcyg78m-5-5jha",
+                  "layout": {
+                    "x": 14,
+                    "y": 15,
+                    "w": 10,
+                    "h": 10
+                  }
+                },
+                {
+                  "type": "matrix",
+                  "title": "Status por Cidade",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "matrixRows": [
+                    "Cidade"
+                  ],
+                  "matrixColumns": [
+                    "Status"
+                  ],
+                  "matrixValue": {
+                    "agg": "count"
+                  },
+                  "matrixRowFormat": {
+                    "fontSize": 12,
+                    "bold": true,
+                    "color": "#0f766e"
+                  },
+                  "matrixColumnFormat": {
+                    "fontSize": 12,
+                    "bold": true,
+                    "color": "#134e4a",
+                    "align": "center",
+                    "backgroundColor": "#ccfbf1",
+                    "backgroundOpacity": 70
+                  },
+                  "titleFormat": {
+                    "fontSize": 18,
+                    "bold": true,
+                    "underline": true,
+                    "color": "#134e4a"
+                  },
+                  "conditionalRules": [
+                    {
+                      "operator": "gte",
+                      "value": 200,
+                      "effect": {
+                        "backgroundColor": "#99f6e4"
+                      },
+                      "id": "ai-rule-mtcyg78n-6-0-u42j"
+                    }
+                  ],
+                  "id": "ai-mtcyg78n-6-g984",
+                  "layout": {
+                    "x": 0,
+                    "y": 25,
+                    "w": 24,
+                    "h": 10
+                  }
+                },
+                {
+                  "type": "table",
+                  "title": "Solicitações em aberto — detalhe operacional",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "columns": [
+                    "Protocolo",
+                    "Catálogo",
+                    "Equipe",
+                    "Cidade",
+                    "Status",
+                    "sla_status",
+                    "Data criado"
+                  ],
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "limit": 50,
+                  "tableFormat": {
+                    "fontSize": 12,
+                    "headerBold": true,
+                    "align": "left",
+                    "color": "#1f2937",
+                    "columnLabels": {
+                      "sla_status": "SLA",
+                      "Data criado": "Criado em",
+                      "Catálogo": "Serviço"
+                    }
+                  },
+                  "tableConditionalRules": [
+                    {
+                      "column": "sla_status",
+                      "operator": "equals",
+                      "match": "Atrasada",
+                      "color": "#ffffff",
+                      "backgroundColor": "#dc2626",
+                      "blink": true,
+                      "blinkSpeed": "slow",
+                      "id": "ai-trule-mtcyg78n-7-0-msyo"
+                    },
+                    {
+                      "column": "sla_status",
+                      "operator": "equals",
+                      "match": "Dentro do Prazo",
+                      "color": "#15803d",
+                      "id": "ai-trule-mtcyg78n-7-1-2p8u"
+                    },
+                    {
+                      "column": "Status",
+                      "operator": "equals",
+                      "match": "Cancelado",
+                      "color": "#9ca3af",
+                      "applyTo": "row",
+                      "id": "ai-trule-mtcyg78n-7-2-7tjs"
+                    }
+                  ],
+                  "titleFormat": {
+                    "fontSize": 18,
+                    "bold": true,
+                    "color": "#111827"
+                  },
+                  "backgroundColor": "#ffffff",
+                  "id": "ai-mtcyg78n-7-peqd",
+                  "layout": {
+                    "x": 0,
+                    "y": 35,
+                    "w": 24,
+                    "h": 11
+                  }
+                }
+              ],
+              "access": {
+                "mode": "restricted",
+                "view": [],
+                "edit": []
+              },
+              "canEdit": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "folder-mt7nf8jh-gnx4",
+      "name": "Infra",
+      "icon": "Folder",
+      "order": 1,
+      "accessEmails": null,
+      "managers": [],
+      "createdBy": "gustavo.santos@sebratel.com.br",
+      "createdAt": "2026-08-24T19:48:23.165Z",
+      "updatedBy": null,
+      "updatedAt": null,
+      "dashboards": [
+        {
+          "id": "dash-mt7ng48z-yv6g",
+          "name": "resumo",
+          "order": 0,
+          "createdBy": "gustavo.santos@sebratel.com.br",
+          "createdAt": "2026-08-24T19:49:04.259Z",
+          "updatedBy": "gustavo.santos@sebratel.com.br",
+          "updatedAt": "2026-09-01T19:55:36.449Z",
+          "tabs": [
+            {
+              "id": "tab-mt7ng490-vvmi",
+              "label": "Boas-vindas",
+              "icon": "Sparkles",
+              "filters": [
+                {
+                  "id": "f-mt7nsda8",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "field": "Tipo de Solicitação",
+                  "label": "Tipo de Solicitação",
+                  "type": "multiselect"
+                },
+                {
+                  "id": "f-mthjsv1p",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "field": "Data criado",
+                  "label": "Data criado",
+                  "type": "daterange"
+                }
+              ],
+              "isWelcome": true,
+              "access": {
+                "mode": "open",
+                "view": [],
+                "edit": []
+              },
+              "widgets": [
+                {
+                  "type": "kpi",
+                  "title": "Total de solicitações",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "id": "ai-mt7nll6e-0-zdh4",
+                  "layout": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 3,
+                    "h": 4
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {
+                    "italic": true
+                  },
+                  "subtitleFormat": {
+                    "italic": false
+                  },
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "backgroundColor": "#6366f1",
+                  "backgroundOpacity": 30,
+                  "shadow": true,
+                  "shadowColor": "#ffb000",
+                  "glow": true,
+                  "glowColor": "#ffb000",
+                  "iconColor": "#10b981",
+                  "valueAlign": "left"
+                },
+                {
+                  "type": "kpi",
+                  "title": "Solicitações em aberto",
+                  "subtitle": "Tudo que não está encerrado, fechado ou cancelado",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "widgetFilters": [
+                    {
+                      "field": "Status",
+                      "op": "notIn",
+                      "values": [
+                        "Encerrado",
+                        "Fechado",
+                        "Cancelado"
+                      ]
+                    }
+                  ],
+                  "id": "ai-mt7nll6e-1-0exl",
+                  "layout": {
+                    "x": 3,
+                    "y": 0,
+                    "w": 5,
+                    "h": 4
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#22d3ee",
+                  "titleFormat": {},
+                  "subtitleFormat": {
+                    "align": "center",
+                    "backgroundColor": "#f97316",
+                    "backgroundOpacity": 65,
+                    "color": "#22d3ee"
+                  },
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "valueAlign": "center"
+                },
+                {
+                  "type": "kpi",
+                  "title": "Solicitações atrasadas",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "widgetFilters": [
+                    {
+                      "field": "sla_status",
+                      "op": "in",
+                      "values": [
+                        "Atrasada"
+                      ]
+                    }
+                  ],
+                  "id": "ai-mt7nll6e-2-omma",
+                  "layout": {
+                    "x": 8,
+                    "y": 0,
+                    "w": 4,
+                    "h": 4
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {
+                    "fontSize": 14,
+                    "align": "right",
+                    "underline": true
+                  },
+                  "subtitleFormat": {
+                    "align": "right",
+                    "fontSize": 14
+                  },
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "conditionalRules": [
+                    {
+                      "id": "r-mtafpogu",
+                      "operator": "gte",
+                      "value": 5000,
+                      "effect": {
+                        "backgroundColor": "#ef4444",
+                        "blink": true,
+                        "blinkSpeed": "slow",
+                        "glow": true
+                      }
+                    }
+                  ],
+                  "valueAlign": "right",
+                  "subtitle": "AAAAAAA"
+                },
+                {
+                  "type": "pie",
+                  "title": "SLA: dentro do prazo x atrasadas",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "sla_status"
+                  ],
+                  "measure": {
+                    "agg": "count"
+                  },
+                  "id": "ai-mt7nll6e-3-zi6o",
+                  "layout": {
+                    "x": 0,
+                    "y": 4,
+                    "w": 4,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {
+                    "show": true,
+                    "content": "percent",
+                    "color": "#ffffff",
+                    "fontSize": 16,
+                    "position": "inside"
+                  },
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "dynamicAnimation": true,
+                  "dynamicAnimationSpeed": "slower"
+                },
+                {
+                  "type": "line",
+                  "title": "Evolução mensal de solicitações",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "month:Data criado"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "label": "Solicitações",
+                      "color": "#ffb000"
+                    }
+                  ],
+                  "id": "ai-mt7nll6e-4-x8f0",
+                  "layout": {
+                    "x": 0,
+                    "y": 14,
+                    "w": 10,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {
+                    "show": true,
+                    "content": "value",
+                    "fontSize": 14
+                  },
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "gridLines": "horizontal",
+                  "target": 600,
+                  "shadow": true,
+                  "shadowColor": "#ffffff",
+                  "glow": true,
+                  "glowColor": "#ffffff",
+                  "gridLinesColor": "#ffffff",
+                  "gridLinesOpacity": 75,
+                  "dynamicAnimation": true,
+                  "dynamicAnimationSpeed": "slower"
+                },
+                {
+                  "type": "funnel",
+                  "title": "Solicitações por equipe",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Equipe"
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mt7nll6e-6-zgww",
+                  "layout": {
+                    "x": 0,
+                    "y": 24,
+                    "w": 10,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "dynamicAnimation": true,
+                  "dynamicAnimationSpeed": "slow"
+                },
+                {
+                  "type": "barH",
+                  "title": "Top 10 tipos de solicitação",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Tipo de Solicitação"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "color": "#ffb000"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mt7nll6e-7-kte2",
+                  "layout": {
+                    "x": 10,
+                    "y": 24,
+                    "w": 14,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {
+                    "show": true,
+                    "content": "value"
+                  },
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "target": 450,
+                  "conditionalRules": [
+                    {
+                      "id": "r-mtafum5q",
+                      "operator": "gte",
+                      "value": 450,
+                      "effect": {
+                        "backgroundColor": "#ef4444",
+                        "blink": true,
+                        "applyTo": "both"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "type": "barStacked",
+                  "title": "Solicitações por cidade e categoria",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Cidade"
+                  ],
+                  "legendDimension": "Categoria 2",
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mt7nll6e-8-cv38",
+                  "layout": {
+                    "x": 10,
+                    "y": 14,
+                    "w": 14,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {
+                    "show": true
+                  },
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "dynamicAnimation": true
+                },
+                {
+                  "id": "w-mt7nnyrt",
+                  "type": "text",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 12,
+                    "y": 0,
+                    "w": 3,
+                    "h": 4
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "content": "dfjosahodjshfoçdshfouds"
+                },
+                {
+                  "id": "w-mt7nt47p",
+                  "type": "table",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 10,
+                    "y": 4,
+                    "w": 5,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {
+                    "align": "center",
+                    "fontSize": 11
+                  },
+                  "subtitleFormat": {
+                    "align": "center",
+                    "color": "#ffffff"
+                  },
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {
+                    "columnWidths": {
+                      "Site2": 133
+                    },
+                    "align": "center",
+                    "headerBold": true
+                  },
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "shadow": true,
+                  "shadowColor": "#22d3ee",
+                  "glow": true,
+                  "glowColor": "#22d3ee",
+                  "columns": [
+                    "Status",
+                    "sla_status"
+                  ],
+                  "tableConditionalRules": [
+                    {
+                      "id": "tr-mtaix869",
+                      "column": "Status",
+                      "operator": "equals",
+                      "match": "Abertura",
+                      "color": "#000000",
+                      "backgroundColor": "#10b981",
+                      "applyTo": "cell"
+                    },
+                    {
+                      "id": "tr-mtaiy8p2",
+                      "column": "Status",
+                      "operator": "equals",
+                      "match": "Cancelado",
+                      "color": "#000000",
+                      "backgroundColor": "#ef4444",
+                      "blink": true,
+                      "applyTo": "row"
+                    },
+                    {
+                      "id": "tr-mtaiyxj8",
+                      "column": "Status",
+                      "operator": "contains",
+                      "match": "CGR",
+                      "color": "#ffb000",
+                      "applyTo": "row"
+                    },
+                    {
+                      "id": "tr-mtajswrx",
+                      "column": "Status",
+                      "operator": "equals",
+                      "match": "Agendado",
+                      "color": "#ffffff",
+                      "backgroundColor": "#3b82f6",
+                      "applyTo": "row"
+                    }
+                  ]
+                },
+                {
+                  "id": "w-mt7pa2cp",
+                  "type": "matrix",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 4,
+                    "y": 4,
+                    "w": 6,
+                    "h": 10
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {},
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "matrixRows": [
+                    "Categoria 1",
+                    "Categoria 2"
+                  ],
+                  "matrixColumns": [],
+                  "matrixValue": {
+                    "agg": "count"
+                  }
+                },
+                {
+                  "id": "w-mt7q2t7f",
+                  "type": "barStacked",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 15,
+                    "y": 0,
+                    "w": 9,
+                    "h": 14
+                  },
+                  "palette": [
+                    "#ffb000",
+                    "#3b82f6",
+                    "#10b981",
+                    "#7c3aed",
+                    "#22d3ee",
+                    "#f97316",
+                    "#ef4444",
+                    "#6366f1"
+                  ],
+                  "color": "#ffb000",
+                  "titleFormat": {},
+                  "subtitleFormat": {},
+                  "legendFormat": {},
+                  "axisXFormat": {},
+                  "axisYFormat": {},
+                  "dataLabels": {
+                    "show": true,
+                    "content": "value",
+                    "fontSize": 20,
+                    "color": "#ffb000"
+                  },
+                  "tableFormat": {},
+                  "matrixRowFormat": {},
+                  "matrixColumnFormat": {},
+                  "legendDimension": "Tipo de Solicitação",
+                  "dimensions": [
+                    "month:Data criado"
+                  ]
+                }
+              ],
+              "canEdit": true
+            },
+            {
+              "id": "tab-mthk0yxi",
+              "label": "Nova guia",
+              "filters": [],
+              "widgets": [
+                {
+                  "type": "bar",
+                  "title": "Volume de solicitações por mês",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "label": "Solicitações"
+                    }
+                  ],
+                  "sort": "asc",
+                  "id": "ai-mthk1nwk-0-vy8z",
+                  "layout": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "text",
+                  "title": "Variações relevantes",
+                  "content": "Total de 5.326 solicitações entre dez/2025 e ago/2026, média de ~592 por mês. Março/2026 é o pico absoluto (832, +86% sobre fevereiro) e fevereiro o vale do período estável (447, -28% sobre janeiro). Depois do pico há queda contínua: abril 737, maio 752, junho 681, julho 505 (-26% sobre junho). Agosto aparece com 248, cerca de metade de julho — provável mês parcial/em andamento, não uma queda real de demanda.",
+                  "id": "ai-mthk1nwk-1-vrqk",
+                  "layout": {
+                    "x": 6,
+                    "y": 0,
+                    "w": 5,
+                    "h": 7
+                  }
+                },
+                {
+                  "type": "matrix",
+                  "title": "Volume por mês e categoria",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "matrixRows": [
+                    "Categoria 2"
+                  ],
+                  "matrixColumns": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "matrixValue": {
+                    "agg": "count",
+                    "label": "Solicitações"
+                  },
+                  "id": "ai-mthk1nwk-2-zw9p",
+                  "layout": {
+                    "x": 11,
+                    "y": 0,
+                    "w": 13,
+                    "h": 9
+                  }
+                },
+                {
+                  "id": "w-mtiwvjm6",
+                  "type": "kpi",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 0,
+                    "y": 8,
+                    "w": 3,
+                    "h": 4
+                  },
+                  "dataLabels": {
+                    "show": true
+                  },
+                  "measure": {
+                    "agg": "countDistinct",
+                    "field": "Categoria 2"
+                  }
+                },
+                {
+                  "id": "w-mtixayc9-4f4g",
+                  "type": "kpi",
+                  "title": "Novo widget (cópia)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 3,
+                    "y": 8,
+                    "w": 3,
+                    "h": 4
+                  },
+                  "dataLabels": {
+                    "show": true
+                  },
+                  "measure": {
+                    "agg": "countDistinct",
+                    "measureRef": "msr-mtiwupkv"
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Protocolos nos últimos 3 meses",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj01f4t-0-4vru"
+                  },
+                  "id": "ai-mtj01su1-0-r8od",
+                  "layout": {
+                    "x": 6,
+                    "y": 9,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de encerramento (3 meses)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj01f4t-4-xlak"
+                  },
+                  "id": "ai-mtj01su1-1-akzv",
+                  "layout": {
+                    "x": 12,
+                    "y": 9,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de atraso de SLA (3 meses)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj01f4t-2-phb4"
+                  },
+                  "id": "ai-mtj01su1-2-i3yt",
+                  "layout": {
+                    "x": 18,
+                    "y": 9,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Último mês vs média trimestral (%)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj01f4t-6-r534"
+                  },
+                  "id": "ai-mtj01su1-3-mhwc",
+                  "layout": {
+                    "x": 0,
+                    "y": 12,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "line",
+                  "title": "Evolução mensal de protocolos por categoria",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "legendDimension": "Categoria 2",
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "id": "ai-mtj01su1-4-aq9c",
+                  "layout": {
+                    "x": 6,
+                    "y": 17,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "barHStacked",
+                  "title": "SLA por equipe",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Equipe"
+                  ],
+                  "legendDimension": "sla_status",
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mtj01su1-5-vjf0",
+                  "layout": {
+                    "x": 0,
+                    "y": 33,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "matrix",
+                  "title": "Protocolos por cidade e status",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "matrixRows": [
+                    "Cidade"
+                  ],
+                  "matrixColumns": [
+                    "Status"
+                  ],
+                  "matrixValue": {
+                    "agg": "count",
+                    "field": "Protocolo"
+                  },
+                  "id": "ai-mtj01su1-6-sxwa",
+                  "layout": {
+                    "x": 12,
+                    "y": 33,
+                    "w": 12,
+                    "h": 18
+                  }
+                },
+                {
+                  "type": "table",
+                  "title": "Cruzamento equipe, categoria, cidade e SLA",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "columns": [
+                    "Equipe",
+                    "Categoria 2",
+                    "Cidade",
+                    "sla_status"
+                  ],
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "label": "Protocolos"
+                  },
+                  "sort": "desc",
+                  "limit": 20,
+                  "id": "ai-mtj01su1-7-cawh",
+                  "layout": {
+                    "x": 0,
+                    "y": 49,
+                    "w": 12,
+                    "h": 18
+                  }
+                },
+                {
+                  "id": "w-mtj04498",
+                  "type": "kpi",
+                  "title": "Novo widget",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "limit": 15,
+                  "layout": {
+                    "x": 12,
+                    "y": 51,
+                    "w": 12,
+                    "h": 10
+                  },
+                  "dataLabels": {
+                    "show": true
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Protocolos em aberto (backlog)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj0agr0-1-trpx"
+                  },
+                  "id": "ai-mtj0aqdr-0-ti9m",
+                  "layout": {
+                    "x": 18,
+                    "y": 17,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de backlog (%)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj0agr0-2-5xpu"
+                  },
+                  "id": "ai-mtj0aqdr-1-inwa",
+                  "layout": {
+                    "x": 0,
+                    "y": 20,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de cancelamento (3 meses)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj0agr0-4-lfzw"
+                  },
+                  "id": "ai-mtj0aqdr-2-dwap",
+                  "layout": {
+                    "x": 18,
+                    "y": 25,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Carga média por equipe (3 meses)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj0agr0-7-mx9z"
+                  },
+                  "id": "ai-mtj0aqdr-3-agae",
+                  "layout": {
+                    "x": 12,
+                    "y": 61,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Protocolos nos últimos 30 dias",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo",
+                    "measureRef": "ai-msr-mtj0agr0-5-jpdo"
+                  },
+                  "id": "ai-mtj0aqdr-4-2a77",
+                  "layout": {
+                    "x": 18,
+                    "y": 61,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "matrix",
+                  "title": "Equipe x categoria de serviço",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "matrixRows": [
+                    "Equipe"
+                  ],
+                  "matrixColumns": [
+                    "Categoria 2"
+                  ],
+                  "matrixValue": {
+                    "agg": "count",
+                    "field": "Protocolo"
+                  },
+                  "id": "ai-mtj0aqdr-5-7ikn",
+                  "layout": {
+                    "x": 0,
+                    "y": 67,
+                    "w": 12,
+                    "h": 18
+                  }
+                },
+                {
+                  "type": "barHStacked",
+                  "title": "Top 10 catálogos por SLA",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Catálogo"
+                  ],
+                  "legendDimension": "sla_status",
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mtj0aqdr-6-xi2m",
+                  "layout": {
+                    "x": 12,
+                    "y": 69,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "barStacked",
+                  "title": "Categoria de serviço por status",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Categoria 2"
+                  ],
+                  "legendDimension": "Status",
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "sort": "desc",
+                  "id": "ai-mtj0aqdr-7-ri87",
+                  "layout": {
+                    "x": 0,
+                    "y": 85,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "matrix",
+                  "title": "SLA por mês de criação",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "matrixRows": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "matrixColumns": [
+                    "sla_status"
+                  ],
+                  "matrixValue": {
+                    "agg": "count",
+                    "field": "Protocolo"
+                  },
+                  "id": "ai-mtj0aqdr-8-u7jz",
+                  "layout": {
+                    "x": 12,
+                    "y": 85,
+                    "w": 12,
+                    "h": 18
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de atraso no backlog",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "measureRef": "ai-msr-mtj0ltpr-1-senp"
+                  },
+                  "id": "ai-mtj0m0u6-0-i926",
+                  "layout": {
+                    "x": 0,
+                    "y": 101,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Protocolos atrasados em aberto",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "measureRef": "ai-msr-mtj0ltpr-0-is7k"
+                  },
+                  "id": "ai-mtj0m0u6-1-8214",
+                  "layout": {
+                    "x": 6,
+                    "y": 101,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "kpi",
+                  "title": "Taxa de encerramento (30 dias)",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "measure": {
+                    "agg": "count",
+                    "measureRef": "ai-msr-mtj0ltpr-3-o5yr"
+                  },
+                  "id": "ai-mtj0m0u6-2-ecup",
+                  "layout": {
+                    "x": 12,
+                    "y": 103,
+                    "w": 6,
+                    "h": 8
+                  }
+                },
+                {
+                  "type": "line",
+                  "title": "Evolução mensal de protocolos criados",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "year:Data criado",
+                    "month:Data criado"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo",
+                      "label": "Protocolos"
+                    }
+                  ],
+                  "id": "ai-mtj0m0u6-3-eyip",
+                  "layout": {
+                    "x": 0,
+                    "y": 109,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "barH",
+                  "title": "Top 10 catálogos por volume",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Catálogo"
+                  ],
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mtj0m0u6-4-us0c",
+                  "layout": {
+                    "x": 12,
+                    "y": 111,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "barStacked",
+                  "title": "Status dos protocolos por equipe",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Equipe"
+                  ],
+                  "legendDimension": "Status",
+                  "measures": [
+                    {
+                      "agg": "count",
+                      "field": "Protocolo"
+                    }
+                  ],
+                  "sort": "desc",
+                  "limit": 10,
+                  "id": "ai-mtj0m0u6-5-ejxq",
+                  "layout": {
+                    "x": 0,
+                    "y": 125,
+                    "w": 12,
+                    "h": 16
+                  }
+                },
+                {
+                  "type": "pie",
+                  "title": "Distribuição por cidade",
+                  "source": "dhub:dh_mt7n9xt8odg8m",
+                  "dimensions": [
+                    "Cidade"
+                  ],
+                  "measure": {
+                    "agg": "count",
+                    "field": "Protocolo"
+                  },
+                  "sort": "desc",
+                  "id": "ai-mtj0m0u6-6-l800",
+                  "layout": {
+                    "x": 12,
+                    "y": 127,
+                    "w": 8,
+                    "h": 16
+                  }
+                }
+              ],
+              "access": {
+                "mode": "restricted",
+                "view": [],
+                "edit": []
+              },
+              "canEdit": true
+            }
+          ],
+          "measures": [
+            {
+              "id": "msr-mtiwupkv",
+              "name": "Contagem de protocolos",
+              "description": "Contagem de todos os protocolos do mes passado",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 1
+              }
+            },
+            {
+              "id": "msr-mtixd50k",
+              "name": "contagem de criadores mes passado",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "countDistinct",
+              "field": "Criador",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 1
+              }
+            },
+            {
+              "id": "ai-msr-mtj01f4t-0-4vru",
+              "name": "Protocolos últimos 3 meses",
+              "description": "Total de protocolos criados nos últimos 3 meses.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 3
+              }
+            },
+            {
+              "id": "ai-msr-mtj01f4t-1-qbj3",
+              "name": "Protocolos atrasados (3 meses)",
+              "description": "Protocolos dos últimos 3 meses com SLA Atrasada.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 3
+              },
+              "filters": [
+                {
+                  "field": "sla_status",
+                  "op": "in",
+                  "values": [
+                    "Atrasada"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj01f4t-2-phb4",
+              "name": "Taxa de atraso SLA % (3 meses)",
+              "description": "Percentual de protocolos atrasados sobre o total dos últimos 3 meses.",
+              "kind": "formula",
+              "expression": "atrasados / total * 100",
+              "refs": {
+                "atrasados": "ai-msr-mtj01f4t-1-qbj3",
+                "total": "ai-msr-mtj01f4t-0-4vru"
+              }
+            },
+            {
+              "id": "ai-msr-mtj01f4t-3-pc0t",
+              "name": "Protocolos encerrados (3 meses)",
+              "description": "Protocolos dos últimos 3 meses com status Encerrado.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 3
+              },
+              "filters": [
+                {
+                  "field": "Status",
+                  "op": "in",
+                  "values": [
+                    "Encerrado"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj01f4t-4-xlak",
+              "name": "Taxa de encerramento % (3 meses)",
+              "description": "Percentual de protocolos encerrados sobre o total dos últimos 3 meses.",
+              "kind": "formula",
+              "expression": "encerrados / total * 100",
+              "refs": {
+                "encerrados": "ai-msr-mtj01f4t-3-pc0t",
+                "total": "ai-msr-mtj01f4t-0-4vru"
+              }
+            },
+            {
+              "id": "ai-msr-mtj01f4t-5-pom1",
+              "name": "Média mensal de protocolos (3 meses)",
+              "description": "Média mensal de protocolos criados no trimestre.",
+              "kind": "formula",
+              "expression": "total / 3",
+              "refs": {
+                "total": "ai-msr-mtj01f4t-0-4vru"
+              }
+            },
+            {
+              "id": "ai-msr-mtj01f4t-6-r534",
+              "name": "Variação do último mês vs média trimestral (%)",
+              "description": "Compara o volume do último mês com a média mensal dos últimos 3 meses.",
+              "kind": "formula",
+              "expression": "(ultimo - media) / media * 100",
+              "refs": {
+                "ultimo": "msr-mtiwupkv",
+                "media": "ai-msr-mtj01f4t-5-pom1"
+              }
+            },
+            {
+              "id": "ai-msr-mtj0agr0-0-8clg",
+              "name": "Protocolos na base (total)",
+              "description": "Total de protocolos na base, sem recorte de período.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo"
+            },
+            {
+              "id": "ai-msr-mtj0agr0-1-trpx",
+              "name": "Protocolos em aberto",
+              "description": "Protocolos que não estão encerrados, cancelados nem fechados (backlog).",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "filters": [
+                {
+                  "field": "Status",
+                  "op": "notIn",
+                  "values": [
+                    "Encerrado",
+                    "Cancelado",
+                    "Fechado"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj0agr0-2-5xpu",
+              "name": "Taxa de backlog %",
+              "description": "Percentual de protocolos ainda em aberto sobre toda a base.",
+              "kind": "formula",
+              "expression": "aberto / base * 100",
+              "refs": {
+                "aberto": "ai-msr-mtj0agr0-1-trpx",
+                "base": "ai-msr-mtj0agr0-0-8clg"
+              }
+            },
+            {
+              "id": "ai-msr-mtj0agr0-3-4m5y",
+              "name": "Protocolos cancelados (3 meses)",
+              "description": "Protocolos cancelados entre os criados nos últimos 3 meses.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 3
+              },
+              "filters": [
+                {
+                  "field": "Status",
+                  "op": "in",
+                  "values": [
+                    "Cancelado"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj0agr0-4-lfzw",
+              "name": "Taxa de cancelamento % (3 meses)",
+              "description": "Percentual de cancelamentos sobre os protocolos dos últimos 3 meses.",
+              "kind": "formula",
+              "expression": "cancelados / total * 100",
+              "refs": {
+                "cancelados": "ai-msr-mtj0agr0-3-4m5y",
+                "total": "ai-msr-mtj01f4t-0-4vru"
+              }
+            },
+            {
+              "id": "ai-msr-mtj0agr0-5-jpdo",
+              "name": "Protocolos últimos 30 dias",
+              "description": "Volume recente de protocolos criados nos últimos 30 dias.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNDays",
+                "field": "Data criado",
+                "n": 30
+              }
+            },
+            {
+              "id": "ai-msr-mtj0agr0-6-zmiz",
+              "name": "Equipes ativas (3 meses)",
+              "description": "Equipes distintas com protocolos nos últimos 3 meses.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "countDistinct",
+              "field": "Equipe",
+              "dateWindow": {
+                "type": "lastNMonths",
+                "field": "Data criado",
+                "n": 3
+              }
+            },
+            {
+              "id": "ai-msr-mtj0agr0-7-mx9z",
+              "name": "Carga média por equipe (3 meses)",
+              "description": "Protocolos por equipe ativa no trimestre.",
+              "kind": "formula",
+              "expression": "total / equipes",
+              "refs": {
+                "total": "ai-msr-mtj01f4t-0-4vru",
+                "equipes": "ai-msr-mtj0agr0-6-zmiz"
+              }
+            },
+            {
+              "id": "ai-msr-mtj0ltpr-0-is7k",
+              "name": "Protocolos atrasados em aberto",
+              "description": "Protocolos ainda em aberto que já estouraram o SLA.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "filters": [
+                {
+                  "field": "sla_status",
+                  "op": "in",
+                  "values": [
+                    "Atrasada"
+                  ]
+                },
+                {
+                  "field": "Status",
+                  "op": "notIn",
+                  "values": [
+                    "Encerrado",
+                    "Cancelado",
+                    "Fechado"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj0ltpr-1-senp",
+              "name": "Taxa de atraso no backlog %",
+              "description": "Percentual do backlog que está com SLA atrasado.",
+              "format": "percent",
+              "kind": "formula",
+              "expression": "atrasadosAbertos / aberto * 100",
+              "refs": {
+                "atrasadosAbertos": "ai-msr-mtj0ltpr-0-is7k",
+                "aberto": "ai-msr-mtj0agr0-1-trpx"
+              }
+            },
+            {
+              "id": "ai-msr-mtj0ltpr-2-tn9b",
+              "name": "Protocolos encerrados (30 dias)",
+              "description": "Protocolos criados nos últimos 30 dias que já foram encerrados.",
+              "kind": "simple",
+              "source": "dhub:dh_mt7n9xt8odg8m",
+              "agg": "count",
+              "field": "Protocolo",
+              "dateWindow": {
+                "type": "lastNDays",
+                "field": "Data criado",
+                "n": 30
+              },
+              "filters": [
+                {
+                  "field": "Status",
+                  "op": "in",
+                  "values": [
+                    "Encerrado"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ai-msr-mtj0ltpr-3-o5yr",
+              "name": "Taxa de encerramento % (30 dias)",
+              "description": "Ritmo recente de conclusão: encerrados sobre criados nos últimos 30 dias.",
+              "format": "percent",
+              "kind": "formula",
+              "expression": "encerrados / total * 100",
+              "refs": {
+                "encerrados": "ai-msr-mtj0ltpr-2-tn9b",
+                "total": "ai-msr-mtj0agr0-5-jpdo"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

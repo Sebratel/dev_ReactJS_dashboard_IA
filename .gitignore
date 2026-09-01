@@ -6,11 +6,7 @@ _probe_view.mjs
 .env.*
 !.env.example
 
-# Snapshot multi-tabela gerado pelo ETL (contém dados reais — não versionar)
-public/installData.data
-
-# Estado de runtime: overrides de query editados pela tela (volume do servidor)
-# Barra inicial = so a pasta data/ da raiz. Sem ela o padrao casava com
-# node_modules/caniuse-lite/data, @babel/compat-data/data etc. e deixava o
-# node_modules versionado incompleto (o build quebrava num clone limpo).
-/data/
+# 01/09/2026: a pedido, data/ (chave secreta, sessões, log de auditoria,
+# workspace.json real) e o snapshot public/installData.data (dado real da
+# empresa) passaram a ser versionados também — decisão explícita do usuário,
+# ciente de que isso põe segredo/dado real no histórico do repositório.

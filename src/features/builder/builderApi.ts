@@ -1,6 +1,6 @@
 import { apiFetch, ApiError } from '@/lib/apiClient'
 import type { SourceDef } from './fieldCatalog'
-import type { FilterConfig, TabRelation, WidgetConfig, WidgetDataResponse } from './types'
+import type { ColumnSort, FilterConfig, MeasureDef, TabRelation, WidgetConfig, WidgetDataResponse } from './types'
 
 export { ApiError }
 
@@ -21,11 +21,14 @@ export async function fetchWidgetData(
   page = 1,
   pageSize = 50,
   relations: TabRelation[] = [],
+  tableSort?: ColumnSort | null,
+  matrixSort?: ColumnSort | null,
+  dashboardMeasures: MeasureDef[] = [],
 ): Promise<WidgetDataResponse> {
   const res = await apiFetch('/api/widget-data', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ widget, tabFilters, page, pageSize, relations }),
+    body: JSON.stringify({ widget, tabFilters, page, pageSize, relations, tableSort: tableSort ?? undefined, matrixSort: matrixSort ?? undefined, dashboardMeasures }),
   })
   const body = await parse<{ data: WidgetDataResponse }>(res)
   return body.data

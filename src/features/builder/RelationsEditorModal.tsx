@@ -65,10 +65,12 @@ export function RelationsEditorModal({ relations, onChange, onClose }: {
           </div>
           <div className="p-5 space-y-4 overflow-y-auto">
             <p className="text-[11px] text-gray-500">
-              Declare que um campo de uma fonte é a MESMA chave de outra — a partir daí, um filtro da aba
-              aplicado numa das duas passa a filtrar também os widgets que usam a outra, mesmo sendo fontes
-              diferentes. Uma fonte pode entrar em quantas relações forem necessárias (ex. "Bases" relacionada
-              com várias fontes ao mesmo tempo). Não encadeia: só propaga entre fontes com relação DIRETA.
+              Declare que um campo de uma fonte é a MESMA chave de outra — a partir daí, as duas fontes ficam
+              "compatíveis": (1) um filtro da aba aplicado numa das duas passa a filtrar também os widgets que
+              usam a outra, e (2) qualquer widget de uma das fontes já enxerga TODOS os campos da outra nos
+              seletores de Eixo X, Eixo Y, Legenda, Filtro e Coluna, como se fossem campos nativos — sem precisar
+              mesclar campo por campo. Uma fonte pode entrar em quantas relações forem necessárias (ex. "Bases"
+              relacionada com várias fontes ao mesmo tempo). Não encadeia: só vale entre fontes com relação DIRETA.
             </p>
 
             {relations.length > 0 ? (

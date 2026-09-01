@@ -2,7 +2,7 @@
 // filtros da aba). Tipos de visual: kpi, bar, barH, barStacked, barHStacked,
 // comboBarLine, line, area, pie, scatter, funnel, table, matrix.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown } from 'lucide-react'
+import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react'
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, ComposedChart,
   ScatterChart, Scatter, FunnelChart, Funnel, LabelList, ReferenceLine,
@@ -15,7 +15,8 @@ import { fetchWidgetData, ApiError } from './builderApi'
 import { WidgetCommentsPopover } from './WidgetCommentsPopover'
 import { WidgetInsightPopover } from './WidgetInsightPopover'
 import { resolveConditionalEffect, resolveTableCellEffect, resolveTableRowEffect } from './conditionalFormat'
-import type { BlinkSpeed, ChartAnimationSpeed, ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFormat, FilterConfig, MatrixResult, SeriesMeta, TabRelation, TextFormat, PinnedInsight, WidgetConfig, WidgetDataPoint, WidgetDataResponse } from './types'
+import type { BlinkSpeed, ChartAnimationSpeed, ColumnSort, ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFormat, FilterConfig, MatrixResult, MeasureDef, SeriesMeta, TabRelation, TextFormat, PinnedInsight, WidgetConfig, WidgetDataPoint, WidgetDataResponse } from './types'
+import { MATRIX_LABEL_SORT_KEY, MATRIX_TOTAL_SORT_KEY } from './types'
 
 const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
 
@@ -504,6 +505,10 @@ interface WidgetRendererProps {
   widget: WidgetConfig
   tabFilters: { filter: FilterConfig; values: string[] }[]
   relations: TabRelation[]
+  // "Tabela de medidas" da dashboard (ver MeasureDef) — repassada ao
+  // servidor a cada busca pra resolver um MeasureConfig.measureRef. Vazio
+  // é seguro (nenhum measureRef existente pra resolver).
+  dashboardMeasures?: MeasureDef[]
   editMode: boolean
   // Incrementado pelo timer de atualização automática da aba (Configurações
   // de tela) — não entra na query em si, só força o efeito de busca a rodar
@@ -636,8 +641,15 @@ function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit
   )
 }
 
-function KpiBody({ value, color, target, align }: { value: number; color?: string; target?: number; align?: 'left' | 'center' | 'right' }) {
-  const formatted = Number.isInteger(value) ? value.toLocaleString('pt-BR') : value.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+// `percent`: a medida referenciada (MeasureDef.format, ver types.ts) já
+// entrega o número na escala 0-100 (ex. "atrasados / total * 100") — só
+// acrescenta o sinal "%" na exibição, nunca divide/multiplica o valor de
+// novo (o cálculo em si já aconteceu certo no servidor).
+function formatKpiNumber(v: number, percent: boolean): string {
+  const n = Number.isInteger(v) ? v.toLocaleString('pt-BR') : v.toLocaleString('pt-BR', { maximumFractionDigits: 1 })
+  return percent ? `${n}%` : n
+}
+function KpiBody({ value, color, target, align, percent = false }: { value: number; color?: string; target?: number; align?: 'left' | 'center' | 'right'; percent?: boolean }) {
   // O valor (+ a meta, se houver) é alinhado como GRUPO, não cada `<span>`
   // isolado — "centralizar" um card com meta significa centralizar o par
   // "5.326  meta: 100" junto, não jogar cada pedaço pra um canto diferente.
@@ -645,11 +657,11 @@ function KpiBody({ value, color, target, align }: { value: number; color?: strin
   return (
     <div className="h-full flex items-center gap-2 px-3" style={{ justifyContent: justify }}>
       <span className={cn('text-2xl font-semibold tabular-nums tracking-tight', !color && 'text-white')} style={color ? { color } : undefined}>
-        {formatted}
+        {formatKpiNumber(value, percent)}
       </span>
       {target != null && (
         <span className="text-[10px] text-gray-400">
-          meta: {Number.isInteger(target) ? target.toLocaleString('pt-BR') : target.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}
+          meta: {formatKpiNumber(target, percent)}
         </span>
       )}
     </div>
@@ -1063,9 +1075,10 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
 const TABLE_COL_DEFAULT_WIDTH = 150
 const TABLE_COL_MIN_WIDTH = 24
 
-function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange }: {
+function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange, tableSort, onSortColumn }: {
   widget: WidgetConfig; data: WidgetDataResponse; page: number; setPage: (p: number) => void
   editMode?: boolean; onColumnWidthsChange?: (widths: Record<string, number>) => void
+  tableSort?: ColumnSort | null; onSortColumn?: (column: string) => void
 }) {
   const sourceDef = widget.source ? getSourceDef(widget.source) : undefined
   const lookups = widget.lookups ?? []
@@ -1148,18 +1161,39 @@ function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange
           </colgroup>
           <thead className={cn('sticky top-0', !headerBg && 'bg-app-card')} style={{ background: headerBg }}>
             <tr className="border-b border-app-border text-gray-500" style={{ color: format?.color }}>
-              {cols.map((c) => (
-                <th key={c} className={cn('relative px-3 py-2 truncate', alignCls, (format?.headerBold ?? true) ? 'font-bold' : 'font-normal')}>
-                  {labelOf(c)}
-                  {editMode && (
-                    <span
-                      onMouseDown={(e) => startResize(c, e)}
-                      title="Arrastar para redimensionar"
-                      className="absolute top-0 right-0 h-full w-2 cursor-col-resize hover:bg-brand-blue/40 active:bg-brand-blue/60"
-                    />
-                  )}
-                </th>
-              ))}
+              {cols.map((c) => {
+                const sortedDir = tableSort?.column === c ? tableSort.direction : null
+                return (
+                  <th
+                    key={c}
+                    onClick={() => onSortColumn?.(c)}
+                    title={onSortColumn ? 'Ordenar por esta coluna' : undefined}
+                    className={cn(
+                      'relative px-3 py-2 truncate',
+                      alignCls,
+                      (format?.headerBold ?? true) ? 'font-bold' : 'font-normal',
+                      onSortColumn && 'cursor-pointer select-none hover:bg-app-surface/40',
+                    )}
+                  >
+                    <span className="inline-flex items-center gap-0.5">
+                      {labelOf(c)}
+                      {onSortColumn && (
+                        sortedDir === 'asc' ? <ChevronUp size={11} className="text-brand-blue shrink-0" />
+                          : sortedDir === 'desc' ? <ChevronDown size={11} className="text-brand-blue shrink-0" />
+                          : <ChevronsUpDown size={11} className="text-gray-600 shrink-0" />
+                      )}
+                    </span>
+                    {editMode && (
+                      <span
+                        onMouseDown={(e) => startResize(c, e)}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Arrastar para redimensionar"
+                        className="absolute top-0 right-0 h-full w-2 cursor-col-resize hover:bg-brand-blue/40 active:bg-brand-blue/60"
+                      />
+                    )}
+                  </th>
+                )
+              })}
             </tr>
           </thead>
           <tbody>
@@ -1207,9 +1241,10 @@ function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange
 
 // Tabela Matriz (pivot) — linhas em árvore (expandir/colapsar por grupo,
 // com subtotal), colunas dinâmicas + coluna "Total", linha "Total" geral.
-function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgroundOpacity, conditionalRules }: {
+function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgroundOpacity, conditionalRules, matrixSort, onSortColumn }: {
   matrix: MatrixResult; rowFormat?: TextFormat; columnFormat?: TextFormat; backgroundColor?: string; backgroundOpacity?: number
   conditionalRules?: ConditionalRule[]
+  matrixSort?: ColumnSort | null; onSortColumn?: (column: string) => void
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggle = (key: string) => setCollapsed((prev) => {
@@ -1266,14 +1301,36 @@ function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgrou
       return hasChildren && !isCollapsed ? [row, ...renderRows(node.children!, depth + 1)] : [row]
     })
 
+  // Ícone de ordenação por coluna — igual ao da Tabela (ver TableBody):
+  // seta na coluna ativa (direção atual), ícone neutro nas demais, indicando
+  // que também dá pra clicar. `column` aqui pode ser uma chave dinâmica real
+  // (MatrixResult.columns[].key) ou um dos 2 sentinelas (rótulo/Total).
+  const sortIcon = (column: string) => {
+    if (!onSortColumn) return null
+    if (matrixSort?.column !== column) return <ChevronsUpDown size={11} className="text-gray-600 shrink-0" />
+    return matrixSort.direction === 'asc'
+      ? <ChevronUp size={11} className="text-brand-blue shrink-0" />
+      : <ChevronDown size={11} className="text-brand-blue shrink-0" />
+  }
+  const sortableThCls = (base: string) => cn(base, onSortColumn && 'cursor-pointer select-none hover:bg-app-surface/40')
+  const sortTitle = onSortColumn ? 'Ordenar por esta coluna' : undefined
+
   return (
     <div className="h-full overflow-auto">
       <table className="w-full text-[11px]">
         <thead className={cn('sticky top-0', !headerBg && 'bg-app-card')} style={{ background: headerBg }}>
           <tr className="border-b border-app-border text-gray-500">
-            <th className="py-2 pr-2 text-left font-semibold" style={columnStyle} />
-            {matrix.columns.map((c) => <th key={c.key} className="px-2 py-2 text-right font-semibold whitespace-nowrap" style={columnStyle}>{c.label}</th>)}
-            <th className="px-2 py-2 text-right font-semibold" style={columnStyle}>Total</th>
+            <th onClick={() => onSortColumn?.(MATRIX_LABEL_SORT_KEY)} title={sortTitle} className={sortableThCls('py-2 pr-2 text-left font-semibold')} style={columnStyle}>
+              <span className="inline-flex items-center">{sortIcon(MATRIX_LABEL_SORT_KEY)}</span>
+            </th>
+            {matrix.columns.map((c) => (
+              <th key={c.key} onClick={() => onSortColumn?.(c.key)} title={sortTitle} className={sortableThCls('px-2 py-2 text-right font-semibold whitespace-nowrap')} style={columnStyle}>
+                <span className="inline-flex items-center justify-end gap-0.5">{c.label}{sortIcon(c.key)}</span>
+              </th>
+            ))}
+            <th onClick={() => onSortColumn?.(MATRIX_TOTAL_SORT_KEY)} title={sortTitle} className={sortableThCls('px-2 py-2 text-right font-semibold')} style={columnStyle}>
+              <span className="inline-flex items-center justify-end gap-0.5">Total{sortIcon(MATRIX_TOTAL_SORT_KEY)}</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -1308,11 +1365,24 @@ function TextBody({ content }: { content?: string }) {
 }
 
 // ─── Componente principal ────────────────────────────────────────
-export function WidgetRenderer({ widget, tabFilters, relations, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight }: WidgetRendererProps) {
+export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasures, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight }: WidgetRendererProps) {
   const [data, setData] = useState<WidgetDataResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
+  // Ordenação por clique no cabeçalho — Tabela e Matriz, ephemeral (não é
+  // salva com o widget, ver ColumnSort em types.ts). Só a Tabela pagina, daí
+  // só ela reseta a página pra 1 ao mudar (a página 2 da ordem antiga não
+  // corresponde a nada com sentido na ordem nova) — Matriz não tem página.
+  const [tableSort, setTableSort] = useState<ColumnSort | null>(null)
+  const onSortColumn = (column: string) => {
+    setTableSort((prev) => (prev?.column === column ? { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { column, direction: 'asc' }))
+    setPage(1)
+  }
+  const [matrixSort, setMatrixSort] = useState<ColumnSort | null>(null)
+  const onSortMatrixColumn = (column: string) => {
+    setMatrixSort((prev) => (prev?.column === column ? { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' } : { column, direction: 'asc' }))
+  }
 
   // Assinatura estável dos inputs de dados — refetch quando muda config/filtros.
   const querySignature = useMemo(() => JSON.stringify({
@@ -1333,7 +1403,14 @@ export function WidgetRenderer({ widget, tabFilters, relations, editMode, refres
     // relação enquanto um filtro de outra fonte está ativo muda o semi-join.
     r: relations,
     page,
-  }), [widget, tabFilters, relations, page])
+    tableSort,
+    matrixSort,
+    // Só as DEFINIÇÕES das medidas referenciadas por este widget importam
+    // pro dado (não a tabela de medidas inteira) — mas como isso é barato
+    // de serializar e a lista raramente é grande, refaz a assinatura pela
+    // lista toda em vez de calcular quais medidas o widget usa aqui também.
+    dashboardMeasures,
+  }), [widget, tabFilters, relations, page, tableSort, matrixSort, dashboardMeasures])
 
   useEffect(() => {
     // Widget de texto não tem fonte de dados — nunca chama a API.
@@ -1342,7 +1419,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, editMode, refres
     // Só mostra o spinner na 1ª carga — um refresh automático em segundo
     // plano (refreshKey) troca o dado no lugar, sem apagar o gráfico atual.
     setLoading((prev) => prev || !data)
-    fetchWidgetData(widget, tabFilters, page, 50, relations)
+    fetchWidgetData(widget, tabFilters, page, 50, relations, tableSort, matrixSort, dashboardMeasures)
       .then((d) => { if (alive) { setData(d); setError(null) } })
       .catch((e) => { if (alive) setError(e instanceof ApiError ? e.message : 'Erro inesperado.') })
       .finally(() => { if (alive) setLoading(false) })
@@ -1358,17 +1435,24 @@ export function WidgetRenderer({ widget, tabFilters, relations, editMode, refres
   } else if (error) {
     body = <div className="h-full flex items-center justify-center gap-1.5 text-[11px] text-risk-critical px-3 text-center"><AlertTriangle size={12} className="shrink-0" /> {error}</div>
   } else if (widget.type === 'table' && data) {
-    body = <TableBody widget={widget} data={data} page={page} setPage={setPage} editMode={editMode} onColumnWidthsChange={onColumnWidthsChange} />
+    body = <TableBody widget={widget} data={data} page={page} setPage={setPage} editMode={editMode} onColumnWidthsChange={onColumnWidthsChange} tableSort={tableSort} onSortColumn={onSortColumn} />
   } else if (widget.type === 'matrix' && data?.matrix) {
     body = (
       <MatrixBody
         matrix={data.matrix} rowFormat={widget.matrixRowFormat} columnFormat={widget.matrixColumnFormat}
         backgroundColor={widget.backgroundColor} backgroundOpacity={widget.backgroundOpacity}
         conditionalRules={widget.conditionalRules}
+        matrixSort={matrixSort} onSortColumn={onSortMatrixColumn}
       />
     )
   } else if (widget.type === 'kpi' && data?.points) {
-    body = <KpiBody value={data.points[0]?.value ?? 0} color={widget.color} target={widget.target} align={widget.valueAlign} />
+    // Formato vem da MEDIDA referenciada (ver MeasureFormat, types.ts), não
+    // do widget — resolvido aqui no cliente porque `dashboardMeasures` já
+    // está disponível por inteiro (a mesma tabela usada pela árvore "Medidas"
+    // e pelo modal de gerenciamento), sem precisar ecoar isso de volta na
+    // resposta de /api/widget-data só pra este detalhe de exibição.
+    const kpiMeasure = widget.measure?.measureRef ? dashboardMeasures?.find((m) => m.id === widget.measure!.measureRef) : undefined
+    body = <KpiBody value={data.points[0]?.value ?? 0} color={widget.color} target={widget.target} align={widget.valueAlign} percent={kpiMeasure?.format === 'percent'} />
   } else if (data?.points) {
     body = (
       <PointsChart

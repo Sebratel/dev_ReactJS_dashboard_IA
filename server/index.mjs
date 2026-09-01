@@ -299,6 +299,15 @@ app.get('/api/sources', requireAuth(), async (req, res) => {
 })
 
 // ─── Dashboard Builder ───────────────────────────────────────────
+// Ordenação por clique no cabeçalho (Tabela e Matriz, ver ColumnSort em
+// src/features/builder/types.ts) — mesmo parsing pros dois, só o nome do
+// campo no corpo da requisição muda.
+function parseColumnSort(raw) {
+  return raw && typeof raw.column === 'string'
+    ? { column: raw.column, direction: raw.direction === 'desc' ? 'desc' : 'asc' }
+    : undefined
+}
+
 app.post('/api/widget-data', requireAuth(), async (req, res) => {
   try {
     const b = req.body || {}
@@ -309,6 +318,9 @@ app.post('/api/widget-data', requireAuth(), async (req, res) => {
       page: Number(b.page) || 1,
       pageSize: Math.min(200, Number(b.pageSize) || 50),
       accessToken: req.accessToken,
+      tableSort: parseColumnSort(b.tableSort),
+      matrixSort: parseColumnSort(b.matrixSort),
+      dashboardMeasures: Array.isArray(b.dashboardMeasures) ? b.dashboardMeasures : [],
     })
     if (!data) return res.status(503).json({ error: 'Base ainda não materializada no backend.' })
     res.json({ data, meta: getStatus() })
@@ -591,7 +603,7 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
 // Um turno da conversa, em streaming (SSE). Resposta longa e incremental: o
 // texto aparece digitando e os widgets chegam como um evento próprio.
 app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
-  const { text } = req.body || {}
+  const { text, dashboardMeasures } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -614,6 +626,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
     await runTurn({
       conversationId: req.params.id, email: req.user.email, userText: String(text),
       accessToken: req.accessToken, emit,
+      dashboardMeasures: Array.isArray(dashboardMeasures) ? dashboardMeasures : [],
     })
   } catch (e) {
     console.error(`[ai] turno falhou: ${e.message}`)
@@ -829,7 +842,8 @@ app.delete('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), require
 // pasta mexe livremente na estrutura.
 app.put('/api/workspace/folders/:fid/dashboards/:did/full', requireAuth(), requireFolderManager(), (req, res) => {
   try {
-    const dashboard = saveDashboardFull(req.params.fid, req.params.did, (req.body || {}).tabs, req.user.email)
+    const b = req.body || {}
+    const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'dashboard.save', target: `${req.params.fid}/${dashboard.id}` })
     res.json({ ok: true, dashboard })
   } catch (e) {

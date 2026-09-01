@@ -17,6 +17,12 @@ export type FilterOp = 'in' | 'notIn'
 export interface MeasureConfig {
   agg: AggKind
   field?: string // exigido para sum/avg
+  // Referencia uma MeasureDef da "tabela de medidas" da dashboard (ver
+  // DashboardConfig.measures) em vez de calcular inline — quando presente,
+  // agg/field são ignorados (a medida referenciada já define os dois, ou
+  // nem usa agg/field se for do tipo 'formula'). Ver server/widgetQuery.mjs
+  // (resolveMeasure) pra como isso é resolvido.
+  measureRef?: string
   label?: string // rótulo da série (só relevante quando há múltiplas medidas)
   color?: string // cor da série (só relevante quando há múltiplas medidas)
   // Override do widget.dataLabels só para ESTA série — ausente = usa o padrão
@@ -25,6 +31,66 @@ export interface MeasureConfig {
   // medidas ou legenda (uma única medida já é "o widget inteiro").
   dataLabels?: DataLabelFormat
 }
+
+// Janela de data RELATIVA (ao momento em que o widget é calculado, não uma
+// data fixa) — usada só dentro de uma MeasureDef 'simple', nunca num filtro
+// de aba comum (esses continuam sendo datas fixas, ver FilterConfig). Ver
+// resolveDateWindow em server/widgetQuery.mjs pra a aritmética exata de
+// cada tipo (todas terminam "hoje", nunca no fim teórico do período).
+export type DateWindowSpec =
+  | { type: 'lastNDays' | 'lastNMonths'; field: string; n: number }
+  | { type: 'yearToDate' | 'currentMonth' | 'currentQuarter' | 'currentYear'; field: string }
+  // "Mesmo período do ano passado" não é um tipo próprio — é QUALQUER outra
+  // janela deslocada por N anos (normalmente -1). Generaliza em vez de
+  // precisar de um caso hard-coded por período (mês/trimestre/ano passado).
+  | { type: 'shiftYears'; years: number; base: Exclude<DateWindowSpec, { type: 'shiftYears' }> }
+
+// Formatação de EXIBIÇÃO de uma medida — hoje só 'percent' (mostra com sinal
+// "%", sem dividir o valor por 100 de novo: a fórmula/campo já entrega o
+// número na escala 0-100, ex. "atrasados / total * 100"). Vive na MEDIDA, não
+// no widget que a usa — mesmo espírito de "formato" do DAX/Power BI: definida
+// uma vez, todo widget que referenciar a medida (KPI, hoje — ver WidgetRenderer
+// KpiBody) exibe igual, sem precisar configurar de novo em cada card.
+export type MeasureFormat = 'percent'
+
+// Medida nomeada e reutilizável — a "tabela de medidas" da dashboard (ver
+// DashboardConfig.measures). Duas formas: 'simple' é uma agregação comum
+// (mesmas 4 de sempre) com uma janela de data OPCIONAL por cima; 'formula'
+// combina outras medidas (por id, `refs`) numa expressão aritmética — nunca
+// um campo cru direto, sempre outra medida nomeada (mesmo espírito de
+// DAX/Power BI: uma fórmula sempre opera sobre medidas, nunca sobre linhas).
+// Uma medida 'formula' pode referenciar medidas de fontes DIFERENTES entre
+// si — cada uma vira um número escalar antes de entrar na conta, então
+// combinar fontes nunca precisa de um JOIN de linha (ver resolveMeasure).
+export type MeasureDef =
+  | {
+      id: string
+      name: string
+      description?: string
+      kind: 'simple'
+      source: SourceTable
+      agg: AggKind
+      field?: string
+      dateWindow?: DateWindowSpec
+      // Filtro fixo por valor/categoria, embutido na PRÓPRIA medida (mesmo
+      // shape de WidgetFilter — 'in'/'notIn' sobre um campo) — diferente do
+      // filtro de aba (contextual, escolhido por quem vê a tela): este vale
+      // sempre que a medida é usada, em qualquer widget/fórmula. Ex.: isolar
+      // "Status = Reincidência" ou excluir "Cancelado" como parte da
+      // definição da medida, não do widget que a usa. Ver applyFilters em
+      // resolveSimpleMeasure (server/widgetQuery.mjs).
+      filters?: WidgetFilter[]
+      format?: MeasureFormat
+    }
+  | {
+      id: string
+      name: string
+      description?: string
+      kind: 'formula'
+      expression: string
+      refs: Record<string, string> // alias usado na expressão -> id de outra MeasureDef
+      format?: MeasureFormat
+    }
 
 export interface WidgetFilter {
   field: string
@@ -156,11 +222,16 @@ export interface ConditionalRule {
   effect: ConditionalEffect
 }
 
-// Coluna extra de uma tabela relacionada, mesclada por chave (só type 'table').
-// Ex.: numa tabela de protocolosGeral, trazer o instalador que veio de
-// fieldAgenda casando protocolosGeral.numeroProtocolo = fieldAgenda.protocolo.
-// Quando a fonte relacionada tem múltiplas linhas para a mesma chave (ex.
-// vários relatos no mesmo protocolo), usa-se a primeira linha encontrada.
+// Coluna extra de uma tabela relacionada, mesclada por chave — mecanismo
+// EXPLÍCITO, campo a campo, mantido só pra widget salvo ANTES de 01/09/2026.
+// Desde então, declarar um TabRelation (abaixo) entre duas fontes já
+// disponibiliza TODOS os campos da fonte relacionada automaticamente — não
+// existe mais UI pra criar um LookupColumn novo (ver server/widgetQuery.mjs,
+// buildLookups: um relacionamento sempre tem prioridade sobre um lookup
+// explícito legado que aponte pra mesma fonte). Quando a fonte relacionada
+// tem múltiplas linhas para a mesma chave (ex. vários relatos no mesmo
+// protocolo), usa-se a primeira linha encontrada — mesmo comportamento
+// herdado pelo merge automático via relação.
 export interface LookupColumn {
   source: SourceTable
   localKey: string   // campo na fonte principal do widget
@@ -170,20 +241,23 @@ export interface LookupColumn {
 }
 
 // Relacionamento entre DUAS fontes, declarado na ABA (TabConfig.relations) —
-// não no widget. Diferente de LookupColumn (que só traz UM campo extra pra
-// DENTRO de um widget), uma relação existe pra fazer o FILTRO DA ABA
-// propagar entre widgets de fontes diferentes: quando um filtro bate numa
-// fonte que tem relação declarada com a fonte de outro widget, o servidor
-// resolve um semi-join de verdade (busca as chaves reais na fonte
-// relacionada, não reaplica o texto do filtro) e filtra o widget pela
-// chave correspondente (ver resolveIndirectFilter, server/widgetQuery.mjs).
-// Simétrica — não importa qual lado é "A" ou "B". Uma mesma fonte pode
-// aparecer em várias relações (ex. "BASES" relacionada com 4 fontes de
-// fato diferentes, cada uma sua própria TabRelation) — dashboards com até
-// ~10 fontes relacionadas nesse padrão "várias fato → poucas dimensão"
-// funcionam assim, sem precisar de um conceito de "hub" à parte. Não
-// encadeia (fato → dimensão → outro fato): só relações DIRETAS entre duas
-// fontes propagam filtro.
+// não no widget. Uma relação faz DUAS coisas ao mesmo tempo (desde
+// 01/09/2026): (1) FILTRO DA ABA propaga entre widgets de fontes diferentes
+// — quando um filtro bate numa fonte que tem relação declarada com a fonte
+// de outro widget, o servidor resolve um semi-join de verdade (busca as
+// chaves reais na fonte relacionada, não reaplica o texto do filtro) e
+// filtra o widget pela chave correspondente (ver resolveIndirectFilter,
+// server/widgetQuery.mjs); (2) CAMPO DE UMA FONTE fica disponível em
+// QUALQUER widget da outra — Eixo X, Eixo Y, Legenda, Filtro fixo, coluna de
+// Tabela — como se fosse nativo (ver buildLookups, mesmo arquivo), sem
+// precisar mesclar campo por campo (isso substituiu o antigo LookupColumn
+// manual, acima). Simétrica — não importa qual lado é "A" ou "B". Uma mesma
+// fonte pode aparecer em várias relações (ex. "BASES" relacionada com 4
+// fontes de fato diferentes, cada uma sua própria TabRelation) — dashboards
+// com até ~10 fontes relacionadas nesse padrão "várias fato → poucas
+// dimensão" funcionam assim, sem precisar de um conceito de "hub" à parte.
+// Não encadeia (fato → dimensão → outro fato): só relações DIRETAS entre
+// duas fontes propagam filtro ou liberam campo.
 export interface TabRelation {
   id: string
   sourceA: SourceTable
@@ -213,7 +287,7 @@ export interface WidgetConfig {
   limit?: number
   sort?: 'asc' | 'desc'
   columns?: string[]          // type 'table' — ordem define a ordem das colunas exibidas
-  lookups?: LookupColumn[]    // type 'table' — colunas mescladas de outras fontes
+  lookups?: LookupColumn[]    // mesclagem explícita legada (qualquer tipo de widget) — ver LookupColumn; substituída por TabRelation
   tableFormat?: TableFormat   // type 'table' — fonte/alinhamento/cabeçalho/renomear coluna
   tableConditionalRules?: TableConditionalRule[] // type 'table' — formatação condicional por coluna (ver TableConditionalRule)
   matrixRows?: string[]       // type 'matrix' — 1+ campos, hierarquia de linhas (com subtotal por nível)
@@ -286,12 +360,26 @@ export interface PinnedInsight {
   fingerprint: string
 }
 
+// Filtro dinâmico: enquanto ativo (e fora do modo edição — ver
+// DashboardBuilder/FilterBar), o valor selecionado avança sozinho pela
+// lista de valores distintos do campo a cada `intervalSeconds`, voltando ao
+// primeiro depois do último. Pensado pro mesmo cenário de tela exposta sem
+// interação do TabAutoRefresh (TV de painel de setor), só que girando o
+// RECORTE em vez de só repetir a mesma busca. Só se aplica a filtro
+// 'multiselect' — um filtro de período não tem uma lista discreta de opções
+// pra avançar.
+export interface FilterDynamicConfig {
+  enabled: boolean
+  intervalSeconds: number
+}
+
 export interface FilterConfig {
   id: string
   source: SourceTable
   field: string
   label: string
   type: 'multiselect' | 'daterange'
+  dynamic?: FilterDynamicConfig
 }
 
 // Tamanho de tela fixo, estilo Power BI ("Configurações de tela" → Tipo
@@ -342,6 +430,11 @@ export interface TabConfig {
 export interface DashboardConfig {
   version: number
   tabs: TabConfig[]
+  // "Tabela de medidas" da dashboard (ver MeasureDef) — reutilizável em
+  // qualquer guia/widget desta MESMA dashboard, via MeasureConfig.measureRef.
+  // Segue o mesmo ciclo rascunho→Salvar/Descartar de tabs — nada persiste
+  // sozinho, nem quando criada pela IA (mesmo padrão de um widget aprovado).
+  measures?: MeasureDef[]
 }
 
 // Filtros ativos escolhidos pelo usuário numa aba (estado de visualização,
@@ -386,6 +479,29 @@ export interface MatrixResult {
   grandTotal: Record<string, number>   // columnKey -> total geral da coluna
   grandTotalAll: number
 }
+
+// Ordenação por clique no cabeçalho da coluna de uma Tabela OU Matriz —
+// ephemeral (não salva com o widget, cada pessoa que olha a tela ordena do
+// próprio jeito), só existe como parâmetro de consulta em /api/widget-data.
+// Na Tabela, `column` é uma chave de `widget.columns` (ou outKey de lookup).
+// Na Matriz, `column` é uma chave de `MatrixResult.columns[].key`, ou um dos
+// dois sentinelas reservados MATRIX_LABEL_SORT_KEY/MATRIX_TOTAL_SORT_KEY
+// (definidos ao lado, espelhando as mesmas constantes em
+// server/widgetQuery.mjs) — reordena as linhas IRMÃS de cada nível da
+// hierarquia, preservando a árvore (ver TableBody/MatrixBody em
+// WidgetRenderer.tsx).
+export interface ColumnSort {
+  column: string
+  direction: 'asc' | 'desc'
+}
+
+// Sentinelas de coluna da Matriz que não são uma coluna dinâmica de verdade
+// (`MatrixResult.columns[].key`) — a coluna de rótulo da linha (sem cabeçalho
+// próprio hoje) e a coluna "Total" (calculada, fora de `columns`). Espelham
+// exatamente as constantes de mesmo nome em server/widgetQuery.mjs — mudar
+// um lado sem o outro quebra a ordenação por essas duas colunas.
+export const MATRIX_LABEL_SORT_KEY = '__row_label__'
+export const MATRIX_TOTAL_SORT_KEY = '__row_total__'
 
 export interface WidgetDataResponse {
   points?: WidgetDataPoint[]                       // gráficos/kpi

@@ -4,7 +4,7 @@
 // (mesclar fonte, filtro fixo, top N) e "Formato" (título/cor/tabela).
 import { useEffect, useMemo, useState } from 'react'
 import {
-  X, Eye, Plus, Minus, Link2, Gauge, BarChart3, BarChart2, BarChartBig, BarChartHorizontalBig,
+  X, Eye, Plus, Minus, Gauge, BarChart3, BarChart2, BarChartBig, BarChartHorizontalBig,
   Combine, LineChart, AreaChart, PieChart, ScatterChart, Filter as FunnelIcon, Table2, TableProperties, ChevronDown, Type,
   BarChart4, Sheet, RefreshCw, Trash2, ExternalLink,
 } from 'lucide-react'
@@ -20,7 +20,7 @@ import { getAllSources, getSourceDef, type FieldKind } from './fieldCatalog'
 import { fetchWidgetData, fetchFieldValues } from './builderApi'
 import { fetchSheetSources, createSheetSource, deleteSheetSource, refreshSheetSource, ApiError as SheetApiError, type SheetSource } from './sheetSourceApi'
 import { OPERATOR_LABELS } from './conditionalFormat'
-import type { BlinkSpeed, ChartAnimationSpeed, ConditionalOperator, ConditionalRule, DataLabelFormat, LookupColumn, MeasureConfig, SourceTable, TableConditionalRule, TableRuleOperator, TextFormat, WidgetConfig, WidgetDataPoint, WidgetType } from './types'
+import type { BlinkSpeed, ChartAnimationSpeed, ConditionalOperator, ConditionalRule, DataLabelFormat, MeasureConfig, MeasureDef, SourceTable, TabRelation, TableConditionalRule, TableRuleOperator, TextFormat, WidgetConfig, WidgetDataPoint, WidgetType } from './types'
 
 const TYPE_LABELS: Record<WidgetType, string> = {
   kpi: 'Card (KPI)',
@@ -111,6 +111,16 @@ interface Props {
   // recarrega o catálogo de fontes (GET /api/sources) pra ela aparecer no
   // seletor de fonte da aba Dados sem precisar fechar e reabrir o editor.
   onSourcesChanged?: () => Promise<void>
+  // "Tabela de medidas" da dashboard (ver MeasureDef) — alimenta o modo
+  // "Medida salva" do MeasureWell em cada slot de medida.
+  dashboardMeasures?: MeasureDef[]
+  // Relacionamentos da ABA (TabConfig.relations) — desde 01/09/2026, TODO
+  // campo de qualquer fonte relacionada com `draft.source` já aparece pronto
+  // nos seletores de Eixo X/Eixo Y/Legenda/Filtro/Coluna deste widget (ver
+  // `lookupFieldMeta`/`buildGroups`), sem precisar mesclar campo por campo —
+  // é o que a antiga seção "Mesclar campo de outra fonte" fazia manualmente,
+  // agora derivado automaticamente de um relacionamento já declarado.
+  relations?: TabRelation[]
 }
 
 function Field({ label, info, children }: { label: string; info?: string; children: React.ReactNode }) {
@@ -797,14 +807,13 @@ export function addDimensionKey(current: string[], newKey: string): string[] {
 // pra nada), a Tabela pode querer as DUAS coisas: a data linha a linha (ex.
 // "Data Criado" como está) E/OU a Hierarquia de datas como colunas extras
 // (Ano/Trimestre/Mês/Dia) — por isso aqui o campo de data continua na
-// lista, com os 4 níveis logo depois dele. Inclui campo mesclado de outra
-// fonte (lookups) com o mesmo tratamento — senão um campo trazido via
-// "Mesclar campo de outra fonte" nunca aparecia como coluna da Tabela,
+// lista, com os 4 níveis logo depois dele. Inclui campo de fonte RELACIONADA
+// (`mergedFields`, ver `lookupFieldMeta` mais abaixo) com o mesmo tratamento
+// — senão um campo de outra fonte nunca aparecia como coluna da Tabela,
 // ainda que já funcionasse normalmente em Eixo X/Legenda/Matriz.
 export function buildTableColumnFields(
   sourceDef: { fields: { key: string; label: string; kind: FieldKind; description?: string }[] } | undefined,
-  lookups: LookupColumn[] | undefined,
-  resolveLookupSource: (source: SourceTable) => { fields: { key: string; kind: FieldKind; description?: string }[] } | undefined,
+  mergedFields: { key: string; label: string; kind?: FieldKind; description?: string }[],
 ) {
   const fields: { key: string; label: string; description?: string }[] = []
   if (sourceDef) {
@@ -813,12 +822,9 @@ export function buildTableColumnFields(
       if (f.kind === 'date') fields.push(...hierarchyFields(f.key, f.label, f.description))
     }
   }
-  for (const lk of lookups ?? []) {
-    const lkDef = resolveLookupSource(lk.source)
-    const lkField = lkDef?.fields.find((f) => f.key === lk.field)
-    const outKey = `${lk.source}.${lk.field}`
-    fields.push({ key: outKey, label: lk.label, description: lkField?.description })
-    if (lkField?.kind === 'date') fields.push(...hierarchyFields(outKey, lk.label, lkField?.description))
+  for (const f of mergedFields) {
+    fields.push({ key: f.key, label: f.label, description: f.description })
+    if (f.kind === 'date') fields.push(...hierarchyFields(f.key, f.label, f.description))
   }
   return fields
 }
@@ -846,7 +852,7 @@ export function filterLegendGroups(axisGroups: AxisFieldGroup[], dimensions: str
     .filter((g) => g.foreign || g.fields.length > 0)
 }
 
-export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose, onChange, onSourcesChanged }: Props) {
+export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose, onChange, onSourcesChanged, dashboardMeasures = [], relations = [] }: Props) {
   const sources = getAllSources()
   const currentEmail = useAuthStore((s) => s.user?.email ?? null)
   const isAdmin = useAuthStore((s) => s.isAdmin)
@@ -871,10 +877,6 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   // Edição de UM filtro fixo (v1 pragmática: um filtro por widget cobre os
   // casos do default, ex. "status in [Cancelado]"; múltiplos via JSON depois).
   const [filterValues, setFilterValues] = useState<string[] | null>(null)
-  // Rascunho de uma nova coluna mesclada (lookup) — só para widgets 'table'.
-  const [lookupDraft, setLookupDraft] = useState<{ source: SourceTable | ''; localKey: string; foreignKey: string; field: string }>(
-    { source: '', localKey: '', foreignKey: '', field: '' },
-  )
 
   // Planilhas do Google já cadastradas (qualquer usuário pode adicionar a
   // sua — ver server/sheetSources.mjs) — carregadas uma vez, ao abrir o
@@ -962,14 +964,34 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   const hasDataLabels = DATA_LABEL_TYPES.includes(draft.type)
   const wf = draft.widgetFilters?.[0]
 
-  // Campos mesclados de outras fontes (widget.lookups) — cada um vira uma
-  // opção a mais nos pickers de Eixo X/Eixo Y/Legenda/Filtro, como se fosse
-  // um campo nativo da fonte principal. `kind` é resolvido no catálogo da
-  // fonte relacionada (já carregado no front via getAllSources/registerDynamicSources).
-  const lookupFieldMeta = useMemo(() => (draft.lookups ?? []).map((lk) => {
-    const f = getSourceDef(lk.source)?.fields.find((f) => f.key === lk.field)
-    return { key: `${lk.source}.${lk.field}`, label: lk.label, kind: f?.kind, description: f?.description }
-  }), [draft.lookups])
+  // Campo de qualquer fonte RELACIONADA (TabRelation, aba Relacionamentos)
+  // com a fonte principal deste widget — cada um vira uma opção a mais nos
+  // pickers de Eixo X/Eixo Y/Legenda/Filtro/Coluna, como se fosse um campo
+  // nativo. Substitui a antiga mesclagem manual campo-a-campo: declarar o
+  // relacionamento uma vez já libera TODOS os campos da fonte relacionada,
+  // em qualquer widget que use uma das duas fontes — não só este.
+  // `draft.lookups` (mesclagem explícita antiga) só é lido aqui por
+  // compatibilidade com widget salvo ANTES desta mudança — não tem mais UI
+  // pra criar um novo; uma fonte já coberta por relação usa ela (superset),
+  // e o lookup explícito só entra pra uma fonte que NÃO está relacionada.
+  const lookupFieldMeta = useMemo(() => {
+    const covered = new Set<string>()
+    const out: { key: string; label: string; kind?: FieldKind; description?: string }[] = []
+    for (const rel of relations) {
+      const otherSource = rel.sourceA === draft.source ? rel.sourceB : rel.sourceB === draft.source ? rel.sourceA : null
+      if (!otherSource || covered.has(otherSource)) continue
+      const otherDef = getSourceDef(otherSource)
+      if (!otherDef) continue
+      covered.add(otherSource)
+      for (const f of otherDef.fields) out.push({ key: `${otherSource}.${f.key}`, label: f.label, kind: f.kind, description: f.description })
+    }
+    for (const lk of draft.lookups ?? []) {
+      if (covered.has(lk.source)) continue
+      const f = getSourceDef(lk.source)?.fields.find((f) => f.key === lk.field)
+      out.push({ key: `${lk.source}.${lk.field}`, label: lk.label, kind: f?.kind, description: f?.description })
+    }
+    return out
+  }, [relations, draft.source, draft.lookups])
 
   const filterableFields = useMemo(() => [
     ...(sourceDef?.fields.filter((f) => f.kind === 'dimension') ?? []),
@@ -977,13 +999,13 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   ], [sourceDef, lookupFieldMeta])
 
   // Agrupa os campos disponíveis por FONTE (a principal do widget + cada uma
-  // já mesclada em Modificadores) — alimenta o picker "Selecionar" de
-  // Eixo X/Eixo Y/Legenda: clicar abre as fontes, clicar na fonte abre suas
-  // colunas. `kindFilter` decide quais campos de cada fonte entram no papel
-  // (dimensão/data para eixo/legenda; numérico só para soma/média; qualquer
-  // um para contagem/contagem distinta). `dateBuckets` expande campo de data
-  // na Hierarquia de datas (Ano/Trimestre/Mês/Dia — só faz sentido pra
-  // eixo/legenda/matriz, não pra medida).
+  // RELACIONADA a ela, ver Relacionamentos) — alimenta o picker "Selecionar"
+  // de Eixo X/Eixo Y/Legenda: clicar abre as fontes, clicar na fonte abre
+  // suas colunas. `kindFilter` decide quais campos de cada fonte entram no
+  // papel (dimensão/data para eixo/legenda; numérico só para soma/média;
+  // qualquer um para contagem/contagem distinta). `dateBuckets` expande campo
+  // de data na Hierarquia de datas (Ano/Trimestre/Mês/Dia — só faz sentido
+  // pra eixo/legenda/matriz, não pra medida).
   const buildGroups = (kindFilter: (kind: FieldKind) => boolean, dateBuckets: boolean): AxisFieldGroup[] => {
     const groups: AxisFieldGroup[] = []
     if (sourceDef) {
@@ -996,7 +1018,26 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
       if (fields.length) groups.push({ key: sourceDef.key, label: sourceDef.label, fields })
     }
     const bySource = new Map<string, AxisFieldGroup>()
+    // Fontes RELACIONADAS primeiro — ganham TODOS os campos que baterem no
+    // papel, automaticamente (nenhuma configuração por campo necessária).
+    for (const rel of relations) {
+      const otherSource = rel.sourceA === draft.source ? rel.sourceB : rel.sourceB === draft.source ? rel.sourceA : null
+      if (!otherSource || bySource.has(otherSource)) continue
+      const otherDef = getSourceDef(otherSource)
+      if (!otherDef) continue
+      const fields: AxisFieldGroup['fields'] = []
+      for (const f of otherDef.fields) {
+        if (!kindFilter(f.kind)) continue
+        const outKey = `${otherSource}.${f.key}`
+        if (f.kind === 'date' && dateBuckets) fields.push(...hierarchyFields(outKey, f.label, f.description))
+        else fields.push({ key: outKey, label: f.label, description: f.description })
+      }
+      if (fields.length) bySource.set(otherSource, { key: otherSource, label: otherDef.label, fields })
+    }
+    // Lookup explícito (legado, widget salvo ANTES de relacionamento cobrir
+    // isso sozinho) — só entra se a fonte não estiver já coberta por relação.
     for (const lk of draft.lookups ?? []) {
+      if (bySource.has(lk.source)) continue
       const lkDef = getSourceDef(lk.source)
       const lkField = lkDef?.fields.find((f) => f.key === lk.field)
       const kind = lkField?.kind ?? 'dimension'
@@ -1060,9 +1101,8 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   // como colunas extras (Ano/Trimestre/Mês/Dia) — por isso aqui o campo de
   // data continua na lista, com os 4 níveis logo depois dele.
   const tableColumnFields = useMemo(
-    () => buildTableColumnFields(sourceDef, draft.lookups, getSourceDef),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sourceDef, draft.lookups],
+    () => buildTableColumnFields(sourceDef, lookupFieldMeta),
+    [sourceDef, lookupFieldMeta],
   )
 
   // bar*/line/area/comboBarLine suportam múltiplas medidas (várias séries);
@@ -1119,28 +1159,6 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
       .catch((e) => setPreviewError(e.message))
   }
 
-  const lookupSourceDef = lookupDraft.source ? getSourceDef(lookupDraft.source) : undefined
-  // Mesma fonte + mesmo campo já mesclado (chaves de junção diferentes ou
-  // não) produziria um outKey e um rótulo idênticos aos de um lookup já
-  // existente — duas entradas indistinguíveis na árvore de campos, e em
-  // dobro pra cada nível da Hierarquia de datas se o campo for de data.
-  const isDuplicateLookup = (draft.lookups ?? []).some((lk) => lk.source === lookupDraft.source && lk.field === lookupDraft.field)
-  const canAddLookup = !!lookupDraft.source && !!lookupDraft.localKey && !!lookupDraft.foreignKey && !!lookupDraft.field && !isDuplicateLookup
-  const addLookup = () => {
-    if (!canAddLookup || !lookupDraft.source) return
-    const fieldLabel = lookupSourceDef?.fields.find((f) => f.key === lookupDraft.field)?.label ?? lookupDraft.field
-    const lookup: LookupColumn = {
-      source: lookupDraft.source,
-      localKey: lookupDraft.localKey,
-      foreignKey: lookupDraft.foreignKey,
-      field: lookupDraft.field,
-      label: `${fieldLabel} (${lookupSourceDef?.label ?? lookupDraft.source})`,
-    }
-    set({ lookups: [...(draft.lookups ?? []), lookup] })
-    setLookupDraft({ source: '', localKey: '', foreignKey: '', field: '' })
-  }
-  const removeLookup = (idx: number) => set({ lookups: (draft.lookups ?? []).filter((_, i) => i !== idx) })
-
   const canSave = draft.title.trim().length > 0 && (isText || !!draft.source)
 
   return (
@@ -1182,6 +1200,14 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                             matrixValue: t === 'matrix' ? draft.matrixValue : undefined,
                             histogramField: t === 'histogram' ? draft.histogramField : undefined,
                             histogramBins: t === 'histogram' ? draft.histogramBins : undefined,
+                            // Um widget AINDA NÃO criado (sem `initial`) não existe no
+                            // canvas ainda — só entra em t.widgets ao clicar "Salvar" lá
+                            // embaixo — então não há como isto pisar num redimensionamento
+                            // manual (que só acontece arrastando o card já no grid). Um
+                            // Card (KPI) só mostra um número, sem eixo/legenda — o mesmo
+                            // tamanho genérico de gráfico (12×10) sobra muito; nasce
+                            // compacto (6×6), do jeito que um KPI de verdade precisa.
+                            layout: !initial ? { ...draft.layout, w: t === 'kpi' ? 6 : 12, h: t === 'kpi' ? 6 : 10 } : draft.layout,
                           })}
                           title={TYPE_LABELS[t]}
                           className={cn(
@@ -1308,6 +1334,9 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                     showColor={isBreakdownChart && !hasLegend}
                     onChange={(list) => (hasLegend || !isBreakdownChart) ? set({ measure: list[0] }) : setMeasuresList(list)}
                     onSwitchSource={switchSource}
+                    dashboardMeasures={dashboardMeasures}
+                    widgetSource={draft.source}
+                    hasDimension={!!draft.dimensions?.length}
                   />
                 )}
 
@@ -1319,6 +1348,9 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                     measures={measuresLineList}
                     numberGroups={numberGroups}
                     countGroups={countGroups}
+                    dashboardMeasures={dashboardMeasures}
+                    widgetSource={draft.source}
+                    hasDimension={!!draft.dimensions?.length}
                     allowMultiple
                     showColor
                     onChange={setMeasuresLineList}
@@ -1438,79 +1470,11 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
 
                 {sourceDef && (
                   <p className="text-[10px] text-gray-500 flex items-start gap-1">
-                    <span>Fonte principal: <span className="text-gray-300 font-medium">{sourceDef.label}</span> — definida automaticamente; pra usar outra fonte, mescle-a abaixo.</span>
-                    <InfoHint text="A fonte principal é a primeira tabela cadastrada, ou a fonte de onde você já escolheu algum campo. Pra trocar, abra o seletor de qualquer eixo e clique numa fonte marcada 'usar esta fonte' — isso reseta os campos já escolhidos, já que eles pertenciam à fonte anterior." />
+                    <span>
+                      Fonte principal: <span className="text-gray-300 font-medium">{sourceDef.label}</span> — definida automaticamente. Campo de uma fonte RELACIONADA (aba "Relacionamentos") já aparece pronto em Eixo X, Eixo Y, Legenda, Filtro e Coluna, sem precisar mesclar campo a campo.
+                    </span>
+                    <InfoHint text="A fonte principal é a primeira tabela cadastrada, ou a fonte de onde você já escolheu algum campo. Pra usar campo de outra fonte, declare um relacionamento entre as duas na aba 'Relacionamentos' da guia — a partir daí, qualquer widget de uma das duas fontes já enxerga os campos da outra. Pra TROCAR a fonte principal deste widget, abra o seletor de qualquer eixo e clique numa fonte marcada 'usar esta fonte' — isso reseta os campos já escolhidos, já que eles pertenciam à fonte anterior." />
                   </p>
-                )}
-
-                {sourceDef && (
-                  <Field
-                    label="Mesclar campo de outra fonte (opcional)"
-                    info="Funciona como um 'JOIN': casa uma chave em comum entre esta fonte e outra tabela, e traz um campo dela pra usar em qualquer parte deste widget (Eixo X, Eixo Y, Legenda, Filtro, coluna de tabela) como se fosse um campo nativo."
-                  >
-                    <p className="text-[10px] text-gray-500 mt-0.5 mb-1.5">
-                      Traz um campo de qualquer outra fonte pra usar em qualquer papel (Eixo X, Eixo Y, Legenda, Filtro, coluna de tabela) — basta casar uma chave em comum entre as duas.
-                    </p>
-                    {(draft.lookups ?? []).length > 0 && (
-                      <div className="mb-2 flex flex-wrap gap-1.5">
-                        {(draft.lookups ?? []).map((lk, i) => (
-                          <span key={i} className="flex items-center gap-1.5 px-2 py-1 rounded-md border border-brand-blue/30 bg-brand-blue/10 text-[10px] text-brand-blue">
-                            <Link2 size={10} /> {lk.label}
-                            <button onClick={() => removeLookup(i)} className="text-brand-blue/70 hover:text-brand-blue"><X size={10} /></button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <select
-                        value={lookupDraft.source}
-                        onChange={(e) => setLookupDraft({ source: e.target.value as SourceTable, localKey: '', foreignKey: '', field: '' })}
-                        className={cn(inputCls, 'text-[10px]')}
-                      >
-                        <option value="">Fonte relacionada…</option>
-                        {sources.filter((s) => s.key !== draft.source).map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
-                      </select>
-                      <select
-                        value={lookupDraft.localKey}
-                        onChange={(e) => setLookupDraft((d) => ({ ...d, localKey: e.target.value }))}
-                        disabled={!lookupDraft.source}
-                        className={cn(inputCls, 'text-[10px]')}
-                      >
-                        <option value="">Chave aqui…</option>
-                        {sourceDef.fields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
-                      </select>
-                      <select
-                        value={lookupDraft.foreignKey}
-                        onChange={(e) => setLookupDraft((d) => ({ ...d, foreignKey: e.target.value }))}
-                        disabled={!lookupSourceDef}
-                        className={cn(inputCls, 'text-[10px]')}
-                      >
-                        <option value="">Chave na fonte…</option>
-                        {lookupSourceDef?.fields.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
-                      </select>
-                      <select
-                        value={lookupDraft.field}
-                        onChange={(e) => setLookupDraft((d) => ({ ...d, field: e.target.value }))}
-                        disabled={!lookupSourceDef}
-                        className={cn(inputCls, 'text-[10px]')}
-                      >
-                        <option value="">Campo a trazer…</option>
-                        {lookupSourceDef?.fields
-                          .filter((f) => !(draft.lookups ?? []).some((lk) => lk.source === lookupDraft.source && lk.field === f.key))
-                          .map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}
-                      </select>
-                    </div>
-                    {isDuplicateLookup && (
-                      <p className="mt-1 text-[10px] text-risk-critical">Esse campo já foi mesclado desta fonte.</p>
-                    )}
-                    <button
-                      onClick={addLookup}
-                      disabled={!canAddLookup}
-                      className="mt-1.5 flex items-center gap-1 text-[11px] font-semibold text-brand-blue hover:text-brand-blueLight disabled:opacity-40"
-                    >
-                      <Plus size={12} /> Adicionar campo mesclado
-                    </button>
-                  </Field>
                 )}
 
                 <FieldWell

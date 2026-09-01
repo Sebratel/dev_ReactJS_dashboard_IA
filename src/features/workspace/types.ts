@@ -1,7 +1,7 @@
 // Tipos da hierarquia Pasta → Dashboard → Guia — ver server/workspace.mjs.
 // Guias em si continuam usando TabConfig (src/features/builder/types.ts);
 // aqui só o que envolve pasta/dashboard e as anotações de permissão.
-import type { TabConfig } from '@/features/builder/types'
+import type { MeasureDef, TabConfig } from '@/features/builder/types'
 
 export interface WorkspaceTreeDashboard {
   id: string
@@ -44,5 +44,5 @@ export interface DashboardTab extends TabConfig {
 
 export interface DashboardResponse {
   folder: { id: string; name: string; canManage: boolean; isManager: boolean }
-  dashboard: { id: string; name: string; tabs: DashboardTab[] }
+  dashboard: { id: string; name: string; tabs: DashboardTab[]; measures?: MeasureDef[] }
 }

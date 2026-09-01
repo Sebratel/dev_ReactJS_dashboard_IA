@@ -64,7 +64,11 @@ const SOURCELESS_TYPES = new Set(['text'])
 // migração em server/workspace.mjs::migrateGridResolution) — mesmo tamanho
 // VISUAL de sempre, só que expresso na unidade nova, duas vezes mais fina.
 const DEFAULT_SIZE = {
-  kpi: { w: 6, h: 8 }, text: { w: 8, h: 8 }, pie: { w: 8, h: 16 }, funnel: { w: 8, h: 16 },
+  // KPI reduzido (01/09/2026) pra bater com o mesmo tamanho compacto do
+  // editor manual (WidgetEditorModal.tsx) — um Card só mostra um número, sem
+  // eixo/legenda, então h:8 sobrava visivelmente "enorme" ao lado de um Card
+  // redimensionado à mão.
+  kpi: { w: 6, h: 6 }, text: { w: 8, h: 8 }, pie: { w: 8, h: 16 }, funnel: { w: 8, h: 16 },
   table: { w: 12, h: 18 }, matrix: { w: 12, h: 18 }, scatter: { w: 12, h: 16 }, histogram: { w: 12, h: 16 },
 }
 const FALLBACK_SIZE = { w: 12, h: 16 }

@@ -32,15 +32,13 @@
   Um painel (ou um novo tipo de widget) que olha os dados já carregados dos gráficos/tabelas da guia e gera um resumo em texto: tendências, valores fora do padrão, comparações.
   **Complexidade:** Média-alta. Os dados agregados já existem no navegador (é o que os gráficos mostram) — a parte nova é mandar esse resumo (não o dataset bruto, que pode ser grande) pra IA e exibir o texto de volta, num widget tipo "insight". Cuidado a ter: decidir se roda automaticamente (custo de IA a cada carregamento) ou só quando o usuário pedir (um botão "Gerar insight"), que é o caminho mais seguro pra começar.
 
-- [ ] **6. IA para gerar medidas e cálculos personalizados**
-  Usuário descreve um cálculo que quer (ex. "percentual de reincidência sobre o total instalado no mês") e a IA monta a fórmula, usando os campos disponíveis.
-  **Complexidade:** Alta — e tem uma dependência real: hoje o motor de agregação só sabe fazer contagem/contagem distinta/soma/média sobre UM campo por vez (`server/widgetQuery.mjs`). Não existe ainda o conceito de "campo calculado" (uma fórmula combinando duas medidas, tipo razão ou diferença percentual). Esse recurso precisaria existir primeiro — ver sugestão 2.9 na Parte 2, que é exatamente esse pré-requisito — e a IA entraria depois como uma forma mais fácil de escrever essa fórmula, não como o motor em si.
+- [x] **6. IA para gerar medidas e cálculos personalizados** — implementado em 01/09/2026, ver `HISTORICO_ALTERACOES.md`.
+  `propose_measures`/`preview_measure`, novas ferramentas da IA: descreve o cálculo em português (inclusive comparativo entre períodos, cruzando fontes diferentes) e a IA monta uma ou mais medidas nomeadas pra aprovação — mesmo motor de fórmula genérica do item 2.9 abaixo, que virou o pré-requisito real como já era esperado aqui. Uma auditoria (mesmo dia, 18 pedidos verificados contra o código real) confirmou que o exemplo original desta linha — "% de reincidência sobre o total instalado" — não era expressável no dia da entrega, porque faltava um filtro fixo por categoria numa medida `simple`. Fechado no mesmo dia (`filters?: WidgetFilter[]`, ver `HISTORICO_ALTERACOES.md`); os demais gaps que a mesma auditoria confirmou (funções não-aritméticas, condicional/texto, estatística avançada, série temporal) viraram o item **2.16** abaixo.
 
 ### C. Comparações e análise
 
-- [ ] **7. Gráficos/tabelas comparativas (valor no mês 1 x valor no mês 2)**
-  Comparar o mesmo indicador em dois períodos (ou dois recortes) lado a lado, com a diferença/variação.
-  **Complexidade:** Média. Dá pra encaixar como uma variação do widget de gráfico/tabela existente: em vez de um único período, o usuário escolhe dois períodos (ou dois conjuntos de valores de filtro) e o motor calcula a mesma medida para cada um, mostrando os dois valores e a diferença absoluta/percentual — como séries lado a lado no gráfico, ou colunas extra na tabela/matriz.
+- [x] **7. Gráficos/tabelas comparativas (valor no mês 1 x valor no mês 2)** — implementado em 01/09/2026, ver `HISTORICO_ALTERACOES.md`.
+  Não como uma variação separada do widget (como a nota original imaginava), e sim via medidas nomeadas com `dateWindow` relativo (ex. "últimos 3 meses" e "mesmo período do ano passado" como duas medidas) combinadas numa medida "formula" (diferença, variação %, o que fizer sentido) — qualquer widget existente (a começar pelo KPI) já sabe mostrar o resultado via `MeasureConfig.measureRef`, sem precisar de um tipo de widget novo.
 
 ### D. Colaboração e uso simultâneo
 
@@ -100,8 +98,8 @@ Estas são ideias que não estavam na sua lista — coisas que percebo como lacu
 - [ ] **2.8. Favoritos / fixar no topo do menu**
   Deixar uma dashboard "favorita" pra aparecer sempre no topo do menu, sem precisar navegar pela hierarquia de pastas toda vez.
 
-- [ ] **2.9. Campos calculados reutilizáveis**
-  Um campo derivado de uma fórmula simples (razão entre duas medidas, diferença percentual entre dois períodos, concatenação de dois campos de texto...), calculado uma vez e disponível como se fosse mais um campo da fonte, reutilizável em qualquer widget. Isso é, na prática, o pré-requisito técnico do item 6 da Parte 1 (IA gerando cálculos) — e também tem valor sozinho, sem IA nenhuma, pra quem já sabe exatamente a fórmula que quer.
+- [x] **2.9. Campos calculados reutilizáveis** — implementado em 01/09/2026, ver `HISTORICO_ALTERACOES.md`.
+  Virou "medidas nomeadas" (`MeasureDef`, tabela de medidas por DASHBOARD) em vez de "campo da fonte": `kind: 'simple'` (agregação + janela de data relativa opcional) ou `kind: 'formula'` (combina outras medidas nomeadas, inclusive de fontes diferentes, numa expressão aritmética segura). Reutilizável em qualquer widget da mesma dashboard via `MeasureConfig.measureRef`, com ou sem IA — o CRUD manual (`MeasuresEditorModal.tsx`) funciona sozinho, pra quem já sabe a fórmula que quer. Só a parte de "concatenação de dois campos de texto" citada aqui NÃO entrou — isso seria um campo calculado POR LINHA, não uma medida agregada, e não foi pedido nesta rodada.
 
 - [ ] **2.10. Papel de acesso intermediário ("editor de dados")**
   Hoje só existem três níveis: admin, gerente de pasta, e usuário padrão. Pode fazer sentido um papel que só cuida do catálogo de fontes (cadastra/edita fontes de dados) sem precisar ser administrador completo (que também gerencia pastas, usuários, temas etc.) — separando "quem cuida do dado" de "quem cuida da estrutura".
@@ -120,3 +118,11 @@ Estas são ideias que não estavam na sua lista — coisas que percebo como lacu
 
 - [ ] **2.15. Revisão de responsividade (mobile)**
   O Builder hoje é claramente pensado pra tela grande (grade arrastável, painéis laterais). Vale uma passada específica pra ver como fica num celular/tablet — pelo menos o modo visualização, já que o modo edição provavelmente vai continuar sendo mais natural no desktop.
+
+- [ ] **2.16. Gaps confirmados do motor de medidas (round/min/max, condicional, estatística avançada, série temporal)**
+  Auditoria de 01/09/2026 (18 pedidos de cálculo diversos, verificados contra o código real — ver `HISTORICO_ALTERACOES.md`) confirmou que o motor de medidas (item 6/2.9) NÃO aceita qualquer pedido de cálculo, apesar de a aritmética entre medidas nomeadas (mesma fonte ou cruzando fontes) ser genuinamente aberta. Gaps reais, cada um exigindo uma extensão diferente:
+  - **Funções não-aritméticas** (`round`/`floor`/`ceil`/`abs`/`min`/`max`): a gramática de `measureExpr.mjs` só tem `+ - * / % ^ ( )`, sem chamada de função. `abs`/`min`/`max` dão pra simular hoje via identidade algébrica com `^` (ex. `((a-b)^2)^0.5` = valor absoluto) — funciona, mas é gambiarra. `round` não tem workaround nenhum, nem algébrico. Extensão: um nó de AST `{type:'call', name, args}` no parser + `evaluateExpression` + uma allowlist pequena, exposta em `aiMeasureSchema.mjs`.
+  - **Lógica condicional/limiar com saída em texto** (ex. "se SLA > 5 dias, mostra 'Crítico'"): não dá pra fazer — não existe comparação (`>`, `<` etc.) na gramática, e uma medida sempre resolve pra `number`, nunca `string`, em toda a cadeia (`resolveMeasure`/`resolveFormulaMeasure`/scope de fórmula). Extensão maior: operadores relacionais + condicional na gramática, e um novo `kind` de medida com saída categórica (texto), não só numérica — mexe em mais lugares do motor do que os outros itens desta lista.
+  - **Estatística além de count/countDistinct/sum/avg** (desvio padrão, variância, mediana): `AggKind` e `makeAggregator` (`server/widgetQuery.mjs`) só têm essas 4 agregações streaming de 1 passada. Extensão contida: novo(s) valor(es) em `AggKind` + branch em `makeAggregator` acumulando soma e soma-dos-quadrados + espelhar em `AGGS` (`aiMeasureSchema.mjs`) — não precisa mexer na gramática de fórmula.
+  - **Medida como série ao longo do tempo** (ex. "acumulado mês a mês ao longo do ano"): fora de escopo de `MeasureDef` por design — uma medida sempre resolve pra 1 escalar (`resolveMeasure` retorna `{value: number, ...}`), nunca uma lista de pontos. A extensão certa é ortogonal a medidas: um flag de pós-agregação no WIDGET (ex. `cumulative?: boolean` numa série), aplicado no loop que já monta os pontos do gráfico — não em `resolveMeasure`/`measureExpr.mjs`.
+  - Já fora de escopo desde a entrega original (item 2.9): campo calculado POR LINHA (ex. concatenar texto de duas colunas) — não é uma medida agregada, precisaria de um mecanismo novo e paralelo (ex. `computedColumns` em `WidgetConfig`, só pra tabelas).

@@ -1,5 +1,5 @@
 import { apiFetch, ApiError } from '@/lib/apiClient'
-import type { TabConfig, TabAccess } from '@/features/builder/types'
+import type { TabConfig, TabAccess, MeasureDef } from '@/features/builder/types'
 import type { DashboardResponse, Folder, FolderMember, WorkspaceTreeFolder } from './types'
 
 export { ApiError }
@@ -80,8 +80,8 @@ export async function deleteDashboard(folderId: string, dashboardId: string): Pr
   await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}`, { method: 'DELETE' }))
 }
 
-export async function saveDashboardFull(folderId: string, dashboardId: string, tabs: TabConfig[]): Promise<void> {
-  await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/full`, jsonInit('PUT', { tabs })))
+export async function saveDashboardFull(folderId: string, dashboardId: string, tabs: TabConfig[], measures?: MeasureDef[]): Promise<void> {
+  await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/full`, jsonInit('PUT', { tabs, measures })))
 }
 
 export async function saveTabWidgets(folderId: string, dashboardId: string, tabId: string, widgets: TabConfig['widgets']): Promise<void> {

@@ -30,8 +30,14 @@
 // ─────────────────────────────────────────────────────────────────────────
 import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'node:crypto'
-import { listSourceDefs, runWidgetQuery, runFieldValues } from './widgetQuery.mjs'
+import { getSnapshot } from './dataset.mjs'
+import { isSheetSource } from './sheetSources.mjs'
+import { listSourceDefs, runWidgetQuery, runFieldValues, resolveMeasure, withSheetSources } from './widgetQuery.mjs'
 import { WIDGET_SCHEMA, PROPOSE_TOOL_SCHEMA, validateWidget, normalizeWidget } from './aiWidgetSchema.mjs'
+import {
+  PROPOSE_MEASURES_TOOL_SCHEMA, validateMeasureBatch, normalizeMeasureBatch,
+  UPDATE_MEASURES_TOOL_SCHEMA, validateMeasureUpdates, normalizeMeasureUpdates,
+} from './aiMeasureSchema.mjs'
 
 // `claude-opus-5` é o padrão deliberado: a tarefa é raciocinar sobre um
 // catálogo de campos e produzir JSON estruturado correto, onde errar custa a
@@ -155,9 +161,21 @@ Seu trabalho é traduzir o que a pessoa pede em WidgetConfig — a mesma estrutu
 
 Como trabalhar:
 - Use SOMENTE as fontes e os campos listados no catálogo. Nunca invente nome de campo nem de fonte.
-- Quando o pedido for vago ("principais indicadores"), escolha um conjunto pequeno e bem pensado — 4 a 6 widgets que respondam as perguntas óbvias daquele assunto — em vez de despejar tudo. Comece por um ou dois KPIs, depois quebras por dimensão relevante e uma série temporal se houver campo de data.
+- Quando o pedido for vago ("principais indicadores"), escolha um conjunto pequeno e bem pensado — 4 a 6 widgets que respondam as perguntas óbvias daquele assunto — em vez de despejar tudo. Comece por um ou dois KPIs, depois quebras por dimensão relevante e uma série temporal se houver campo de data. Se o assunto tiver uma TAXA/PERCENTUAL/COMPARATIVO óbvio (taxa de reincidência, % de conclusão, crescimento vs. mesmo período do ano anterior), pelo menos um dos KPIs deveria ser esse — não só contagens brutas — mesmo que o pedido não tenha usado a palavra "cálculo" ou "medida"; monte-o como medida nomeada (ver abaixo), que é a ferramenta certa pra isso, exatamente como você já escolhe entre bar/line/kpi sem o pedido especificar o tipo de gráfico.
 - Prefira o bucket de data mais largo que ainda faça sentido pra série ('year:'/'quarter:'/'month:' antes de 'day:') — 'month:<campo>' a 'day:<campo>' quando cobrir muitos meses, por exemplo. Pra pedidos do tipo "por ano e mês" ou "com essa hierarquia de datas", combine 2+ buckets do MESMO campo em dimensions/matrixRows/matrixColumns na ordem year→quarter→month→day (ex. ['year:Data','month:Data']) — o motor rotula e ordena cronologicamente sozinho.
 - Chame propose_widgets UMA vez, no fim, com tudo que você decidiu montar.
+
+Medidas nomeadas são a MESMA caixa de ferramentas dos widgets comuns, não um recurso à parte só pra quando alguém pede "um cálculo" explicitamente — considere-as em QUALQUER pedido, inclusive numa dashboard nova e num pedido vago (ver bullet acima), sempre que o resultado certo precisar de período relativo a agora, filtro fixo por categoria, ou combinar dois números numa conta (comparativo entre períodos, taxa, percentual — inclusive cruzando fontes diferentes). Filtro e dimensão de widget não têm nenhum desses conceitos — forçar por lá dá um número errado, ou algo impossível de expressar. Use propose_measures nesses casos:
+- Período relativo ("últimos N dias/meses", "ano até a data", "mês/trimestre/ano atual", "mesmo período do ano passado") vira o campo dateWindow de uma medida "simple" — nunca um filtro fixo de data absoluta.
+- "Mesmo período do ano passado" é sempre dateWindow do tipo shiftYears (years: -1) envolvendo a janela base (ex. shiftYears de years: -1 sobre lastNMonths de n: 3) — não existe um tipo "sameriodLastYear" à parte.
+- Um pedido do tipo "contagem de protocolo dos últimos 3 meses comparado com o mesmo período do ano passado" vira 3 medidas na MESMA chamada de propose_measures: uma "simple" com esse dateWindow (período atual), outra "simple" com o mesmo dateWindow envolto em shiftYears (período anterior), e uma "formula" que referencia as duas pelo NOME (diferença, variação percentual, ou o que fizer mais sentido pro pedido — some as duas formas se não tiver certeza de qual a pessoa quer ver, ex. diferença absoluta E percentual como duas medidas "formula" separadas).
+- Toda medida "formula" combina outras medidas NOMEADAS — nunca um campo cru direto. Se precisar de um número que ainda não existe como medida, proponha-o primeiro como "simple" na MESMA chamada.
+- Cruzar medidas de fontes diferentes numa fórmula é permitido — preencha "description" explicando a suposição assumida (o motor calcula, mas não sabe se a conta faz sentido de negócio; isso é obrigatório, a chamada falha sem isso).
+- Quando o pedido isolar um VALOR/CATEGORIA fixo de uma coluna (um status, uma equipe, um tipo — ex. "protocolos com status Reincidência", "total sem contar os cancelados"), use o campo "filters" de uma medida "simple" (op "in" pra manter só esses valores, "notIn" pra excluí-los) — nunca tente simular isso com dateWindow (que é só pra data) nem deixe de fora achando que não dá pra expressar. Ex.: "% de reincidência sobre o total instalado no mês" vira 3 medidas: uma "simple" com filters:[{field:"Status", op:"in", values:["Reincidência"]}] e o mesmo dateWindow do mês, outra "simple" só com o dateWindow (sem filters, o total), e uma "formula" dividindo as duas.
+- SEMPRE que o resultado de uma medida for uma taxa/percentual (o nome começa com "Taxa de", "%", "Percentual de", ou a fórmula termina multiplicando por 100 — ex. "atrasados / total * 100"), marque format:"percent" nessa medida. Sem isso o valor aparece certo mas SEM o sinal "%" no Card (ex. "81,9" em vez de "81,9%") — o número calculado já está certo, é só a exibição que fica sem contexto. Não marque format:"percent" numa medida que já é uma contagem/soma pura (isso deixaria "5.326" virar "5.326%", errado).
+- O pedido descreve uma mudança numa medida que JÁ aparece no catálogo (ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida", "renomeia a Taxa de X")? Use update_measures (id da medida + só os campos que mudam), nunca propose_measures — chamar propose_measures com o MESMO nome de uma medida existente sempre cria uma medida NOVA parecida (salva como "Nome (2)"), não edita a original, e normalmente não é isso que a pessoa quer. Reserve propose_measures pra quando o pedido é claramente sobre algo que ainda não existe, mesmo que o nome escolhido acabe parecido com uma medida já existente — nesse caso o "(2)" automático é o comportamento certo, não um erro a evitar.
+- Se o pedido também pedir pra VER o resultado (ex. "um card comparando"), depois de propose_measures retornar, chame propose_widgets usando o id que voltou na resposta (ex. measure: {agg: "countDistinct", measureRef: "<id devolvido>"}) — nunca invente um id. Quando as duas coisas forem pedidas juntas, chame propose_measures ANTES de propose_widgets, na mesma resposta.
+- Uma medida nomeada só cabe INTEIRA (fórmula, fonte cruzada, qualquer tipo) num KPI (measure único, sem dimensions). Num gráfico/matriz com dimensions, só uma medida "simple" da MESMA fonte do widget pode ser referenciada — nunca uma "formula" nem uma medida de outra fonte nesse papel.
 
 Comunicação: seja direto e breve. Uma ou duas frases dizendo o que montou e por quê — a pessoa vai ver os widgets na tela, não precisa de descrição campo por campo. Sem preâmbulo, sem recapitular o pedido.
 
@@ -197,6 +215,27 @@ function catalogText(sources) {
   return `Catálogo de fontes disponíveis nesta conversa:\n\n${lines.join('\n\n')}\n\nOs valores mostrados vêm de uma amostra dos dados reais — use-os para escrever filtros com a grafia exata. Só chame field_values quando precisar de um valor que não está aí.`
 }
 
+// Medidas JÁ existentes nesta dashboard (ver DashboardConfig.measures) —
+// pra não propor de novo algo que já existe, e pra poder referenciar uma
+// delas por NOME numa fórmula nova (ver propose_measures). Não muda de
+// turno pra turno dentro da MESMA conversa por si só — é recarregado do
+// que o navegador envia a cada turno (mesmo rascunho local que os widgets
+// já usam), então uma medida aprovada num turno anterior (ainda sem
+// "Salvar" de verdade) já aparece aqui no turno seguinte.
+function measuresText(dashboardMeasures) {
+  if (!dashboardMeasures.length) return 'Nenhuma medida cadastrada ainda nesta dashboard.'
+  const lines = dashboardMeasures.map((m) => {
+    const fmt = m.format ? ` · format: ${m.format}` : ''
+    if (m.kind === 'simple') {
+      const win = m.dateWindow ? ` · janela de data: ${JSON.stringify(m.dateWindow)}` : ''
+      const filt = m.filters?.length ? ` · filtro: ${JSON.stringify(m.filters)}` : ''
+      return `  - "${m.name}" (simple, id ${m.id}) — ${m.agg}${m.field ? ` de ${m.field}` : ''}, fonte "${m.source}"${win}${filt}${fmt}${m.description ? ` — ${m.description}` : ''}`
+    }
+    return `  - "${m.name}" (formula, id ${m.id}) — ${m.expression}, refs: ${JSON.stringify(m.refs)}${fmt}${m.description ? ` — ${m.description}` : ''}`
+  })
+  return `Medidas já existentes nesta dashboard (reutilizáveis por nome numa fórmula nova, ou por id num measureRef):\n${lines.join('\n')}`
+}
+
 function buildTools() {
   return [
     {
@@ -227,6 +266,34 @@ function buildTools() {
       description:
         'Entrega os widgets para o usuário aprovar. Chame exatamente uma vez, no fim do seu raciocínio, com todos os widgets que você decidiu montar. Nada é gravado na dashboard por esta chamada: o usuário revê e decide.',
       input_schema: PROPOSE_TOOL_SCHEMA,
+    },
+    {
+      name: 'preview_measure',
+      description:
+        'Calcula o valor de UMA medida ainda não proposta, contra os dados reais — devolve o número final e, se for uma fórmula, o valor de cada medida referenciada. Use pra conferir que uma janela de data ou uma fórmula produz um número plausível ANTES de propor (ex. perceber uma razão com denominador zero ou implausível). Opcional; não precisa ser chamada pra medidas simples e óbvias.',
+      input_schema: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          measure: { ...PROPOSE_MEASURES_TOOL_SCHEMA.properties.measures.items, description: 'A medida a calcular.' },
+          batch: {
+            type: 'array', items: PROPOSE_MEASURES_TOOL_SCHEMA.properties.measures.items,
+            description: 'Outras medidas ainda não propostas que `measure` referencia por nome (ex. testar uma fórmula "comparativo" sem ainda ter chamado propose_measures pras medidas "atual"/"anterior" que ela usa).',
+          },
+        },
+        required: ['measure'],
+      },
+    },
+    {
+      name: 'propose_measures',
+      description:
+        'Entrega uma ou mais medidas nomeadas NOVAS para o usuário aprovar (ver instruções sobre quando usar isto em vez de measure/measures inline). Pode ser chamada mais de uma vez no mesmo turno se fizer sentido, mas o comum é uma vez só, com o lote inteiro (ex. "atual", "anterior" e "comparativo" juntos). SEMPRE cria uma medida NOVA — se o nome já existir nesta dashboard, ela é salva com um sufixo ("Nome (2)") em vez de editar a original. Se a intenção do pedido for mudar algo numa medida que JÁ existe (não criar uma parecida), use update_measures, nunca isto. Nada é gravado na dashboard por esta chamada: o usuário revê e decide. A resposta traz o id e o nome FINAL (já com sufixo, se houve colisão) de cada medida — use-o depois num measureRef, nunca invente um id.',
+      input_schema: PROPOSE_MEASURES_TOOL_SCHEMA,
+    },
+    {
+      name: 'update_measures',
+      description:
+        'Aplica um ajuste (patch) numa ou mais medidas JÁ EXISTENTES nesta dashboard, encontradas por id (ver catálogo de medidas do prompt) — ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida pra incluir também Cancelado", "renomeia essa medida". Só os campos informados no patch mudam; o resto continua igual. Use isto sempre que o pedido descrever uma mudança em cima de algo que JÁ aparece no catálogo de medidas — chamar propose_measures nesse caso cria uma medida NOVA parecida ("Nome (2)") em vez de editar a original, o que quase nunca é a intenção. Nada é gravado sozinho: o usuário revê e aprova, como qualquer proposta.',
+      input_schema: UPDATE_MEASURES_TOOL_SCHEMA,
     },
   ]
 }
@@ -282,6 +349,77 @@ async function runTool(name, input, ctx) {
     return { text: `${widgets.length} widget(s) enviados para aprovação do usuário. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
   }
 
+  if (name === 'preview_measure' || name === 'propose_measures') {
+    const isPreview = name === 'preview_measure'
+    const list = isPreview
+      ? [...(Array.isArray(input.batch) ? input.batch : []), input.measure].filter(Boolean)
+      : (Array.isArray(input.measures) ? input.measures : [])
+    if (list.length === 0) return { isError: true, text: isPreview ? 'Nenhuma medida informada.' : 'Nenhuma medida na proposta.' }
+
+    const errors = validateMeasureBatch(list, ctx.sources, ctx.dashboardMeasures)
+    if (errors.length) {
+      return { isError: true, text: `Corrija e chame ${name} de novo:\n${errors.map((e) => `- ${e}`).join('\n')}` }
+    }
+    const normalized = normalizeMeasureBatch(list, ctx.dashboardMeasures)
+
+    if (isPreview) {
+      const target = normalized[normalized.length - 1] // sempre a última — `batch` (se houver) vem antes de `measure`
+      const allMeasures = [...ctx.dashboardMeasures, ...normalized]
+      const sheetKeys = [...new Set(allMeasures.filter((m) => m.kind === 'simple' && isSheetSource(m.source)).map((m) => m.source))]
+      const snap = await withSheetSources(getSnapshot(), sheetKeys, ctx.accessToken)
+      if (!snap) return { isError: true, text: 'Base ainda não materializada no servidor.' }
+      const mctx = {
+        measuresById: new Map(allMeasures.map((m) => [m.id, m])), snap, relations: [], tabFilters: [], now: new Date(),
+        sourceRowsCache: new Map(), resolvedScalarCache: new Map(), visiting: new Set(),
+      }
+      try {
+        const result = resolveMeasure(target.id, mctx)
+        const resolvedRefs = {}
+        if (target.kind === 'formula') {
+          for (const [alias, refId] of Object.entries(target.refs)) resolvedRefs[alias] = resolveMeasure(refId, mctx).value
+        }
+        return { text: JSON.stringify({ value: result.value, resolvedRefs: Object.keys(resolvedRefs).length ? resolvedRefs : undefined }) }
+      } catch (e) {
+        return { isError: true, text: e.message }
+      }
+    }
+
+    // Efeito colateral deliberado, mesmo padrão de propose_widgets: a
+    // proposta vai pro navegador por SSE, não pelo texto da resposta.
+    ctx.emit({ type: 'measures', measures: normalized, summary: String(input.summary ?? '') })
+    // Acumula na MESMA conversa (mesmo turno ou um seguinte) — permite
+    // referenciar por nome numa fórmula depois, ou usar o id real num
+    // measureRef de propose_widgets no mesmo turno, antes de qualquer
+    // "Salvar" de verdade (aprovar só entra no rascunho local, como sempre).
+    ctx.dashboardMeasures = [...ctx.dashboardMeasures, ...normalized]
+    ctx.proposed += 1
+    const idList = normalized.map((m) => `"${m.name}" = ${m.id}`).join(', ')
+    return { text: `${normalized.length} medida(s) enviada(s) para aprovação do usuário. IDs pra usar em measureRef: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+  }
+
+  if (name === 'update_measures') {
+    const list = Array.isArray(input.updates) ? input.updates : []
+    if (list.length === 0) return { isError: true, text: 'Nenhuma atualização na proposta.' }
+
+    const errors = validateMeasureUpdates(list, ctx.sources, ctx.dashboardMeasures)
+    if (errors.length) {
+      return { isError: true, text: `Corrija e chame update_measures de novo:\n${errors.map((e) => `- ${e}`).join('\n')}` }
+    }
+    const updated = normalizeMeasureUpdates(list, ctx.dashboardMeasures)
+
+    // Efeito colateral deliberado, mesmo padrão de propose_measures — só que
+    // aqui a proposta é uma EDIÇÃO no lugar (mesmo id de sempre), não uma
+    // medida nova; o front faz upsert por id em vez de acrescentar.
+    ctx.emit({ type: 'measureUpdates', measures: updated, summary: String(input.summary ?? '') })
+    // Upsert por id no rascunho DESTA conversa também — uma chamada seguinte
+    // no mesmo turno (ex. um preview_measure depois) já vê a versão nova.
+    const updatedIds = new Set(updated.map((m) => m.id))
+    ctx.dashboardMeasures = [...ctx.dashboardMeasures.filter((m) => !updatedIds.has(m.id)), ...updated]
+    ctx.proposed += 1
+    const idList = updated.map((m) => `"${m.name}" = ${m.id}`).join(', ')
+    return { text: `${updated.length} medida(s) atualizada(s), enviada(s) para aprovação do usuário: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+  }
+
   return { isError: true, text: `Ferramenta desconhecida: ${name}` }
 }
 
@@ -305,7 +443,7 @@ export async function startConversation({ email, folderId, sourceKeys, accessTok
 
 // Roda um turno da conversa, emitindo eventos conforme acontecem. `emit` é o
 // canal SSE pro navegador; a função só retorna quando o turno acabou.
-export async function runTurn({ conversationId, email, userText, accessToken, emit }) {
+export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [] }) {
   const conv = conversations.get(conversationId)
   if (!conv) throw new Error('Esta conversa expirou. Comece uma nova.')
   if (conv.email !== email) throw new Error('Esta conversa pertence a outro usuário.')
@@ -322,14 +460,22 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   conv.messages.push({ role: 'user', content: userText })
 
   //  conta as propostas aceitas no turno — é o que decide se um
-  // estouro de orçamento é perda total ou entrega parcial.
-  const ctx = { sources, accessToken, emit, proposed: 0 }
+  // estouro de orçamento é perda total ou entrega parcial. `dashboardMeasures`
+  // acumula propose_measures dentro do MESMO turno (ver runTool) — permite
+  // uma fórmula do turno referenciar, por nome, uma medida proposta poucas
+  // idas antes, no mesmo turno, sem precisar já estar salva de verdade.
+  const ctx = { sources, accessToken, emit, proposed: 0, dashboardMeasures: [...dashboardMeasures] }
   const tools = buildTools()
   const system = [
     { type: 'text', text: INSTRUCTIONS },
-    // Breakpoint no ÚLTIMO bloco de system: cacheia ferramentas + instruções +
-    // catálogo de uma vez (render order é tools → system → messages).
+    // Breakpoint no ÚLTIMO bloco ESTÁVEL de system: cacheia ferramentas +
+    // instruções + catálogo de uma vez (render order é tools → system →
+    // messages). O bloco de medidas vem DEPOIS, sem cache_control — muda a
+    // cada turno (uma medida aprovada no turno anterior já aparece aqui),
+    // então não pode fazer parte do prefixo cacheado sem invalidá-lo toda
+    // vez que alguém aprova uma medida.
     { type: 'text', text: catalogText(sources), cache_control: { type: 'ephemeral' } },
+    { type: 'text', text: measuresText(ctx.dashboardMeasures) },
   ]
 
   let totalUsd = 0

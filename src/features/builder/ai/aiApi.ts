@@ -5,7 +5,7 @@
 // esperar o modelo terminar. Não uso EventSource porque ele só faz GET — e o
 // turno precisa mandar a mensagem no corpo; então é fetch + leitura do corpo.
 import { apiFetch, ApiError } from '@/lib/apiClient'
-import type { TabRelation, WidgetConfig } from '../types'
+import type { MeasureDef, TabRelation, WidgetConfig } from '../types'
 
 export { ApiError }
 
@@ -25,6 +25,8 @@ export type AiEvent =
   | { type: 'text'; text: string }
   | { type: 'tool'; name: string }
   | { type: 'widgets'; widgets: WidgetConfig[]; summary: string }
+  | { type: 'measures'; measures: MeasureDef[]; summary: string }
+  | { type: 'measureUpdates'; measures: MeasureDef[]; summary: string }
   | { type: 'done'; usd: number; usage: AiStatus }
   | { type: 'error'; message: string }
 
@@ -70,9 +72,9 @@ export async function fetchWidgetInsight(body: {
 
 // Gerador dos eventos de um turno. Quem consome faz `for await (const ev of
 // streamAiTurn(...))` e reage a cada tipo.
-export async function* streamAiTurn(conversationId: string, text: string): AsyncGenerator<AiEvent> {
+export async function* streamAiTurn(conversationId: string, text: string, dashboardMeasures: MeasureDef[] = []): AsyncGenerator<AiEvent> {
   const res = await apiFetch(`/api/ai/conversations/${encodeURIComponent(conversationId)}/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dashboardMeasures }),
   })
   // Erro antes do stream começar (400/403/503) vem como JSON normal.
   if (!res.ok || !res.body) {

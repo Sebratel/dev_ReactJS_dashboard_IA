@@ -13,7 +13,7 @@ import { noOverlapCompactor } from 'react-grid-layout/core'
 import 'react-grid-layout/css/styles.css'
 import 'react-resizable/css/styles.css'
 import {
-  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles, Link2,
+  Loader2, Pencil, Plus, Filter as FilterIcon, Layers, Save, Undo2, AlertTriangle, Lock, RefreshCw, Monitor, Palette, Sparkles, Link2, Sigma,
 } from 'lucide-react'
 import { AiPanel } from './ai/AiPanel'
 import { AiEmptyState } from './ai/AiEmptyState'
@@ -30,11 +30,12 @@ import { FilterBar } from './FilterBar'
 import { WidgetEditorModal } from './WidgetEditorModal'
 import { FilterEditorModal } from './FilterEditorModal'
 import { RelationsEditorModal } from './RelationsEditorModal'
+import { MeasuresEditorModal } from './MeasuresEditorModal'
 import { TabManager } from './TabManager'
 import { CanvasSettingsModal } from './CanvasSettingsModal'
 import { ThemePickerModal } from './ThemePickerModal'
 import { detectAppliedTheme, newWidgetThemeDefaults, themeTextFormats, THEME_PRESETS, type ThemePreset } from './themePresets'
-import type { ActiveFilters, FilterConfig, MeasureConfig, WidgetConfig } from './types'
+import type { ActiveFilters, FilterConfig, MeasureConfig, MeasureDef, WidgetConfig } from './types'
 
 // Dobrado (26/08/2026): era 56px/12 colunas. O piso de redimensionar de
 // QUALQUER widget cai sempre em 1 unidade da grade (é assim que
@@ -88,6 +89,7 @@ function findFreeSpot(widgets: WidgetConfig[], w: number, h: number): { x: numbe
 interface DashboardState {
   name: string
   tabs: DashboardTab[]
+  measures: MeasureDef[]
 }
 
 export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; dashboardId: string }) {
@@ -129,6 +131,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   }
   const [filterModalOpen, setFilterModalOpen] = useState(false)
   const [relationsModalOpen, setRelationsModalOpen] = useState(false)
+  const [measuresModalOpen, setMeasuresModalOpen] = useState(false)
   const [tabManagerOpen, setTabManagerOpen] = useState(false)
   const [canvasModalOpen, setCanvasModalOpen] = useState(false)
   const [themeModalOpen, setThemeModalOpen] = useState(false)
@@ -171,7 +174,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
       .then(([res, sources]) => {
         if (!alive) return
         registerDynamicSources(sources)
-        const ds = { name: res.dashboard.name, tabs: res.dashboard.tabs }
+        const ds = { name: res.dashboard.name, tabs: res.dashboard.tabs, measures: res.dashboard.measures ?? [] }
         setDashboard(ds)
         setSavedDashboard(ds)
         setCanManageDashboard(res.folder.canManage)
@@ -321,6 +324,26 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     })
   }
 
+  // Medidas propostas pela IA e aprovadas pelo usuário (ver ai/AiPanel.tsx) —
+  // mesmo rascunho de sempre, só persiste de verdade com "Salvar". Ao
+  // contrário dos widgets (por guia), medidas são da DASHBOARD inteira —
+  // entram direto em dashboard.measures, não em t.widgets.
+  const applyAiMeasures = (measures: MeasureDef[]) => {
+    setDashboard((d) => (d ? { ...d, measures: [...d.measures, ...measures] } : d))
+  }
+
+  // Atualização de medida(s) JÁ existentes (update_measures) — UPSERT por id
+  // (substitui no lugar), diferente de applyAiMeasures acima (sempre
+  // acrescenta uma medida nova). Mesmo id de sempre, então qualquer widget
+  // que já usava a medida (measureRef) continua funcionando sem mudar nada.
+  const applyAiMeasureUpdates = (measures: MeasureDef[]) => {
+    setDashboard((d) => {
+      if (!d) return d
+      const byId = new Map(measures.map((m) => [m.id, m]))
+      return { ...d, measures: d.measures.map((m) => byId.get(m.id) ?? m) }
+    })
+  }
+
   // Ajuste rápido de UM widget sem passar pelo painel de edição (hoje só usado
   // pelo arrasto de largura de coluna da tabela, ver TableBody) — mesmo
   // rascunho/dirty de qualquer outra edição, só persiste em "Salvar".
@@ -361,6 +384,10 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
 
   const removeFilter = (filterId: string) => {
     updateTab((t) => ({ ...t, filters: t.filters.filter((f) => f.id !== filterId) }))
+  }
+
+  const updateFilter = (filterId: string, patch: Partial<FilterConfig>) => {
+    updateTab((t) => ({ ...t, filters: t.filters.map((f) => (f.id === filterId ? { ...f, ...patch } : f)) }))
   }
 
   // Sobrepõe as cores do tema em TODOS os widgets da guia atual — série
@@ -406,7 +433,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     setSaving(true)
     try {
       if (canManageDashboard) {
-        await saveDashboardFull(folderId, dashboardId, dashboard.tabs)
+        await saveDashboardFull(folderId, dashboardId, dashboard.tabs, dashboard.measures)
       } else {
         await saveTabWidgets(folderId, dashboardId, tab.id, tab.widgets)
       }
@@ -524,6 +551,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                 <>
                   <button onClick={() => refreshSources().then(() => setFilterModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><FilterIcon size={11} /> Filtro</button>
                   <button onClick={() => refreshSources().then(() => setRelationsModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Relacionar campos de fontes diferentes, pra um filtro de uma propagar pra outra"><Link2 size={11} /> Relacionamentos</button>
+                  <button onClick={() => refreshSources().then(() => setMeasuresModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Medidas nomeadas e reutilizáveis nesta dashboard (cálculos, comparativos)"><Sigma size={11} /> Medidas</button>
                   <button onClick={() => setTabManagerOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Layers size={11} /> Abas</button>
                   <button onClick={() => setCanvasModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Configurações de tela"><Monitor size={11} /> Formato</button>
                   <button onClick={() => setThemeModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Temas prontos de cores"><Palette size={11} /> Temas</button>
@@ -557,6 +585,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         onChange={(filterId, values) => setActiveFilters((prev) => ({ ...prev, [tab.id]: { ...(prev[tab.id] ?? {}), [filterId]: values } }))}
         editMode={editMode && canManageDashboard}
         onRemoveFilter={removeFilter}
+        onUpdateFilter={updateFilter}
       />
 
       {/* Grade de widgets — sem canvas fixo: largura fluida (padrão atual).
@@ -616,6 +645,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                       widget={w}
                       tabFilters={tabFilterValues}
                       relations={tab.relations ?? []}
+                      dashboardMeasures={dashboard.measures}
                       editMode={editMode && canEditCurrentTab}
                       refreshKey={refreshKey}
                       onEdit={() => refreshSources().then(() => setWidgetModal({ open: true, widget: w }))}
@@ -651,6 +681,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         <WidgetEditorModal
           initial={widgetModal.widget}
           newWidgetDefaults={newWidgetThemeDefaults(activeTheme)}
+          dashboardMeasures={dashboard?.measures ?? []}
+          relations={tab.relations ?? []}
           onSave={saveWidget}
           onClose={closeWidgetModal}
           onChange={setPreviewWidget}
@@ -663,6 +695,14 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           relations={tab.relations ?? []}
           onChange={(relations) => updateTab((t) => ({ ...t, relations }))}
           onClose={() => setRelationsModalOpen(false)}
+        />
+      )}
+      {measuresModalOpen && dashboard && (
+        <MeasuresEditorModal
+          measures={dashboard.measures}
+          tabs={dashboard.tabs}
+          onChange={(measures) => setDashboard((d) => (d ? { ...d, measures } : d))}
+          onClose={() => setMeasuresModalOpen(false)}
         />
       )}
       {tabManagerOpen && dashboard && (
@@ -696,7 +736,10 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         <AiPanel
           folderId={folderId}
           initialPrompt={aiInitialPrompt}
+          dashboardMeasures={dashboard?.measures ?? []}
           onApply={applyAiWidgets}
+          onApplyMeasures={applyAiMeasures}
+          onApplyMeasureUpdates={applyAiMeasureUpdates}
           onClose={() => { setAiPanelOpen(false); setAiInitialPrompt(undefined) }}
         />
       )}

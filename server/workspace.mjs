@@ -291,7 +291,7 @@ export function getDashboardForUser(folderId, dashboardId, email) {
     .map((t) => ({ ...t, canEdit: canEditTabWidgets(folder, t, email) }))
   return {
     folder: { id: folder.id, name: folder.name, canManage: canManageFolder(folder, email), isManager: isFolderManager(folder, email) },
-    dashboard: { id: dashboard.id, name: dashboard.name, tabs },
+    dashboard: { id: dashboard.id, name: dashboard.name, tabs, measures: dashboard.measures ?? [] },
   }
 }
 
@@ -443,7 +443,12 @@ export function deleteDashboard(folderId, dashboardId) {
 
 // Salva a dashboard inteira (guias/filtros/canvas/widgets) — equivalente ao
 // antigo saveDashboardConfig, usado por quem gerencia a dashboard inteira.
-export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail) {
+// `measures` (a "tabela de medidas" da dashboard, ver MeasureDef em
+// types.ts) é opcional pra manter compatibilidade com uma chamada antiga
+// que não a envie — só substitui quando vem como array de verdade (mesmo
+// truque de sempre: `[]` explícito apaga todas de propósito, `undefined`
+// preserva o que já estava salvo).
+export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measures) {
   if (!Array.isArray(tabs)) throw new Error('Config inválida: "tabs" (array) é obrigatório.')
   for (const tab of tabs) {
     if (!tab.id || !tab.label || !Array.isArray(tab.widgets)) {
@@ -456,6 +461,7 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail) {
   const hadWelcome = dashboard.tabs.some((t) => t.isWelcome)
   if (hadWelcome && !tabs.some((t) => t.isWelcome)) throw new Error('A guia de boas-vindas não pode ser removida.')
   dashboard.tabs = tabs
+  if (Array.isArray(measures)) dashboard.measures = measures
   dashboard.updatedBy = actorEmail
   dashboard.updatedAt = nowIso()
   saveWorkspace(ws)

@@ -10,11 +10,11 @@
 // recebe os widgets aprovados por callback, sem herdar estado nenhum da
 // conversa (o arquivo já tem 500+ linhas).
 import { useEffect, useRef, useState } from 'react'
-import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench, ChevronDown } from 'lucide-react'
+import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench, ChevronDown, Sigma, Pencil } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { ModalPortal } from '@/components/ui/ModalPortal'
 import { getAllSources } from '../fieldCatalog'
-import type { WidgetConfig } from '../types'
+import type { MeasureDef, WidgetConfig } from '../types'
 import { fetchAiStatus, startAiConversation, streamAiTurn, ApiError, type AiStatus } from './aiApi'
 
 interface Turn {
@@ -23,12 +23,35 @@ interface Turn {
   // Proposta anexada a este turno. `applied` marca que já foi para a guia,
   // pra não dar pra aprovar duas vezes o mesmo lote.
   proposal?: { widgets: WidgetConfig[]; summary: string; applied?: boolean }
+  // Mesma ideia, pra uma proposta de MEDIDA (ver DashboardConfig.measures) —
+  // evento SSE/aprovação separados dos widgets, mas o mesmo padrão visual.
+  measureProposal?: { measures: MeasureDef[]; summary: string; applied?: boolean }
+  // Mesma ideia, pra uma ATUALIZAÇÃO de medida(s) já existentes (update_measures,
+  // server/aiAssistant.mjs) — mesmo id de sempre, edição no lugar em vez de
+  // uma medida nova; por isso fica num campo separado de `measureProposal`.
+  measureUpdateProposal?: { measures: MeasureDef[]; summary: string; applied?: boolean }
 }
 
 const TOOL_LABEL: Record<string, string> = {
   field_values: 'conferindo os valores reais do campo',
   preview_widget: 'testando o widget contra os dados',
   propose_widgets: 'montando a proposta',
+  preview_measure: 'conferindo o cálculo contra os dados',
+  propose_measures: 'montando a medida',
+  update_measures: 'atualizando a medida',
+}
+
+// Resumo de 1 linha pra tela de aprovação — não precisa ser tão completo
+// quanto o rótulo real do MeasureWell (que já sabe formatar agg/campo em
+// português); aqui é só o suficiente pra reconhecer o que foi proposto.
+function summarizeMeasure(m: MeasureDef): string {
+  const fmtSuffix = m.format === 'percent' ? ' · exibida como %' : ''
+  if (m.kind === 'formula') return `${m.expression}${fmtSuffix}`
+  const aggLabel: Record<string, string> = { countDistinct: 'Contagem distinta', count: 'Contagem', sum: 'Soma', avg: 'Média' }
+  const base = `${aggLabel[m.agg] ?? m.agg}${m.field ? ` de ${m.field}` : ''}`
+  const withWindow = m.dateWindow ? `${base} · janela de data` : base
+  const withFilter = m.filters?.length ? `${withWindow} · filtro (${m.filters.map((f) => `${f.field} ${f.op === 'in' ? '=' : '≠'} ${f.values.join('/')}`).join(', ')})` : withWindow
+  return `${withFilter}${fmtSuffix}`
 }
 
 // Mesmas frases do convite da guia vazia (ai/AiEmptyState.tsx): a pessoa que
@@ -39,12 +62,20 @@ const SUGGESTIONS = [
   'Compare o volume por mês e destaque as variações relevantes.',
 ]
 
-export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
+export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, onApplyMeasures, onApplyMeasureUpdates, onClose }: {
   folderId: string
   // Pergunta já digitada no convite da guia vazia (ver AiEmptyState): o painel
   // abre e manda sozinho, pra pessoa não precisar escrever duas vezes.
   initialPrompt?: string
+  // Medidas JÁ existentes no rascunho da dashboard (salvas ou não) — mandadas
+  // a cada turno, pra IA saber o que já existe e poder referenciar por nome
+  // numa fórmula nova (ver measuresText, server/aiAssistant.mjs).
+  dashboardMeasures: MeasureDef[]
   onApply: (widgets: WidgetConfig[]) => void
+  onApplyMeasures: (measures: MeasureDef[]) => void
+  // Aprovar uma atualização (update_measures) faz UPSERT por id no rascunho
+  // — diferente de onApplyMeasures, que sempre ACRESCENTA (medida nova).
+  onApplyMeasureUpdates: (measures: MeasureDef[]) => void
   onClose: () => void
 }) {
   const [status, setStatus] = useState<AiStatus | null>(null)
@@ -104,7 +135,7 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
       }
       setTurns((prev) => [...prev, { role: 'user', text }, { role: 'assistant', text: '' }])
 
-      for await (const ev of streamAiTurn(id, text)) {
+      for await (const ev of streamAiTurn(id, text, dashboardMeasures)) {
         if (ev.type === 'text') {
           setTurns((prev) => {
             const next = [...prev]
@@ -120,6 +151,22 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
             const next = [...prev]
             const last = next[next.length - 1]
             next[next.length - 1] = { ...last, proposal: { widgets: ev.widgets, summary: ev.summary } }
+            return next
+          })
+        } else if (ev.type === 'measures') {
+          setTool(null)
+          setTurns((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            next[next.length - 1] = { ...last, measureProposal: { measures: ev.measures, summary: ev.summary } }
+            return next
+          })
+        } else if (ev.type === 'measureUpdates') {
+          setTool(null)
+          setTurns((prev) => {
+            const next = [...prev]
+            const last = next[next.length - 1]
+            next[next.length - 1] = { ...last, measureUpdateProposal: { measures: ev.measures, summary: ev.summary } }
             return next
           })
         } else if (ev.type === 'done') {
@@ -160,6 +207,32 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
 
   const discardProposal = (turnIndex: number) => {
     setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, proposal: undefined } : t)))
+  }
+
+  const applyMeasuresProposal = (turnIndex: number) => {
+    const proposal = turns[turnIndex]?.measureProposal
+    if (!proposal || proposal.applied) return
+    onApplyMeasures(proposal.measures)
+    setTurns((prev) => prev.map((t, i) => (
+      i === turnIndex && t.measureProposal ? { ...t, measureProposal: { ...t.measureProposal, applied: true } } : t
+    )))
+  }
+
+  const discardMeasuresProposal = (turnIndex: number) => {
+    setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, measureProposal: undefined } : t)))
+  }
+
+  const applyMeasureUpdatesProposal = (turnIndex: number) => {
+    const proposal = turns[turnIndex]?.measureUpdateProposal
+    if (!proposal || proposal.applied) return
+    onApplyMeasureUpdates(proposal.measures)
+    setTurns((prev) => prev.map((t, i) => (
+      i === turnIndex && t.measureUpdateProposal ? { ...t, measureUpdateProposal: { ...t.measureUpdateProposal, applied: true } } : t
+    )))
+  }
+
+  const discardMeasureUpdatesProposal = (turnIndex: number) => {
+    setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, measureUpdateProposal: undefined } : t)))
   }
 
   const canChat = !!conversationId || selected.size > 0
@@ -357,6 +430,76 @@ export function AiPanel({ folderId, initialPrompt, onApply, onClose }: {
                         </button>
                         <button
                           onClick={() => discardProposal(i)}
+                          className="flex items-center gap-1 rounded-lg border border-app-border px-2.5 py-1 text-[11px] text-gray-300 hover:border-risk-critical/50 hover:text-risk-critical"
+                        >
+                          <Trash2 size={11} /> Descartar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {turn.measureProposal && (
+                  <div className="rounded-xl border border-brand-cyan/30 bg-brand-cyan/5 p-3">
+                    <p className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-brand-cyan">
+                      <Sigma size={11} /> {turn.measureProposal.measures.length} medida(s) proposta(s)
+                    </p>
+                    <ul className="mb-2.5 space-y-1">
+                      {turn.measureProposal.measures.map((m) => (
+                        <li key={m.id} className="text-[11px] text-gray-200">
+                          <span className="font-semibold">{m.name}</span>
+                          <span className="text-gray-500"> — {summarizeMeasure(m)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {turn.measureProposal.applied ? (
+                      <p className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                        <Check size={11} /> Adicionadas à tabela de medidas — ainda precisa clicar em "Salvar".
+                      </p>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => applyMeasuresProposal(i)}
+                          className="flex items-center gap-1 rounded-lg bg-brand-blue px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-brand-blueLight"
+                        >
+                          <Check size={11} /> Adicionar à tabela de medidas
+                        </button>
+                        <button
+                          onClick={() => discardMeasuresProposal(i)}
+                          className="flex items-center gap-1 rounded-lg border border-app-border px-2.5 py-1 text-[11px] text-gray-300 hover:border-risk-critical/50 hover:text-risk-critical"
+                        >
+                          <Trash2 size={11} /> Descartar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {turn.measureUpdateProposal && (
+                  <div className="rounded-xl border border-brand-cyan/30 bg-brand-cyan/5 p-3">
+                    <p className="mb-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-brand-cyan">
+                      <Pencil size={11} /> {turn.measureUpdateProposal.measures.length} medida(s) atualizada(s)
+                    </p>
+                    <ul className="mb-2.5 space-y-1">
+                      {turn.measureUpdateProposal.measures.map((m) => (
+                        <li key={m.id} className="text-[11px] text-gray-200">
+                          <span className="font-semibold">{m.name}</span>
+                          <span className="text-gray-500"> — {summarizeMeasure(m)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    {turn.measureUpdateProposal.applied ? (
+                      <p className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                        <Check size={11} /> Atualizadas na tabela de medidas — ainda precisa clicar em "Salvar".
+                      </p>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => applyMeasureUpdatesProposal(i)}
+                          className="flex items-center gap-1 rounded-lg bg-brand-blue px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-brand-blueLight"
+                        >
+                          <Check size={11} /> Atualizar na tabela de medidas
+                        </button>
+                        <button
+                          onClick={() => discardMeasureUpdatesProposal(i)}
                           className="flex items-center gap-1 rounded-lg border border-app-border px-2.5 py-1 text-[11px] text-gray-300 hover:border-risk-critical/50 hover:text-risk-critical"
                         >
                           <Trash2 size={11} /> Descartar

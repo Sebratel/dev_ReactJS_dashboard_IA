@@ -148,6 +148,7 @@ O ciclo automático de ETL (`scripts/etl-scheduler.mjs`) não faz parte do `npm 
 |---|---|---|
 | Google OAuth | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Sim — sem elas não há login. |
 | | `APP_BASE_URL`, `SESSION_TTL_DAYS` (30 dias), `ALLOWED_DOMAIN` (`sebratel.com.br`), `ADMIN_EMAILS` | Não — todas com padrão razoável. |
+| | `AUTH_DISABLED`, `AUTH_DISABLED_EMAIL` | Não — **só desenvolvimento**, desligada por padrão. Ver 3.9. |
 | IA (3.7-quater) | `ANTHROPIC_API_KEY` | Não — sem ela só a feature "IA" fica indisponível, o resto do app funciona normal. |
 | | `AI_MODEL`, `AI_EFFORT`, `AI_MAX_TOKENS`, `AI_MAX_ITERATIONS`, `AI_DAILY_BUDGET_USD` | Não — todas com padrão. |
 | Cifra de segredos | `SECRETS_KEY` | Não (gera uma sozinha em `data/.secret-key`), mas **precisa ser igual** entre os serviços `api` e `etl` — senão um não decifra o que o outro cifrou. |
@@ -458,6 +459,8 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 - **Duração**: a sessão vale 30 dias por padrão (configurável). Enquanto ela existe, o servidor renova o acesso ao Google sozinho, então não há mais aquele efeito de "cair" depois de uma hora. **Sair** encerra a sessão de verdade no servidor, não só na aba.
 - Por conta de como o Google entrega a credencial de renovação, a **tela de consentimento do Google aparece a cada login** — em troca, logins são raros (a sessão dura semanas).
 - O cadastro de fontes é aberto a qualquer pessoa logada (ver 3.7-ter); só quem cadastrou, ou um admin, edita/remove a sua. Dashboards, pastas e guias já têm controle de acesso por usuário — ver 3.1 e 3.12. A aba **Acessos** (3.11) e a gestão de **pastas** (3.1/3.12) são restritas a administradores.
+
+- **Bypass do login em desenvolvimento** (`AUTH_DISABLED=true` no `.env`, nunca em produção): a API deixa de exigir o cookie de sessão e atende toda requisição como o e-mail de `AUTH_DISABLED_EMAIL` (padrão `misael.cruz@sebratel.com.br`, que precisa ser do `ALLOWED_DOMAIN` — se não for, a API não sobe). Existe porque o fluxo do Google precisa de uma navegação de verdade até o `accounts.google.com`, que não funciona atrás do firewall daqui — era o motivo de tanta alteração no histórico vir com "não testado num navegador de verdade". Só o `requireAuth()` muda: permissão continua sendo resolvida pelo e-mail (admin, acesso a pasta, acesso a guia), então o que aparece na tela é o que aquela pessoa veria logada — não é "modo deus". Duas consequências durante o teste: não existe token do Google na requisição, então fonte de **planilha** só responde pelo cache (banco e Data Hub funcionam normal); e o botão **Sair** leva pra tela de login, mas um F5 entra de novo (não há sessão pra encerrar). A API avisa em letras garrafais na subida enquanto a flag estiver ligada.
 
 ### 3.10 Modo escuro
 

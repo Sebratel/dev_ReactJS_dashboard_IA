@@ -52,6 +52,37 @@ const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLower
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ETL_SCRIPT = resolve(__dirname, '../scripts/fetch-install.mjs')
 
+// ─── Bypass do login (SÓ desenvolvimento) ─────────────────────────────────
+// Com AUTH_DISABLED=true, requireAuth() deixa de exigir o cookie de sessão e
+// atende toda requisição como AUTH_DISABLED_EMAIL. Serve pra testar as telas
+// sem passar pelo fluxo do Google (que precisa de uma navegação de verdade até
+// o accounts.google.com, e não funciona atrás de firewall).
+//
+// O resto do sistema não muda: permissão continua sendo resolvida pelo e-mail
+// (isAdmin, hasFolderAccess...), então o bypass mostra exatamente o que aquela
+// pessoa veria logada — nada de "modo deus" acidental escondendo erro de acesso.
+//
+// NUNCA ligar em produção: com a flag ligada, qualquer um que alcance a API é
+// esse usuário. Por isso ela mora só no .env (que não é versionado) e o padrão
+// é desligada — nada no código-fonte liga isso sozinho.
+const AUTH_DISABLED = process.env.AUTH_DISABLED === 'true'
+const AUTH_DISABLED_EMAIL = (process.env.AUTH_DISABLED_EMAIL || 'misael.cruz@sebratel.com.br').toLowerCase()
+// Nome é só o que aparece na barra do topo e no log de acessos; derivado do
+// e-mail quando não informado ("misael.cruz" -> "Misael Cruz").
+const AUTH_DISABLED_NAME = process.env.AUTH_DISABLED_NAME || AUTH_DISABLED_EMAIL
+  .split('@')[0].split(/[._-]/).filter(Boolean)
+  .map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ')
+
+// requireAuth() garante, em toda rota, que req.user.email é do domínio
+// permitido. O bypass não pode ser a exceção que fura essa garantia: um e-mail
+// de fora aqui deixaria o resto do servidor decidindo permissão sobre uma
+// premissa falsa. Então para na subida, dizendo o que corrigir, em vez de
+// atender pela metade.
+if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
+  console.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
+  process.exit(1)
+}
+
 const app = express()
 app.use(express.json({ limit: '2mb' }))
 
@@ -121,6 +152,17 @@ function clearCookie(res, req, name) {
 
 function requireAuth() {
   return async (req, res, next) => {
+    // Bypass de desenvolvimento (AUTH_DISABLED): nenhuma sessão é lida nem
+    // criada, a identidade vem do .env. Fica sem access_token do Google — quem
+    // depende dele são as fontes de planilha, e resolveSheetRows() já trata
+    // token ausente caindo no cache, em vez de estourar.
+    if (AUTH_DISABLED) {
+      req.user = { email: AUTH_DISABLED_EMAIL, name: AUTH_DISABLED_NAME }
+      req.accessToken = null
+      req.sessionId = null
+      touchUser(AUTH_DISABLED_EMAIL, AUTH_DISABLED_NAME)
+      return next()
+    }
     const session = getSession(readCookie(req, COOKIE_NAME))
     if (!session) return res.status(401).json({ error: 'Sessão inválida ou expirada. Entre novamente.' })
     // Revalidado a cada requisição, não só no login: se o domínio permitido
@@ -914,4 +956,11 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Indicadores Sebratel API ouvindo em :${PORT}`)
   console.log(`  domínio permitido: @${ALLOWED_DOMAIN}`)
+  if (AUTH_DISABLED) {
+    console.warn('  ****************************************************************')
+    console.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
+    console.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
+    console.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
+    console.warn('  ****************************************************************')
+  }
 })

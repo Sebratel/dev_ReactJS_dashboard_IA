@@ -4,6 +4,23 @@
 
 ---
 
+## 10/09/2026 — Login SSO pode ser desligado em desenvolvimento (`AUTH_DISABLED`)
+
+Usuário pediu pra desabilitar o login SSO porque vai fazer alguns testes ("depois voltamos"). Em vez de arrancar ou comentar o fluxo de login — que teria que ser desfeito na mão depois, com risco de sobrar um pedaço solto —, o desligamento virou **uma flag no `.env`**: nada no código-fonte liga isso sozinho, e voltar ao SSO é apagar duas linhas e reiniciar a API.
+
+Isso também fecha uma limitação que aparece em quase toda entrada deste histórico ("não testado num navegador de verdade — sem SSO neste ambiente"): o fluxo do Google exige uma navegação de verdade até o `accounts.google.com`, que não funciona atrás do firewall daqui, então nunca dava pra validar uma tela no navegador. Com a flag, dá.
+
+- **`server/index.mjs`, `requireAuth()`**: com `AUTH_DISABLED=true`, a função devolve `req.user` montado a partir do `.env` e segue — sem ler cookie, sem tocar em `data/sessions.json`. Foi o **único** ponto alterado no caminho de autenticação, porque toda rota autenticada já passava por ali (54 rotas), inclusive `/api/auth/me` — que é o que o front chama na subida. Consequência: o front nem sabe que existe bypass, não precisou de uma linha de mudança, e o `/login` continua funcionando normalmente pra quando a flag sair.
+- **`AUTH_DISABLED_EMAIL`** (padrão `misael.cruz@sebratel.com.br`, já admin de fábrica em `accessLog.mjs`): a identidade não é um usuário sintético "root". Permissão continua saindo do e-mail (`isAdmin`, `hasFolderAccess`, `canViewTab`), então a tela mostra o que aquela pessoa veria logada — um bug de acesso não fica escondido atrás de um "modo deus" durante o teste, que é justamente o tipo de coisa que só apareceria em produção.
+- **Guarda na subida**: `requireAuth()` garante, em toda rota, que `req.user.email` é do `ALLOWED_DOMAIN`. O bypass não podia ser a exceção que fura essa garantia, senão o resto do servidor decidiria permissão sobre premissa falsa — então um `AUTH_DISABLED_EMAIL` de fora do domínio **derruba a API na subida** com a mensagem dizendo o que corrigir, em vez de atender pela metade.
+- **Aviso em letras garrafais** no `console` a cada subida enquanto a flag estiver ligada — uma flag dessas não pode ficar ligada sem ninguém ver.
+- **`req.accessToken = null`** no bypass: quem depende dele são as fontes de **planilha do Google**, e `resolveSheetRows()` já tratava token ausente caindo no cache em vez de estourar (conferido antes de mexer; hoje não há nenhuma planilha cadastrada — `data/sheetSources.json` não existe). Banco e Data Hub não usam token de usuário e funcionam normal.
+- **`.env.example` e `DOCUMENTACAO.md` (tabela de env + 3.9)**: as duas chaves documentadas, com o "nunca em produção" e as duas consequências do teste (planilha só pelo cache; "Sair" leva ao login mas um F5 entra de novo, porque não há sessão pra encerrar).
+
+Verificado rodando a API de verdade, com `curl`, nos quatro caminhos: (1) flag ligada, sem cookie nenhum — `/api/auth/me` devolve 200 com `misael.cruz@sebratel.com.br` / `isAdmin: true`, `/api/workspace/tree` devolve as duas pastas e `/api/access/is-admin` (rota de admin) devolve 200; (2) o aviso sai na subida, acentos íntegros; (3) `AUTH_DISABLED_EMAIL=alguem@gmail.com` — a API sai com código 1 e a mensagem certa, sem subir; (4) flag desligada — `/api/auth/me` e `/api/workspace/tree` voltam a devolver **401** e nenhum aviso é impresso, ou seja, o caminho de volta ao SSO está intacto. `git diff` do `server/index.mjs`: 49 linhas inseridas, 0 removidas — nenhuma linha do fluxo de login foi tocada.
+
+**Estado**: a flag está **ligada** no `.env` local (que não é versionado — o commit não liga bypass pra ninguém). Pra voltar ao SSO: apagar o bloco `AUTH_DISABLED` do `.env` e reiniciar a API (o watch do `npm run api` não recarrega ao mudar o `.env`).
+
 ## 01/09/2026 — Relacionamentos passa a liberar campo de outra fonte também (não só filtro cruzado) — "Mesclar campo" manual aposentado
 
 Usuário observou que a dashboard já tinha uma aba "Relacionamentos" (propaga filtro entre fontes) e uma seção separada "Mesclar campo de outra fonte", dentro do editor de widget (Modificadores) — perguntou se a segunda ainda era necessária. Expliquei a diferença real antes de mexer (relação só propagava FILTRO; mesclagem só trazia UM campo pra DENTRO de um widget, configurado widget a widget) e perguntei como prosseguir. Resposta do usuário: unificar — declarar um relacionamento deveria tornar as duas fontes "compatíveis" (usar coluna de uma junto com coluna da outra, nos dois sentidos) E continuar propagando filtro, tudo pelo mesmo lugar.

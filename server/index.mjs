@@ -31,7 +31,7 @@ import {
 import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
 import { aiConfigPublic, saveAiConfig, apiKeyFor } from './aiConfig.mjs'
-import { testConnection } from './aiProvider.mjs'
+import { testConnection, listProviderModels } from './aiProvider.mjs'
 import { explainWidgetData } from './aiInsight.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
@@ -639,6 +639,25 @@ app.put('/api/ai/config', requireAuth(), requireAdmin(), (req, res) => {
     res.json(saved)
   } catch (e) {
     res.status(400).json({ error: e.message })
+  }
+})
+
+// Lista os modelos que a credencial alcança, perguntando ao provedor. Mesma
+// regra de credencial do teste: usa a digitada, ou a já salva.
+app.post('/api/ai/config/models', requireAuth(), requireAdmin(), async (req, res) => {
+  const { provider, baseUrl } = req.body ?? {}
+  const typed = String(req.body?.apiKey ?? '').trim()
+  try {
+    const models = await listProviderModels({
+      provider,
+      baseUrl: String(baseUrl ?? '').trim(),
+      apiKey: typed || apiKeyFor(provider),
+    })
+    res.json({ models })
+  } catch (e) {
+    // Mesmo raciocínio do teste: chave sem permissão de listagem, ou provedor
+    // fora do ar, é resultado da ação — e é a frase dele que explica.
+    res.json({ models: [], error: e.message })
   }
 })
 

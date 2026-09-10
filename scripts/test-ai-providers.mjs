@@ -51,6 +51,45 @@ const server = createServer((req, res) => {
     const parsed = body ? JSON.parse(body) : null
     recebido.push({ url: req.url, headers: req.headers, body: parsed })
 
+    // ── Listagem de modelos (GET), no formato de cada provedor.
+    if (req.method === 'GET' && req.url.startsWith('/anthropic/v1/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({
+        data: [
+          { type: 'model', id: 'claude-opus-5', display_name: 'Claude Opus 5' },
+          { type: 'model', id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
+        ],
+        has_more: false,
+        first_id: 'claude-opus-5',
+        last_id: 'claude-sonnet-5',
+      }))
+    }
+    if (req.method === 'GET' && req.url.startsWith('/openai/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({
+        data: [
+          { id: 'modelo-de-conversa-b' },
+          { id: 'modelo-de-conversa-a' },
+          // Os três abaixo NÃO servem pra conversa com ferramenta e devem ser
+          // filtrados: escolher um deles falharia na primeira mensagem.
+          { id: 'text-embedding-3-large' },
+          { id: 'whisper-1' },
+          { id: 'dall-e-3' },
+        ],
+      }))
+    }
+    if (req.method === 'GET' && req.url.startsWith('/gemini/models')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      return res.end(JSON.stringify({
+        models: [
+          { name: 'models/gemini-teste-pro', displayName: 'Gemini Teste Pro', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+          { name: 'models/gemini-teste-flash', displayName: 'Gemini Teste Flash', supportedGenerationMethods: ['generateContent'] },
+          // Só embedding: não responde conversa, tem que sair da lista.
+          { name: 'models/embedding-teste', displayName: 'Embedding Teste', supportedGenerationMethods: ['embedContent'] },
+        ],
+      }))
+    }
+
     // Anthropic: SSE no formato que o SDK oficial espera montar.
     if (req.url.startsWith('/anthropic/v1/messages')) {
       return sse(res, [
@@ -107,7 +146,7 @@ const PROJETO = process.argv[2] ?? resolvePath(AQUI, '..')
 const mod = (nome) => pathToFileURL(resolvePath(PROJETO, 'server', nome)).href
 
 const { saveAiConfig } = await import(mod('aiConfig.mjs'))
-const { streamTurn } = await import(mod('aiProvider.mjs'))
+const { streamTurn, listProviderModels } = await import(mod('aiProvider.mjs'))
 
 // ─── Conversa canônica de entrada (formato Anthropic) ──────────────────
 // De propósito exercita TUDO que é difícil de traduzir: texto, chamada de
@@ -253,6 +292,27 @@ console.log('\n── Gemini (tradução) ──')
   ok(turno.usage.inputTokens === 190 && turno.usage.outputTokens === 27, 'usageMetadata normalizado', JSON.stringify(turno.usage))
   ok(turno.usage.cacheReadTokens === 40, 'cachedContentTokenCount vira cacheReadTokens')
   ok(textos.join('') === 'Vou olhar os valores.', 'texto chegou por streaming')
+}
+
+// ── Catálogo de modelos vindo do provedor
+console.log('\n── Listagem de modelos ──')
+{
+  const anth = await listProviderModels({ provider: 'anthropic', apiKey: 'chave-de-teste', baseUrl: `${BASE}/anthropic` })
+  ok(anth.length === 2 && anth[0].id === 'claude-opus-5', 'Anthropic: ids lidos pela paginação do SDK', JSON.stringify(anth))
+  ok(anth[0].label === 'Claude Opus 5', 'Anthropic: display_name vira o rótulo')
+
+  const oai = await listProviderModels({ provider: 'openai', apiKey: 'chave-de-teste', baseUrl: `${BASE}/openai` })
+  ok(oai.length === 2, 'OpenAI: embedding/whisper/dall-e ficam fora da lista', JSON.stringify(oai.map((m) => m.id)))
+  ok(oai[0].id === 'modelo-de-conversa-a', 'OpenAI: lista vem ordenada')
+
+  const gem = await listProviderModels({ provider: 'gemini', apiKey: 'chave-de-teste', baseUrl: `${BASE}/gemini` })
+  ok(gem.length === 2, 'Gemini: só o que suporta generateContent entra', JSON.stringify(gem.map((m) => m.id)))
+  ok(gem.every((m) => !m.id.startsWith('models/')), 'Gemini: prefixo "models/" removido (é o que vai na URL de geração)', JSON.stringify(gem.map((m) => m.id)))
+  ok(gem[0].label === 'Gemini Teste Flash', 'Gemini: displayName vira o rótulo')
+
+  let erro = null
+  try { await listProviderModels({ provider: 'gemini', apiKey: '', baseUrl: `${BASE}/gemini` }) } catch (e) { erro = e.message }
+  ok(!!erro && erro.includes('chave'), 'sem credencial, a listagem recusa dizendo o que falta', String(erro))
 }
 
 // ── Validação da configuração

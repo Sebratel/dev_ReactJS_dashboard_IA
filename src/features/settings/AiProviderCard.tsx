@@ -11,13 +11,14 @@
 //
 // A CREDENCIAL nunca chega aqui inteira; o campo mostra a máscara como
 // placeholder e só envia algo se a pessoa digitar (ver aiConfigApi.ts).
-import { useEffect, useMemo, useState } from 'react'
-import { Sparkles, Loader2, Check, AlertTriangle, ExternalLink, Plug, Info } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Sparkles, Loader2, Check, AlertTriangle, ExternalLink, Plug, Info, List, Search, X } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { Card, CardHeader } from '@/components/ui/Card'
+import { ModalPortal } from '@/components/ui/ModalPortal'
 import {
-  fetchAiConfig, saveAiConfig, testAiProvider, ApiError,
-  type AiConfig, type AiConfigPatch, type ProviderId, type TestResult,
+  fetchAiConfig, saveAiConfig, testAiProvider, listAiModels, ApiError,
+  type AiConfig, type AiConfigPatch, type ProviderId, type ProviderModel, type TestResult,
 } from './aiConfigApi'
 
 // Rótulo curto de cada campo numérico, e o porquê no title — nome de campo
@@ -75,6 +76,11 @@ export function AiProviderCard() {
   const [salvou, setSalvou] = useState(false)
   const [testando, setTestando] = useState(false)
   const [teste, setTeste] = useState<TestResult | null>(null)
+  // Catálogo vindo do provedor. `null` = ainda não perguntamos.
+  const [modelos, setModelos] = useState<ProviderModel[] | null>(null)
+  const [carregandoModelos, setCarregandoModelos] = useState(false)
+  const [erroModelos, setErroModelos] = useState<string | null>(null)
+  const [escolhendo, setEscolhendo] = useState(false)
 
   const carregar = () => {
     setErro(null)
@@ -101,6 +107,44 @@ export function AiProviderCard() {
   useEffect(carregar, [])
 
   const meta = saved && draft ? saved.providers[draft.provider] : null
+
+  // Pergunta ao PROVEDOR quais modelos a credencial alcança. Embutir uma lista
+  // no código envelheceria em silêncio (some um modelo que existe, oferece um
+  // que a conta não tem) — e foi por isso que o campo aparecia vazio para
+  // OpenAI/Gemini na primeira versão desta tela.
+  const buscarModelos = useCallback(async (provider: ProviderId, baseUrl: string, chave?: string) => {
+    setCarregandoModelos(true)
+    setErroModelos(null)
+    try {
+      const r = await listAiModels({ provider, baseUrl, ...(chave ? { apiKey: chave } : {}) })
+      setModelos(r.models)
+      setErroModelos(r.error ?? null)
+    } catch (e) {
+      setModelos([])
+      setErroModelos(e instanceof ApiError ? e.message : 'Falha ao listar os modelos.')
+    } finally {
+      setCarregandoModelos(false)
+    }
+  }, [])
+
+  // Busca sozinha quando existe chave SALVA: chegar na tela e já ver o que pode
+  // escolher é o comportamento esperado. A chave recém-DIGITADA não entra aqui
+  // de propósito — `novaChave` muda a cada tecla, e uma requisição por caractere
+  // seria uma rajada contra a API do provedor. Para ela, quem dispara é o
+  // botão "Escolher" (ver abrirEscolha).
+  const chaveSalva = saved && draft ? saved.keyMasks[draft.provider] : null
+  useEffect(() => {
+    if (!saved || !draft || !chaveSalva) { setModelos(null); setErroModelos(null); return }
+    void buscarModelos(draft.provider, draft.baseUrl)
+  }, [saved, draft?.provider, draft?.baseUrl, chaveSalva, buscarModelos])
+
+  // Abrir a escolha sempre pergunta de novo quando há chave digitada: é o caso
+  // "colei a chave agora, me mostre o que posso escolher" — que não passa pelo
+  // efeito acima porque a chave ainda não foi salva.
+  const abrirEscolha = () => {
+    setEscolhendo(true)
+    if (draft && (novaChave || !modelos)) void buscarModelos(draft.provider, draft.baseUrl, novaChave)
+  }
 
   // O que mudou em relação ao salvo — alimenta a contagem da barra de Salvar.
   const mudancas = useMemo(() => {
@@ -229,8 +273,8 @@ export function AiProviderCard() {
               {new Date(saved.updatedAt).toLocaleString('pt-BR')}
             </span>
           ) : (
-            <span className="text-[10px] text-gray-500" title="Nenhuma gravação por esta tela ainda: os valores vêm do .env do servidor.">
-              vindo do .env
+            <span className="text-[10px] text-gray-500" title="Nenhuma configuração salva ainda — os valores exibidos são os padrões do código.">
+              nunca configurado
             </span>
           )
         }
@@ -302,25 +346,38 @@ export function AiProviderCard() {
             </a>
           </div>
 
-          {/* Modelo: texto livre com sugestões. Catálogo de modelo muda mais
-              rápido que release de app — lista fechada viraria bloqueio. */}
+          {/* Modelo: texto livre + escolha vinda do provedor. A lista é
+              perguntada à API dele (não embutida aqui), e o campo segue
+              digitável pra um modelo que a listagem não devolva. */}
           <div>
-            <Rotulo hint="Id exato do modelo no provedor. As sugestões são atalhos; qualquer id válido serve, e o Testar confirma.">Modelo</Rotulo>
-            <input
-              list={`modelos-${draft.provider}`}
-              value={draft.model}
-              onChange={(e) => trocarModelo(e.target.value)}
-              placeholder={meta.defaultModel || 'ex.: nome-do-modelo'}
-              className={campoBase}
-            />
-            <datalist id={`modelos-${draft.provider}`}>
-              {meta.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-            </datalist>
-            {meta.models.length === 0 && (
-              <p className="mt-1 text-[10px] text-gray-500">
-                Sem sugestões para este provedor — confirme o id na documentação dele e use o Testar.
-              </p>
-            )}
+            <Rotulo hint="Id exato do modelo no provedor. A lista vem da própria conta; o campo aceita digitar um id que a listagem não trouxe.">Modelo</Rotulo>
+            <div className="flex gap-1.5">
+              <input
+                value={draft.model}
+                onChange={(e) => trocarModelo(e.target.value)}
+                placeholder={meta.defaultModel || 'escolha ou digite o id'}
+                className={campoBase}
+              />
+              <button
+                onClick={abrirEscolha}
+                disabled={!chaveSalva && !novaChave}
+                title={!chaveSalva && !novaChave
+                  ? 'Cadastre a chave da API primeiro — a lista de modelos vem da conta do provedor.'
+                  : 'Lista os modelos que esta credencial alcança, perguntando ao provedor.'}
+                className="flex shrink-0 items-center gap-1 rounded-lg border border-app-border bg-app-bg px-2.5 py-1.5 text-[11px] text-gray-300 hover:border-app-borderLight disabled:opacity-40"
+              >
+                {carregandoModelos ? <Loader2 size={12} className="animate-spin" /> : <List size={12} />}
+                Escolher
+              </button>
+            </div>
+            <p className="mt-1 text-[10px] text-gray-500">
+              {!chaveSalva && !novaChave
+                ? 'Cadastre a chave ao lado para listar os modelos desta conta.'
+                : carregandoModelos ? 'Consultando os modelos da conta…'
+                  : erroModelos ? <span className="text-risk-medium">Não foi possível listar: {erroModelos}</span>
+                    : modelos ? `${modelos.length} ${modelos.length === 1 ? 'modelo disponível' : 'modelos disponíveis'} nesta conta.`
+                      : 'Clique em Escolher para listar os modelos desta conta.'}
+            </p>
           </div>
 
           {/* Esforço: existe só na Anthropic. Desabilitado e explicado em vez
@@ -466,7 +523,140 @@ export function AiProviderCard() {
           <Check size={12} /> Configuração salva. Vale a partir do próximo pedido à IA.
         </div>
       )}
+
+      {escolhendo && (
+        <EscolherModelo
+          provedor={meta.label}
+          modelos={modelos}
+          carregando={carregandoModelos}
+          erro={erroModelos}
+          atual={draft.model}
+          onFechar={() => setEscolhendo(false)}
+          onEscolher={(id) => { trocarModelo(id); setEscolhendo(false) }}
+          onRecarregar={() => draft && buscarModelos(draft.provider, draft.baseUrl, novaChave)}
+        />
+      )}
     </Card>
+  )
+}
+
+// Diálogo centralizado com portal, e não popover: a lista de modelos de um
+// provedor passa fácil de 10 itens (o Gemini devolve dezenas) e este card vive
+// numa página que rola — popover ancorado aqui seria cortado pela borda do
+// contêiner, o problema clássico. Com diálogo cabe busca e nada recorta.
+function EscolherModelo({
+  provedor, modelos, carregando, erro, atual, onFechar, onEscolher, onRecarregar,
+}: {
+  provedor: string
+  modelos: ProviderModel[] | null
+  carregando: boolean
+  erro: string | null
+  atual: string
+  onFechar: () => void
+  onEscolher: (id: string) => void
+  onRecarregar: () => void
+}) {
+  const [busca, setBusca] = useState('')
+
+  // Esc fecha — teclado é o caminho de saída esperado num diálogo.
+  useEffect(() => {
+    const aoTeclar = (e: KeyboardEvent) => { if (e.key === 'Escape') onFechar() }
+    window.addEventListener('keydown', aoTeclar)
+    return () => window.removeEventListener('keydown', aoTeclar)
+  }, [onFechar])
+
+  const filtrados = useMemo(() => {
+    const t = busca.trim().toLowerCase()
+    if (!t) return modelos ?? []
+    return (modelos ?? []).filter((m) => m.id.toLowerCase().includes(t) || m.label.toLowerCase().includes(t))
+  }, [modelos, busca])
+
+  return (
+    <ModalPortal>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onFechar}>
+        <div
+          className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-app-border bg-app-card"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between border-b border-app-border px-4 py-3">
+            <div>
+              <h4 className="text-sm font-semibold text-gray-100">Modelos de {provedor}</h4>
+              <p className="text-[11px] text-gray-500">Lista da própria conta — o que esta credencial alcança.</p>
+            </div>
+            <button onClick={onFechar} aria-label="Fechar" className="rounded-lg p-1 text-gray-500 hover:bg-app-bg hover:text-gray-200">
+              <X size={15} />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 border-b border-app-border px-4 py-2.5">
+            <Search size={13} className="shrink-0 text-gray-500" />
+            <input
+              autoFocus
+              value={busca}
+              onChange={(e) => setBusca(e.target.value)}
+              placeholder="Filtrar por nome…"
+              className="w-full bg-transparent text-xs text-gray-100 placeholder:text-gray-500 focus:outline-none"
+            />
+            <button
+              onClick={onRecarregar}
+              disabled={carregando}
+              className="shrink-0 rounded-lg border border-app-border bg-app-bg px-2 py-1 text-[10px] text-gray-400 hover:border-app-borderLight disabled:opacity-40"
+            >
+              Recarregar
+            </button>
+          </div>
+
+          {/* Os três estados, aqui também. */}
+          <div className="min-h-[8rem] overflow-y-auto p-2">
+            {carregando ? (
+              <p className="flex items-center justify-center gap-2 py-10 text-xs text-gray-400">
+                <Loader2 size={14} className="animate-spin" /> Consultando o provedor…
+              </p>
+            ) : erro ? (
+              <div className="px-3 py-8 text-center">
+                <AlertTriangle size={16} className="mx-auto mb-2 text-risk-critical" />
+                <p className="text-xs text-gray-100">O provedor não devolveu a lista</p>
+                <p className="mx-auto mt-1 max-w-md text-[11px] leading-relaxed text-gray-500">{erro}</p>
+                <p className="mt-2 text-[10px] text-gray-500">
+                  Dá pra seguir digitando o id do modelo à mão no campo Modelo e confirmar com o Testar.
+                </p>
+              </div>
+            ) : filtrados.length === 0 ? (
+              <p className="py-10 text-center text-xs text-gray-500">
+                {modelos?.length ? 'Nenhum modelo com esse filtro.' : 'A conta não devolveu nenhum modelo que gere conteúdo.'}
+              </p>
+            ) : (
+              <ul className="space-y-0.5">
+                {filtrados.map((m) => {
+                  const ativo = m.id === atual
+                  return (
+                    <li key={m.id}>
+                      <button
+                        onClick={() => onEscolher(m.id)}
+                        className={cn(
+                          'flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors',
+                          ativo ? 'bg-primary/10 text-gray-100' : 'text-gray-300 hover:bg-app-bg',
+                        )}
+                      >
+                        <span className="min-w-0">
+                          <span className="block truncate font-mono text-[11px]">{m.id}</span>
+                          {m.label !== m.id && <span className="block truncate text-[10px] text-gray-500">{m.label}</span>}
+                        </span>
+                        {ativo && <Check size={13} className="shrink-0 text-primary" />}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+
+          <p className="border-t border-app-border px-4 py-2 text-[10px] text-gray-500">
+            O preço não vem na listagem (a API do provedor não expõe tabela de preço) — confira os campos de preço depois de escolher.
+          </p>
+        </div>
+      </div>
+    </ModalPortal>
   )
 }
 

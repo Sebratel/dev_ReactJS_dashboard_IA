@@ -4,6 +4,34 @@
 
 ---
 
+## 10/09/2026 — A lista de modelos passa a vir do provedor, e o `.env` sai de vez da configuração de IA
+
+Dois pedidos do usuário, logo depois da entrada anterior: **remover o modelo que vinha do `.env`** (ele já ia apagar as variáveis) e um bug real — **"após colocar a chave da Gemini os modelos não estão retornando para realizar a escolha"**.
+
+### O bug era de desenho meu
+
+Na primeira versão desta tela eu deixei a lista de modelos de OpenAI e Gemini **vazia de propósito**, com o campo aceitando texto livre, porque não tinha como confirmar o catálogo atual dos dois e um id chutado envelheceria em silêncio. O raciocínio estava certo; a conclusão, errada — **os três provedores têm endpoint que lista os modelos da conta**. Perguntar a eles é melhor que embutir lista (que envelhece) *e* melhor que exigir o id de cor (que foi o que o usuário encontrou).
+
+- **`server/aiProvider.mjs`, `listProviderModels`**: um listador por provedor. Anthropic pelo `client.models.list()` do SDK (que pagina sozinho no `for await`); OpenAI e Gemini por `GET` simples. Cada um traz o que serve pra conversa e **filtra o que não serve**: no Gemini, só o que declara `generateContent` (a mesma lista devolve modelos de embedding e de contagem de token); na OpenAI, ficam fora embedding/whisper/tts/dall-e/moderation/áudio/imagem — sem esse filtro a lista vem com ~80 entradas e convida a escolher um modelo que falharia na primeira mensagem. O nome do Gemini chega como `models/gemini-x` e o prefixo é removido, porque o que vai na URL de geração é só a parte depois da barra.
+- **`POST /api/ai/config/models`** (admin): usa a chave digitada ou a já salva — a mesma regra do "Testar", pra não obrigar a redigitar uma credencial que existe e nunca volta pro navegador.
+- **Front**: botão **"Escolher"** ao lado do campo de modelo abre um **diálogo centralizado com portal** e busca. Diálogo, e não popover, exatamente pela regra do padrão de front: a lista passa de 10 itens (o Gemini devolve dezenas) e o card vive numa página que rola — popover ancorado aqui seria cortado pela borda do contêiner. O campo **continua digitável** pra um id que a listagem não devolva, e o diálogo tem os três estados, incluindo o de erro com a frase do provedor e a saída ("dá pra digitar o id à mão"). A busca automática é amarrada à chave **salva**; a chave recém-digitada é consultada ao abrir o diálogo — `novaChave` muda a cada tecla, e disparar por tecla seria uma rajada contra a API do provedor.
+
+### O `.env` saiu de vez
+
+A entrada anterior tinha deixado o ambiente como **semente** (válido enquanto não existisse `data/aiConfig.json`), justamente pra não quebrar instalação existente. O usuário avisou que ia remover as variáveis, então a semente virou o problema que ela evitava: **duas fontes de verdade pra mesma decisão** — dois lugares onde procurar "qual modelo está rodando", e um deles mentindo assim que alguém salva pela tela.
+
+- **`server/aiConfig.mjs`**: `fromEnv()` virou `padrao()` e **nenhuma variável de IA é lida** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `AI_MODEL`, `AI_EFFORT`, `AI_MAX_TOKENS`, `AI_MAX_ITERATIONS`, `AI_DAILY_BUDGET_USD`, `*_BASE_URL`). `model` nasce **vazio**, inclusive pra Anthropic: modelo pré-escolhido junto com "nenhuma credencial" produz uma tela que parece configurada e não está.
+- **Consequência aceita**: instalação nova sobe com a IA **não configurada**, e um administrador cadastra o provedor na tela. É explícito e visível, ao contrário de uma chave herdada de um arquivo de ambiente que ninguém lembra de ter preenchido.
+- O cabeçalho do card parou de dizer "vindo do .env" e passou a dizer **"nunca configurado"** enquanto não houver gravação. `.env.example`, `docker-compose.yml` (o `api` não recebe mais variável de IA) e `DOCUMENTACAO.md` (tabela de ambiente + 3.7-quinquies) atualizados. As duas exceções seguem no ambiente porque nunca tiveram tela e são da leitura de gráfico, não da montagem: `AI_INSIGHT_EFFORT` e `AI_INSIGHT_MAX_TOKENS`.
+- No `.env` local as variáveis de IA já não estavam mais lá quando fui limpar — o usuário as tinha removido.
+
+### Verificação
+
+- **`npm run test:ai`: 63/63** (eram 55). As 8 novas cobrem a listagem: paginação do SDK da Anthropic, `display_name`/`displayName` virando rótulo, o filtro de `generateContent` no Gemini, a remoção do prefixo `models/`, o filtro de embedding/áudio/imagem na OpenAI, a ordenação e a recusa sem credencial.
+- **Listagem testada contra as APIs REAIS dos três**, com chave inválida de propósito: Google devolveu `API key not valid. Please pass a valid API key.`, OpenAI `Incorrect API key provided: sk-chave***…`, Anthropic `API key is invalid.` — ou seja, **URL, cabeçalho de autenticação e extração da mensagem estão certos nos três**; só o parsing do caminho de sucesso depende de credencial válida (coberto pelo servidor de mentira).
+- **Tela conferida no navegador** (1440×900, tema escuro): estado sem nada configurado (três provedores "sem chave", modelo vazio, "Escolher" desabilitado, cabeçalho "nunca configurado", nenhuma menção ao `.env`), e o diálogo abrindo com a mensagem do próprio Google, fechando com Esc, console limpo. `tsc`, `build` e `docker compose config` limpos.
+- **Continua sem validação de chamada real**: não há credencial válida de nenhum dos três aqui. Com a sua chave do Gemini cadastrada, o "Escolher" já lista os modelos e o "Testar" confirma o escolhido.
+
 ## 10/09/2026 — Provedor de IA sai do `.env` e vira tela (Anthropic, OpenAI e Gemini), mais o alinhamento de deploy com o comercial_pbi
 
 Usuário pediu três coisas antes de publicar: organizar o front pelo padrão do `padrao-frontend-dashboards`, **configurar o provedor de IA na tela de Configurações pra tirá-lo do `.env`**, alinhar a publicação com o `comercial_pbi`, e manter o modo escuro. Perguntei o escopo de "provedor de IA" antes de escrever código, avisando que multi-provedor exigiria reescrever o laço de tool use; o usuário confirmou **multi-provedor** (Anthropic + OpenAI + Gemini) e, no deploy, **manter os 3 serviços** ajustando os detalhes.

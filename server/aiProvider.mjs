@@ -464,6 +464,78 @@ function canonicalAssistantContent(text, toolCalls) {
   return content
 }
 
+// ─── Catálogo de modelos, perguntado ao provedor ───────────────────────
+// Os três expõem um endpoint que lista os modelos da conta. Perguntar é melhor
+// que embutir uma lista: catálogo de modelo muda toda hora, e uma lista fixa no
+// código envelhece em silêncio — some um modelo que ainda existe, ou oferece um
+// que a conta não tem acesso.
+
+// Ids que a OpenAI devolve mas não servem pra conversa com ferramenta (áudio,
+// imagem, embedding, moderação). Sem esse filtro a lista vem com ~80 entradas e
+// convida a escolher um modelo que falharia na primeira mensagem.
+const OPENAI_FORA = /(embedding|whisper|tts|dall-e|moderation|audio|realtime|image|transcribe|search|codex-mini)/i
+
+async function anthropicModels({ apiKey, baseUrl }) {
+  const client = anthropicClient(apiKey, baseUrl)
+  const out = []
+  // O SDK pagina sozinho no for await.
+  for await (const m of client.models.list({ limit: 100 })) {
+    out.push({ id: m.id, label: m.display_name ?? m.id })
+    if (out.length >= 200) break
+  }
+  return out
+}
+
+async function openAiModels({ apiKey, baseUrl }) {
+  const base = baseUrl || 'https://api.openai.com/v1'
+  const res = await fetchJson(`${base}/models`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  const body = await res.json()
+  return (body.data ?? [])
+    .map((m) => m.id)
+    .filter((id) => id && !OPENAI_FORA.test(id))
+    .sort()
+    .map((id) => ({ id, label: id }))
+}
+
+async function geminiModels({ apiKey, baseUrl }) {
+  const base = baseUrl || 'https://generativelanguage.googleapis.com/v1beta'
+  const res = await fetchJson(`${base}/models?pageSize=200`, {
+    headers: { 'x-goog-api-key': apiKey },
+  })
+  const body = await res.json()
+  return (body.models ?? [])
+    // Só o que sabe gerar conteúdo: a mesma lista traz modelos de embedding e
+    // de contagem de token, que não respondem a uma conversa.
+    .filter((m) => (m.supportedGenerationMethods ?? []).includes('generateContent'))
+    .map((m) => ({
+      // O nome vem como "models/gemini-x"; o que vai na URL de geração é só a
+      // parte depois da barra (ver geminiTurn).
+      id: String(m.name ?? '').replace(/^models\//, ''),
+      label: m.displayName || String(m.name ?? '').replace(/^models\//, ''),
+    }))
+    .filter((m) => m.id)
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
+const LISTADORES = { anthropic: anthropicModels, openai: openAiModels, gemini: geminiModels }
+
+/**
+ * Lista os modelos que a credencial informada alcança. Recebe os valores do
+ * FORMULÁRIO (chave ainda não salva incluída) porque o caso de uso é: colei a
+ * chave, agora me mostre o que posso escolher.
+ */
+export async function listProviderModels({ provider, apiKey, baseUrl = '' }) {
+  if (!LISTADORES[provider]) throw new Error(`Provedor desconhecido: ${provider}.`)
+  if (!apiKey) throw new Error('Cadastre a chave da API para listar os modelos.')
+  try {
+    return await LISTADORES[provider]({ apiKey, baseUrl })
+  } catch (e) {
+    throw new Error(providerErrorMessage(e))
+  }
+}
+
 // ─── Interface pública ─────────────────────────────────────────────────
 
 const ADAPTERS = { anthropic: anthropicTurn, openai: openAiTurn, gemini: geminiTurn }

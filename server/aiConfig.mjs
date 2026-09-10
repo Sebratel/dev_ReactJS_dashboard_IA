@@ -12,11 +12,17 @@
 // entrega a chave sem a chave de cifra. E ela NUNCA volta inteira pro
 // navegador: a tela recebe só a versão mascarada (maskSecret).
 //
-// O .env CONTINUA SENDO LIDO, mas só como SEMENTE: enquanto não existir
-// arquivo salvo, ANTHROPIC_API_KEY/AI_MODEL/AI_EFFORT/AI_DAILY_BUDGET_USD
-// valem como valor inicial. É isso que faz esta mudança não quebrar uma
-// instalação existente no primeiro deploy — quem já tinha tudo no .env
-// continua funcionando, e a primeira gravação pela tela passa a mandar.
+// NADA DE IA VEM MAIS DO .env. Houve uma fase de transição em que
+// ANTHROPIC_API_KEY/AI_MODEL/AI_EFFORT/... valiam como semente enquanto não
+// existisse arquivo salvo; a pedido (10/09/2026), essas variáveis saíram do
+// ambiente e o app parou de lê-las. Motivo: semente é uma segunda fonte de
+// verdade para a mesma decisão — dois lugares onde procurar "qual modelo está
+// rodando", e um deles mentindo assim que alguém salva pela tela.
+//
+// Consequência aceita: instalação nova sobe com a IA NÃO CONFIGURADA, e alguém
+// precisa cadastrar o provedor na tela. É explícito e visível (a tela avisa),
+// ao contrário de uma chave herdada de um arquivo de ambiente que ninguém
+// lembra de ter preenchido.
 //
 // Uma chave POR PROVEDOR (e não uma só, sobrescrita a cada troca): alternar
 // entre dois provedores pra comparar custo é o caso de uso real, e
@@ -90,33 +96,27 @@ function priceFor(provider, model) {
   return known?.price ?? { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 }
 }
 
-// Semente vinda do ambiente. Só vale enquanto não houver arquivo salvo.
-function fromEnv() {
-  const model = process.env.AI_MODEL || PROVIDERS.anthropic.defaultModel
+// Estado inicial de uma instalação que nunca foi configurada. Tudo daqui é
+// padrão de CÓDIGO — nenhuma variável de ambiente é consultada.
+//
+// `model` nasce VAZIO de propósito, inclusive para a Anthropic: um modelo
+// pré-escolhido junto com "nenhuma credencial" produz uma tela que parece
+// configurada e não é. Vazio, a tela pede o que falta.
+function padrao() {
   return {
     provider: 'anthropic',
-    model,
-    effort: process.env.AI_EFFORT || 'high',
-    maxTokens: Math.max(2000, Number(process.env.AI_MAX_TOKENS) || 16000),
-    maxIterations: Math.max(3, Number(process.env.AI_MAX_ITERATIONS) || 14),
-    dailyBudgetUsd: Number(process.env.AI_DAILY_BUDGET_USD ?? 5),
-    price: priceFor('anthropic', model),
+    model: '',
+    effort: 'high',
+    maxTokens: 16000,
+    maxIterations: 14,
+    dailyBudgetUsd: 5,
+    price: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
     // Endpoint alternativo por provedor. Vazio = endpoint oficial. Existe por
     // dois motivos concretos: gateway corporativo/proxy (o firewall daqui já
     // derrubou integração antes) e serviço compatível com a API da OpenAI, que
     // é o caminho comum pra rodar modelo próprio. Não é segredo — vai em claro.
-    baseUrls: {
-      anthropic: process.env.ANTHROPIC_BASE_URL || '',
-      openai: process.env.OPENAI_BASE_URL || '',
-      gemini: process.env.GEMINI_BASE_URL || '',
-    },
-    keys: {
-      // A chave do .env entra como semente cifrada só se existir; sem ela o
-      // app fica "IA não configurada", exatamente como antes.
-      anthropic: process.env.ANTHROPIC_API_KEY ? encryptSecret(process.env.ANTHROPIC_API_KEY) : null,
-      openai: process.env.OPENAI_API_KEY ? encryptSecret(process.env.OPENAI_API_KEY) : null,
-      gemini: process.env.GEMINI_API_KEY ? encryptSecret(process.env.GEMINI_API_KEY) : null,
-    },
+    baseUrls: { anthropic: '', openai: '', gemini: '' },
+    keys: { anthropic: null, openai: null, gemini: null },
     updatedAt: null,
     updatedBy: null,
   }
@@ -126,24 +126,26 @@ let cache = null
 
 function load() {
   if (cache) return cache
-  if (!existsSync(STORE_PATH)) { cache = fromEnv(); return cache }
+  if (!existsSync(STORE_PATH)) { cache = padrao(); return cache }
   try {
     const saved = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
-    // Mescla com a semente: campo que não existe no arquivo (porque foi
+    // Mescla com o padrão: campo que não existe no arquivo (porque foi
     // acrescentado depois) cai no padrão em vez de virar undefined lá dentro
     // do laço de tool use, longe daqui.
-    const seed = fromEnv()
+    const base = padrao()
     cache = {
-      ...seed, ...saved,
-      keys: { ...seed.keys, ...(saved.keys ?? {}) },
-      baseUrls: { ...seed.baseUrls, ...(saved.baseUrls ?? {}) },
+      ...base, ...saved,
+      keys: { ...base.keys, ...(saved.keys ?? {}) },
+      baseUrls: { ...base.baseUrls, ...(saved.baseUrls ?? {}) },
     }
     return cache
   } catch (e) {
     // Config ilegível não pode derrubar a API: a IA é uma feature, e o resto
-    // do app (dashboards, fontes, acessos) não depende dela.
-    console.error(`[ai-config] arquivo ilegível (${e.message}) — usando a configuração do ambiente`)
-    cache = fromEnv()
+    // do app (dashboards, fontes, acessos) não depende dela. Cai no padrão,
+    // que é "não configurada" — a tela diz isso, e o arquivo pode ser
+    // regravado ali mesmo.
+    console.error(`[ai-config] arquivo ilegível (${e.message}) — tratando como não configurada`)
+    cache = padrao()
     return cache
   }
 }

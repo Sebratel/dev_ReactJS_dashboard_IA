@@ -88,17 +88,12 @@ services:
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
       # indisponível e o resto do app segue normal. Só o `api` precisa — o
       # navegador nunca vê a chave.
-      # NOTA: desde a tela "Configurações › Provedor de IA", tudo abaixo é só
-      # SEMENTE — vale enquanto não existir data/aiConfig.json no volume. A
-      # partir da primeira gravação pela tela, a configuração salva manda, e
-      # mexer aqui não tem efeito. Numa instalação nova, preencher aqui evita
-      # ter que abrir a tela pra IA começar a funcionar.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      AI_MODEL: ${AI_MODEL:-claude-opus-5}
-      AI_EFFORT: ${AI_EFFORT:-high}
-      AI_DAILY_BUDGET_USD: ${AI_DAILY_BUDGET_USD:-5}
+      # A IA NÃO se configura por ambiente. Provedor, credencial, modelo,
+      # esforço, tetos, orçamento e preço vivem em "Configurações › Provedor de
+      # IA" e são guardados cifrados em data/aiConfig.json — no volume `data`
+      # abaixo, que é o que faz a configuração sobreviver a um redeploy da
+      # stack. Numa instalação nova a IA sobe NÃO CONFIGURADA, e um
+      # administrador cadastra o provedor na tela.
       # Fuso — o mesmo do Dockerfile, repetido aqui pra ficar visível na tela da
       # stack no Portainer (é lá que alguém vai procurar).
       TZ: ${TZ:-America/Sao_Paulo}

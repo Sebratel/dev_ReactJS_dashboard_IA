@@ -89,6 +89,22 @@ export async function saveAiConfig(patch: AiConfigPatch): Promise<AiConfig> {
   }))
 }
 
+// Modelos vindos do PRÓPRIO provedor, com a credencial informada. Devolve 200
+// com `error` quando o provedor recusa a listagem — a lista vazia mais a frase
+// dele é o resultado útil, não uma falha da nossa API.
+export async function listAiModels(input: { provider: ProviderId; baseUrl: string; apiKey?: string }): Promise<{ models: ProviderModel[]; error?: string }> {
+  const body = await parse<{ models: { id: string; label: string }[]; error?: string }>(await apiFetch('/api/ai/config/models', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+  }))
+  return {
+    // O preço não vem do provedor (a API dele não expõe tabela de preço), então
+    // entra zerado e quem escolhe preenche — ou vem da tabela conhecida, que o
+    // servidor já aplica ao salvar.
+    models: body.models.map((m) => ({ ...m, price: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 } })),
+    error: body.error,
+  }
+}
+
 // O teste devolve 200 mesmo quando falha (ok:false + a mensagem do provedor):
 // credencial errada é o RESULTADO esperado da ação, não erro da nossa API — e
 // é o texto do provedor que diz o que está errado.

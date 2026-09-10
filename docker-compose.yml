@@ -27,12 +27,23 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT}:80"
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
 
   api:
     build:
@@ -77,10 +88,36 @@ services:
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
       # indisponível e o resto do app segue normal. Só o `api` precisa — o
       # navegador nunca vê a chave.
+      # NOTA: desde a tela "Configurações › Provedor de IA", tudo abaixo é só
+      # SEMENTE — vale enquanto não existir data/aiConfig.json no volume. A
+      # partir da primeira gravação pela tela, a configuração salva manda, e
+      # mexer aqui não tem efeito. Numa instalação nova, preencher aqui evita
+      # ter que abrir a tela pra IA começar a funcionar.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-claude-opus-5}
       AI_EFFORT: ${AI_EFFORT:-high}
       AI_DAILY_BUDGET_USD: ${AI_DAILY_BUDGET_USD:-5}
+      # Fuso — o mesmo do Dockerfile, repetido aqui pra ficar visível na tela da
+      # stack no Portainer (é lá que alguém vai procurar).
+      TZ: ${TZ:-America/Sao_Paulo}
+      # Teto de heap do Node. O processo carrega o snapshot inteiro em memória
+      # (ver server/dataset.mjs), então sem teto um dataset grande derruba o
+      # container por OOM do host em vez de falhar só a consulta.
+      NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=1024}
+    # Log limitado: sem isto o json-file cresce até encher o disco do host, e
+    # este serviço registra uma linha por ida ao modelo. Mesmo ajuste do
+    # comercial_pbi.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 1.5g
     volumes:
       # Leitura E escrita: além de ler o snapshot, a API dispara o ETL em
       # segundo plano quando alguém mexe no catálogo de fontes (ver
@@ -120,6 +157,19 @@ services:
       DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-10000}
       DHUB_MAX_ROWS: ${DHUB_MAX_ROWS:-500000}
       DHUB_TIMEOUT_MS: ${DHUB_TIMEOUT_MS:-120000}
+      TZ: ${TZ:-America/Sao_Paulo}
+      # Teto maior que o da api: é este processo que materializa os datasets,
+      # montando o snapshot inteiro em memória antes de gravar.
+      NODE_OPTIONS: ${ETL_NODE_OPTIONS:---max-old-space-size=2048}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 2.5g
     volumes:
       - snapshot:/snapshot
       - data:/app/data

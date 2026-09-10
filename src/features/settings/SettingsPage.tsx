@@ -1,4 +1,5 @@
-// Configurações — as fontes de dados do Builder e o dicionário de dados.
+// Configurações — as fontes de dados do Builder, o provedor de IA e o
+// dicionário de dados.
 //
 // A fonte de dado corporativo é UMA: os datasets publicados no Data Hub
 // (lakehouse), cadastrados no card abaixo. Existia antes um catálogo de
@@ -14,6 +15,7 @@ import { fetchFolders } from '@/features/workspace/workspaceApi'
 import type { Folder } from '@/features/workspace/types'
 import { FieldDictionaryCard } from './FieldDictionaryCard'
 import { LakehouseSourcesCard } from './LakehouseSourcesCard'
+import { AiProviderCard } from './AiProviderCard'
 
 export default function SettingsPage() {
   const isAdmin = useAuthStore((s) => s.isAdmin)
@@ -42,6 +44,10 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 animate-slide-up">
       <LakehouseSourcesCard allFolders={allFolders} />
+      {/* Provedor de IA e dicionário são os dois cards de admin. O provedor vem
+          primeiro porque é o que decide gasto — e é onde alguém vai olhar
+          quando a IA parar de responder. */}
+      {isAdmin && <AiProviderCard />}
       {isAdmin && <FieldDictionaryCard />}
     </div>
   )

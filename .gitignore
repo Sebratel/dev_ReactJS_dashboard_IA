@@ -10,3 +10,11 @@ _probe_view.mjs
 # workspace.json real) e o snapshot public/installData.data (dado real da
 # empresa) passaram a ser versionados também — decisão explícita do usuário,
 # ciente de que isso põe segredo/dado real no histórico do repositório.
+
+# ÚNICA exceção a essa decisão: a configuração do provedor de IA guarda a chave
+# da API cifrada, e data/.secret-key (a chave que a decifra) é versionado. Os
+# dois juntos no mesmo repositório equivalem a publicar a chave em claro — e
+# uma chave de API vazada é cobrada de imediato. O arquivo é recriado a partir
+# do .env/da tela, e em produção vive no volume, então não versioná-lo não
+# custa nada. Ver server/aiConfig.mjs.
+data/aiConfig.json

@@ -4,6 +4,48 @@
 
 ---
 
+## 10/09/2026 — Provedor de IA sai do `.env` e vira tela (Anthropic, OpenAI e Gemini), mais o alinhamento de deploy com o comercial_pbi
+
+Usuário pediu três coisas antes de publicar: organizar o front pelo padrão do `padrao-frontend-dashboards`, **configurar o provedor de IA na tela de Configurações pra tirá-lo do `.env`**, alinhar a publicação com o `comercial_pbi`, e manter o modo escuro. Perguntei o escopo de "provedor de IA" antes de escrever código, avisando que multi-provedor exigiria reescrever o laço de tool use; o usuário confirmou **multi-provedor** (Anthropic + OpenAI + Gemini) e, no deploy, **manter os 3 serviços** ajustando os detalhes.
+
+### Por que a configuração precisava sair da constante de módulo
+
+`aiAssistant.mjs` lia tudo em `const` de módulo (`MODEL`, `EFFORT`, `MAX_TOKENS`, `MAX_ITERATIONS`, `DAILY_BUDGET_USD`, `PRICE`) no momento do import. Isso é o que obrigava a **reiniciar a API pra trocar de modelo** — no Portainer, um redeploy da stack — e quem administra a ferramenta não tem acesso ao `.env` do container.
+
+- **`server/aiConfig.mjs` (novo)**: provedor, credencial, modelo, esforço, tetos, orçamento, preço e endpoint, em `data/aiConfig.json`. Credencial cifrada com o mesmo `secretBox` dos tokens do Data Hub, **uma por provedor** (alternar pra comparar custo não obriga a recadastrar a cada ida e volta) e **nunca devolvida ao navegador** — a tela recebe só `maskSecret`. O `.env` continua lido como **semente**, válido só enquanto o arquivo não existir: é isso que faz a mudança não quebrar a instalação atual no primeiro deploy.
+- **Preço é editável e começa em ZERO pra modelo desconhecido.** Preço de API muda sem avisar, e um número velho embutido não daria erro nenhum — daria um medidor de gasto mentindo com confiança. Zero é explícito, e a tela (e o painel de IA, com um asterisco no contador) avisa que o gasto não está sendo somado.
+- **Modelo é campo de texto com sugestões**, não lista fechada: catálogo de modelo muda mais rápido que release de app. O botão **Testar** é quem confirma o id — e mostra a frase do provedor, que é o que distingue chave errada de modelo inexistente de sem saldo.
+
+### O adaptador de provedores
+
+- **`server/aiProvider.mjs` (novo)**: `streamTurn`/`completeOnce`/`testConnection` por cima de três adaptadores. O **formato canônico interno continua o da Anthropic** — não por preferência, mas porque é o que o histórico em memória já guarda, é o mais rico (blocos tipados, `tool_use`/`tool_result` com id, mensagem de sistema no meio da conversa) e é o único com cache de prompt explícito. Para a Anthropic o adaptador é **repasse, sem conversão nenhuma**: o caminho que já estava em produção não mudou de forma.
+- **Sem SDK novo** para OpenAI/Gemini: as duas APIs são REST simples, `fetch` já é usado no projeto, e este repositório versiona o `node_modules` — cada SDK entraria como milhares de arquivos no histórico. Um leitor de SSE de ~20 linhas cobre os dois.
+- **O que os outros dois não têm, e como fica**: `cache_control` é removido (fora da Anthropic o catálogo é reenviado a cada ida — custo maior por conversa, avisado na tela); `effort` é ignorado; a mensagem de sistema do meio da conversa desce como `system` na OpenAI e como mensagem de usuário marcada no Gemini, que não tem esse papel em `contents`; o Gemini não devolve id de chamada (é sintetizado aqui) e recusa `additionalProperties`, então o JSON Schema das ferramentas é limpo recursivamente.
+- **`aiAssistant.mjs`**: as constantes saíram, o laço chama `streamTurn`, e `costOf` passou a somar sobre uso **normalizado** (`inputTokens`/`outputTokens`/`cache*`) com o preço da configuração. O orçamento de idas é lido **uma vez por turno** — reler por ida faria o "ida 3/14" do log mudar de denominador no meio do caminho. `aiInsight.mjs` usa o mesmo provedor e a mesma credencial, com teto e esforço próprios (ler um gráfico é tarefa pequena).
+
+### Frente de front (padrão `padrao-frontend-dashboards`)
+
+- **`AiProviderCard.tsx` (novo)**, em Configurações, só admin. Aplicando o padrão: **rascunho com Salvar** (contagem do que mudou + Descartar, em vez de gravar a cada tecla — são campos que só fazem sentido juntos); **os três estados** (carregando, erro com "tentar de novo", e os avisos de configuração faltando); **nada de emoji**, ícones do lucide; **cor só por token** (`app-*`/`gray-*`), que é o que mantém o modo escuro funcionando; número à direita com `tabular-nums`; e **"não finja controle que não existe"** — o seletor de esforço aparece **desabilitado com a explicação** nos provedores que não têm esse controle, em vez de desaparecer.
+- O painel de IA passou a mostrar **provedor + modelo** no `title` do contador de gasto: com a troca virando um clique, "quem respondeu isso" deixou de ser óbvio. As mensagens de "IA não configurada" pararam de citar `ANTHROPIC_API_KEY` e passaram a apontar a tela.
+
+### Deploy alinhado ao comercial_pbi (mantendo web + api + etl)
+
+O `comercial_pbi` tinha quatro coisas que faltavam aqui e que importam em produção: **fuso horário** (sem `TZ` o container roda em UTC — isso desloca o carimbo do log de auditoria, o "visto por último" da aba Acessos e, principalmente, a **virada do dia do teto de gasto de IA**), **limite de log** (o `json-file` crescia até encher o disco do host, e este serviço registra uma linha por ida ao modelo), **limite de memória** e **usuário não-root**. Os quatro entraram: `TZ` + `tzdata` + `USER app` no `Dockerfile.api`, e `TZ`/`logging`/`deploy.resources.limits`/`NODE_OPTIONS` nos três serviços do compose. O `nginx` do `web` segue como root — mudar isso exige trocar a porta 80 e os diretórios de escrita da imagem, o que é reescrita de imagem, não alinhamento de detalhe.
+
+`data/aiConfig.json` entrou no `.gitignore` — **única exceção** à decisão de versionar `data/`: a chave cifrada mais a `data/.secret-key` versionada, no mesmo repositório, equivalem a publicar a credencial em claro.
+
+### Verificação
+
+- **`npm run test:ai` (novo, `scripts/test-ai-providers.mjs`): 55/55.** Sobe um servidor de mentira que fala o protocolo dos três provedores e afirma sobre as duas metades que são código nosso — a **tradução de ida** (o corpo que sai: papéis, `tool_calls`/`functionCall`, resultado de ferramenta, schema limpo, `cache_control` preservado só na Anthropic, credencial em cabeçalho e nunca na URL) e a **normalização de volta** (`stopReason`, `arguments` fatiado em dois chunks remontado, usage dos três formatos, id sintetizado no Gemini). Cobre também a validação da config e a garantia de que a chave nunca sai em claro. Não usa chave real e não gasta nada.
+- **Tela aberta no navegador de verdade** (o que a flag `AUTH_DISABLED` desta mesma data destravou), em 1440×900, **nos dois temas**: sem rolagem horizontal, página cabendo na janela, console limpo, e um teste de interação (trocar provedor → barra de rascunho aparece, esforço desabilita com explicação, três avisos aparecem, Testar desabilita; Descartar restaura). **Isso encontrou um bug real meu**: quando a resposta vinha de um servidor sem o campo `baseUrls`, `paraRascunho` estourava depois de `setSaved`, e o card ficava em "Carregando…" para sempre com o estado de erro inalcançável. Corrigido montando o rascunho antes de publicar o estado e limpando os dois no `catch`.
+- `npx tsc --noEmit` e `npm run build` limpos; `docker compose config` valida.
+
+### O que NÃO foi verificado, e precisa da sua ação
+
+- **A chave da Anthropic do `.env` está sem saldo.** O `Testar` chegou na API e devolveu, com todas as letras, `Your credit balance is too low to access the Anthropic API`. Ou seja: a feature de IA está inoperante hoje, independentemente desta mudança — e foi por isso que **não deu pra validar uma chamada real de ponta a ponta**, só a forma da requisição contra o servidor de mentira.
+- **OpenAI e Gemini não foram testados contra as APIs reais** (não há credencial dos dois aqui). A tradução e o parsing estão verificados; o que falta é o encontro com o serviço de verdade — cadastre a chave e use o **Testar**, que existe exatamente pra isso.
+- **O id do modelo de OpenAI/Gemini não vem sugerido** de propósito: eu não tenho como confirmar o catálogo atual dos dois, e chutar um id que envelheceu seria pior que pedir o id.
+
 ## 10/09/2026 — Login SSO pode ser desligado em desenvolvimento (`AUTH_DISABLED`)
 
 Usuário pediu pra desabilitar o login SSO porque vai fazer alguns testes ("depois voltamos"). Em vez de arrancar ou comentar o fluxo de login — que teria que ser desfeito na mão depois, com risco de sobrar um pedaço solto —, o desligamento virou **uma flag no `.env`**: nada no código-fonte liga isso sozinho, e voltar ao SSO é apagar duas linhas e reiniciar a API.

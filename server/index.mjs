@@ -30,6 +30,8 @@ import {
 } from './lakehouseSources.mjs'
 import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
+import { aiConfigPublic, saveAiConfig, apiKeyFor } from './aiConfig.mjs'
+import { testConnection } from './aiProvider.mjs'
 import { explainWidgetData } from './aiInsight.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
@@ -616,6 +618,53 @@ app.get('/api/ai/status', requireAuth(), (req, res) => {
   res.json(usageFor(req.user.email))
 })
 
+// ─── Provedor de IA (Configurações › Provedor de IA) ───────────────────
+// Só administrador: aqui se decide quanto a empresa gasta com IA e com qual
+// credencial. A chave NUNCA volta pro navegador — a resposta traz só a
+// máscara (ver aiConfigPublic).
+app.get('/api/ai/config', requireAuth(), requireAdmin(), (_req, res) => {
+  res.json(aiConfigPublic())
+})
+
+app.put('/api/ai/config', requireAuth(), requireAdmin(), (req, res) => {
+  try {
+    const saved = saveAiConfig(req.body ?? {}, { email: req.user.email })
+    // No log de auditoria vai o provedor e o modelo, nunca a credencial — e a
+    // troca de provedor é exatamente o tipo de mudança que alguém vai querer
+    // rastrear depois ("desde quando a conta da OpenAI está sendo usada?").
+    appendAuditLog({
+      email: req.user.email, name: req.user.name, action: 'ai.config.update',
+      target: `${saved.provider} · ${saved.model}`,
+    })
+    res.json(saved)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Testa credencial + modelo ANTES de salvar. Sem chave no corpo, testa a que
+// já está salva para aquele provedor (ela não volta pro navegador, então
+// exigi-la aqui obrigaria a redigitar uma chave que já existe).
+app.post('/api/ai/config/test', requireAuth(), requireAdmin(), async (req, res) => {
+  const { provider, model, baseUrl } = req.body ?? {}
+  const typed = String(req.body?.apiKey ?? '').trim()
+  try {
+    const out = await testConnection({
+      provider,
+      model,
+      baseUrl: String(baseUrl ?? '').trim(),
+      apiKey: typed || apiKeyFor(provider),
+    })
+    res.json(out)
+  } catch (e) {
+    // 200 com ok:false, e não 4xx/5xx: a falha do teste é o RESULTADO
+    // esperado da ação (chave errada, modelo inexistente, provedor fora do
+    // ar), não um erro da nossa API — e a tela precisa mostrar o texto do
+    // provedor, que é o que diz o que está errado.
+    res.json({ ok: false, error: e.message })
+  }
+})
+
 // Abre a conversa amarrada a uma pasta + um conjunto de fontes. O acesso à
 // pasta é checado aqui, e listSourceDefs já respeita o folderIds de cada
 // fonte — então a conversa nunca alcança dado que o usuário não veria no
@@ -623,7 +672,7 @@ app.get('/api/ai/status', requireAuth(), (req, res) => {
 app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
   try {
     if (!isAiConfigured()) {
-      return res.status(503).json({ error: 'Montagem com IA não configurada no servidor (falta ANTHROPIC_API_KEY).' })
+      return res.status(503).json({ error: 'Montagem com IA não configurada — um administrador precisa cadastrar o provedor em Configurações › Provedor de IA.' })
     }
     const { folderId, sourceKeys } = req.body || {}
     const folder = getFolder(folderId)
@@ -685,7 +734,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
 app.post('/api/ai/insight', requireAuth(), async (req, res) => {
   try {
     if (!isAiConfigured()) {
-      return res.status(503).json({ error: 'Leitura com IA não configurada no servidor (falta ANTHROPIC_API_KEY).' })
+      return res.status(503).json({ error: 'Leitura com IA não configurada — um administrador precisa cadastrar o provedor em Configurações › Provedor de IA.' })
     }
     const b = req.body || {}
     const out = await explainWidgetData({

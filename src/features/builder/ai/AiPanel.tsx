@@ -268,9 +268,13 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
                 'rounded-md px-1.5 py-0.5 font-mono text-[10px]',
                 overBudget ? 'bg-risk-critical/15 text-risk-critical' : 'bg-app-surface text-gray-500',
               )}
-              title="Gasto de IA hoje e o limite diário por usuário (AI_DAILY_BUDGET_USD)"
+              title={`Gasto de IA hoje e o limite diário por usuário · ${status.provider} · ${status.model}${status.priced ? '' : ' · SEM PREÇO CADASTRADO: o gasto não está sendo somado — ajuste em Configurações › Provedor de IA'}`}
             >
               {status.spentUsd.toFixed(2)}/{status.budgetUsd.toFixed(0)}
+              {/* Sem preço cadastrado, o medidor mente por omissão: mostra zero
+                  e parece que a IA não custa. O asterisco é o que faz alguém
+                  passar o mouse e descobrir. */}
+              {!status.priced && <span className="ml-0.5 text-risk-medium" aria-label="sem preço cadastrado">*</span>}
             </span>
           )}
           <button
@@ -291,7 +295,7 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
       {status && !status.configured && (
         <p className="flex shrink-0 items-start gap-1.5 border-b border-app-border px-4 py-2 text-[11px] text-amber-300">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />
-          IA não configurada no servidor — falta a variável <span className="font-mono">ANTHROPIC_API_KEY</span>.
+          IA não configurada — um administrador precisa cadastrar o provedor em <span className="font-medium">Configurações › Provedor de IA</span>.
         </p>
       )}
 

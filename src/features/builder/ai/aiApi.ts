@@ -12,8 +12,15 @@ export { ApiError }
 export interface AiStatus {
   configured: boolean
   model: string
+  // Provedor ativo. Passou a existir quando a configuração deixou de ser fixa
+  // no .env: com a troca virando um clique em Configurações, o modelo sozinho
+  // não diz mais quem respondeu.
+  provider: string
   spentUsd: number
   budgetUsd: number
+  // false = o modelo escolhido não tem preço cadastrado, então o gasto exibido
+  // é zero por falta de tabela, e não por a IA ser gratuita.
+  priced: boolean
 }
 
 export interface AiConversation {

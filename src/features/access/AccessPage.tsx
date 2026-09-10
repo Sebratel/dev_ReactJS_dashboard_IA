@@ -40,6 +40,9 @@ const ACTION_LABELS: Record<string, string> = {
   'sheetSource.update': 'Editou planilha do Google',
   'sheetSource.delete': 'Removeu planilha do Google',
   'fieldDictionary.update': 'Editou descrição de campo (dicionário de dados)',
+  // O alvo registrado é "provedor · modelo" — nunca a credencial (ver a rota
+  // PUT /api/ai/config em server/index.mjs).
+  'ai.config.update': 'Alterou o provedor de IA',
 }
 
 function fmtDateTime(iso: string) {

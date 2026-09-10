@@ -10,7 +10,9 @@
     "api": "tsx watch --clear-screen=false server/index.mjs",
     "api:once": "tsx server/index.mjs",
     "//api": "`api` recarrega ao salvar qualquer arquivo de server/ ou scripts/. NÃO recarrega ao mudar o .env (o arquivo não está no grafo de módulos; --include não resolve) — depois de editar o .env, reinicie na mão. `api:once` é o modo sem watch, igual ao que o container roda.",
-    "fetch:install": "node scripts/fetch-install.mjs"
+    "fetch:install": "node scripts/fetch-install.mjs",
+    "test:ai": "tsx scripts/test-ai-providers.mjs",
+    "//test:ai": "Verifica os adaptadores de provedor de IA (Anthropic/OpenAI/Gemini) contra um servidor de mentira que fala o protocolo de cada um: traducao de ida, normalizacao de volta, validacao da config e mascara da credencial. Nao usa chave real e nao gasta nada."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

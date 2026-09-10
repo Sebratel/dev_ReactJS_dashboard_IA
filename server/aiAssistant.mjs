@@ -28,7 +28,6 @@
 // guia é o usuário, clicando em aprovar — e daí em diante é um rascunho
 // normal do Builder, que ainda depende do "Salvar".
 // ─────────────────────────────────────────────────────────────────────────
-import Anthropic from '@anthropic-ai/sdk'
 import { randomUUID } from 'node:crypto'
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource } from './sheetSources.mjs'
@@ -39,55 +38,31 @@ import {
   UPDATE_MEASURES_TOOL_SCHEMA, validateMeasureUpdates, normalizeMeasureUpdates,
 } from './aiMeasureSchema.mjs'
 
-// `claude-opus-5` é o padrão deliberado: a tarefa é raciocinar sobre um
-// catálogo de campos e produzir JSON estruturado correto, onde errar custa a
-// confiança do usuário na feature. Trocável por env se você quiser medir
-// custo/qualidade com outro modelo.
-export const MODEL = process.env.AI_MODEL || 'claude-opus-5'
-// `high` é o padrão recomendado para trabalho sensível a inteligência. Vale
-// testar 'medium' e até 'low' depois com os seus casos reais — neste modelo os
-// níveis baixos rendem bem e são o principal controle de custo/latência.
-const EFFORT = process.env.AI_EFFORT || 'high'
-// Teto do que o modelo pode gerar por resposta. Cobre raciocínio + texto +
-// o JSON dos widgets junto; proposta de dashboard inteira cabe folgado.
-const MAX_TOKENS = Math.max(2000, Number(process.env.AI_MAX_TOKENS) || 16000)
-// Orçamento de idas ao modelo por turno. 8 era apertado demais: com uma fonte
-// de 31 campos e um pedido aberto ("KPIs que contam uma história"), o modelo
-// gastava as idas explorando e estourava sem nunca propor nada — o usuário
-// pagava e não recebia widget. Além de subir o teto, agora o modelo é AVISADO
-// quando está perto do fim (ver WRAP_UP_AT) pra fechar com o que tem.
-const MAX_ITERATIONS = Math.max(3, Number(process.env.AI_MAX_ITERATIONS) || 14)
-// Quantas idas antes do fim o aviso de "conclua agora" entra.
-const WRAP_UP_AT = 3
-// Teto de gasto por usuário por dia, em dólares. Zero desliga o teto.
-const DAILY_BUDGET_USD = Number(process.env.AI_DAILY_BUDGET_USD ?? 5)
+// A configuração da IA — provedor, credencial, modelo, esforço, tetos e
+// orçamento — não vive mais em constante de módulo lida do .env: vem de
+// server/aiConfig.mjs, que a tela de Configurações grava, e é lida A CADA USO.
+// Constante de módulo era exatamente o que obrigava a reiniciar a API pra
+// trocar de modelo ou de orçamento; lida por turno, a troca vale na próxima.
+//
+// Quem fala com o provedor é server/aiProvider.mjs. Este arquivo continua
+// raciocinando em blocos no formato da Anthropic (o formato canônico do
+// histórico) e não sabe mais quem está do outro lado.
+import { aiConfig } from './aiConfig.mjs'
+import { streamTurn } from './aiProvider.mjs'
 
-// Preço por milhão de tokens (Claude Opus 5). Usado só para o teto de gasto e
-// para mostrar o custo na tela — se você trocar de modelo por env, ajuste.
-const PRICE = { input: 5, output: 25, cacheWrite: 6.25, cacheRead: 0.5 }
+// Reexportado porque quem pergunta "a IA está configurada?" (server/index.mjs,
+// server/aiInsight.mjs) já importava daqui.
+export { isAiConfigured } from './aiConfig.mjs'
+
+// Quantas idas antes do fim o aviso de "conclua agora" entra. Continua fixo:
+// é propriedade do laço, não preferência de quem administra.
+const WRAP_UP_AT = 3
 
 // Quanto de amostra de valores distintos mostrar ao modelo.
 const FIELD_VALUES_LIMIT = 40
 // Teto do JSON de prévia devolvido ao modelo — evita que uma tabela larga
 // consuma o contexto inteiro.
 const PREVIEW_CHARS = 4000
-
-let client = null
-// Exportado porque a leitura de gráfico (server/aiInsight.mjs) usa o MESMO
-// cliente, o MESMO modelo e — o que mais importa — o MESMO teto de gasto
-// diário. Um orçamento por feature seria um teto que não segura nada: o
-// usuário estouraria o dobro só por usar as duas.
-export function anthropic() {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY não configurada no ambiente da API — a montagem com IA fica indisponível.')
-  }
-  if (!client) client = new Anthropic()
-  return client
-}
-
-export function isAiConfigured() {
-  return !!process.env.ANTHROPIC_API_KEY
-}
 
 // ─── Conversas em memória (nada em disco) ──────────────────────────────
 const CONVERSATION_TTL_MS = 2 * 60 * 60 * 1000
@@ -118,27 +93,49 @@ function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// `usage` chega NORMALIZADO pelo adaptador (server/aiProvider.mjs), e não no
+// formato de um provedor específico — é o que permite esta conta ser a mesma
+// para os três. O preço vem da configuração: modelo sem preço cadastrado tem
+// preço zero, e a tela avisa que falta preencher, em vez de somar um chute.
 function costOf(usage) {
   if (!usage) return 0
-  const inTok = usage.input_tokens ?? 0
-  const outTok = usage.output_tokens ?? 0
-  const cw = usage.cache_creation_input_tokens ?? 0
-  const cr = usage.cache_read_input_tokens ?? 0
-  return (inTok * PRICE.input + outTok * PRICE.output + cw * PRICE.cacheWrite + cr * PRICE.cacheRead) / 1e6
+  const { price } = aiConfig()
+  const inTok = usage.inputTokens ?? 0
+  const outTok = usage.outputTokens ?? 0
+  const cw = usage.cacheWriteTokens ?? 0
+  const cr = usage.cacheReadTokens ?? 0
+  return (inTok * price.input + outTok * price.output + cw * price.cacheWrite + cr * price.cacheRead) / 1e6
 }
 
 export function usageFor(email) {
   const entry = spendByUser.get(email)
   const spentUsd = entry && entry.day === today() ? entry.usd : 0
-  return { spentUsd, budgetUsd: DAILY_BUDGET_USD, model: MODEL, configured: isAiConfigured() }
+  const cfg = aiConfig()
+  return {
+    spentUsd,
+    budgetUsd: cfg.dailyBudgetUsd,
+    model: cfg.model,
+    // O painel de IA passa a mostrar o provedor junto do modelo: com a troca
+    // virando um clique na tela, "quem respondeu isso" deixa de ser óbvio.
+    provider: cfg.provider,
+    // Falso quando o modelo não tem preço cadastrado — a tela usa isso pra
+    // dizer que o medidor de gasto está zerado por falta de preço, em vez de
+    // deixar o usuário concluir que a IA é gratuita.
+    priced: cfg.price.input > 0 || cfg.price.output > 0,
+    configured: !!cfg.apiKey && !!cfg.model,
+  }
 }
 
 export function assertWithinBudget(email) {
-  if (!(DAILY_BUDGET_USD > 0)) return
+  const { dailyBudgetUsd } = aiConfig()
+  if (!(dailyBudgetUsd > 0)) return
   const { spentUsd } = usageFor(email)
-  if (spentUsd >= DAILY_BUDGET_USD) {
+  if (spentUsd >= dailyBudgetUsd) {
     throw new Error(
-      `Você atingiu o limite de uso de IA de hoje (US$ ${DAILY_BUDGET_USD.toFixed(2)}). O limite zera amanhã; um administrador pode ajustá-lo em AI_DAILY_BUDGET_USD.`,
+      // A mensagem aponta pra TELA, não pra variável de ambiente: com a
+      // configuração editável em Configurações, mandar o usuário procurar
+      // AI_DAILY_BUDGET_USD seria mandá-lo pro lugar errado.
+      `Você atingiu o limite de uso de IA de hoje (US$ ${dailyBudgetUsd.toFixed(2)}). O limite zera amanhã; um administrador pode ajustá-lo em Configurações › Provedor de IA.`,
     )
   }
 }
@@ -488,8 +485,14 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
     return { usd: totalUsd }
   }
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
-    const remaining = MAX_ITERATIONS - iteration
+  // Lido UMA vez por turno, não por ida: se alguém trocar o orçamento de idas
+  // na tela no meio de um turno, o turno em andamento termina com a regra com
+  // que começou. Reler por ida faria o "ida 3/14" do log mudar de
+  // denominador no meio do caminho.
+  const { maxIterations } = aiConfig()
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const remaining = maxIterations - iteration
     // Aviso de fechamento como mensagem de sistema no meio da conversa: entra
     // DEPOIS do histórico, então não invalida o prefixo cacheado, e é canal de
     // operador (o modelo trata como instrução, não como texto do usuário).
@@ -500,31 +503,29 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       })
     }
 
-    const stream = anthropic().messages.stream({
-      model: MODEL,
-      max_tokens: MAX_TOKENS,
-      output_config: { effort: EFFORT },
+    const turn = await streamTurn({
       system,
       tools,
       messages: conv.messages,
+      onText: (delta) => emit({ type: 'text', text: delta }),
     })
+    totalUsd += recordSpend(email, turn.usage)
+    // `turn.content` já vem em blocos no formato canônico, montado pelo
+    // adaptador mesmo para provedor que não fala em blocos — é isso que deixa
+    // o histórico idêntico independente de quem respondeu, e o que permite
+    // trocar de provedor no meio de uma conversa sem corrompê-la.
+    conv.messages.push({ role: 'assistant', content: turn.content })
 
-    stream.on('text', (delta) => emit({ type: 'text', text: delta }))
-
-    const message = await stream.finalMessage()
-    totalUsd += recordSpend(email, message.usage)
-    conv.messages.push({ role: 'assistant', content: message.content })
-
-    if (message.stop_reason === 'refusal') {
+    if (turn.stopReason === 'refusal') {
       emit({ type: 'error', message: 'O modelo recusou este pedido. Reformule ou tente um recorte diferente.' })
       return finish()
     }
-    if (message.stop_reason !== 'tool_use') {
+    if (turn.stopReason !== 'tool_use') {
       console.log(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
       return finish()
     }
 
-    const toolUses = message.content.filter((b) => b.type === 'tool_use')
+    const toolUses = turn.toolCalls
     const results = []
     for (const call of toolUses) {
       emit({ type: 'tool', name: call.name })
@@ -534,7 +535,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       } catch (e) {
         out = { isError: true, text: e.message }
       }
-      console.log(`[ai] ida ${iteration + 1}/${MAX_ITERATIONS} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
+      console.log(`[ai] ida ${iteration + 1}/${maxIterations} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
       results.push({
         type: 'tool_result', tool_use_id: call.id, content: out.text,
         ...(out.isError ? { is_error: true } : {}),
@@ -547,7 +548,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
 
   // Estourou o orçamento. Se ele JÁ propôs algo, aquilo vale — o usuário
   // recebe os widgets em vez de perder o turno inteiro (e o dinheiro).
-  console.log(`[ai] orçamento de ${MAX_ITERATIONS} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+  console.log(`[ai] orçamento de ${maxIterations} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
   if (ctx.proposed === 0) {
     emit({
       type: 'error',

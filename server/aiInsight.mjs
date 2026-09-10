@@ -17,7 +17,11 @@
 // é o mesmo teto diário por usuário, não um teto por feature.
 // ─────────────────────────────────────────────────────────────────────────
 import { runWidgetQuery } from './widgetQuery.mjs'
-import { anthropic, assertWithinBudget, recordSpend, MODEL, isAiConfigured } from './aiAssistant.mjs'
+// `recordSpend`/`assertWithinBudget` vêm de lá porque o teto diário é o mesmo
+// das duas features (ver o cabeçalho).
+import { assertWithinBudget, recordSpend } from './aiAssistant.mjs'
+import { isAiConfigured } from './aiConfig.mjs'
+import { completeOnce } from './aiProvider.mjs'
 
 // A tarefa é curta e fechada (ler algumas dezenas de números e escrever três
 // parágrafos), não é o raciocínio aberto de montar uma dashboard. `medium` dá
@@ -95,7 +99,7 @@ function pointsForPrompt(data) {
  * vêm daí: a consulta é refeita aqui no servidor, contra a base real.
  */
 export async function explainWidgetData({ email, widget, tabFilters = [], relations = [], calc = [], accessToken, force = false }) {
-  if (!isAiConfigured()) throw new Error('IA não configurada no servidor (ANTHROPIC_API_KEY).')
+  if (!isAiConfigured()) throw new Error('IA não configurada — um administrador precisa cadastrar o provedor em Configurações › Provedor de IA.')
   if (!widget?.source) throw new Error('Este widget não consulta dados — não há o que ler.')
   assertWithinBudget(email)
 
@@ -116,14 +120,14 @@ export async function explainWidgetData({ email, widget, tabFilters = [], relati
     if (hit) { cache.delete(key); cache.set(key, hit); return { text: hit.text, usd: 0, cached: true } }
   }
 
-  const msg = await anthropic().messages.create({
-    model: MODEL,
-    max_tokens: MAX_TOKENS,
-    output_config: { effort: EFFORT },
+  // Mesmo provedor e mesma credencial da montagem de widget, mas teto e
+  // esforço próprios: ler um gráfico é uma tarefa pequena, e pagar preço de
+  // montagem de dashboard por um parágrafo seria desperdício.
+  const out = await completeOnce({
     system: SYSTEM,
-    messages: [{
-      role: 'user',
-      content: `Gráfico: ${widget.title}${widget.subtitle ? ` — ${widget.subtitle}` : ''}
+    maxTokens: MAX_TOKENS,
+    effort: EFFORT,
+    userText: `Gráfico: ${widget.title}${widget.subtitle ? ` — ${widget.subtitle}` : ''}
 Tipo de visual: ${widget.type}
 
 Como foi calculado:
@@ -131,11 +135,10 @@ ${calcText || '(não informado)'}
 
 Dados que o gráfico desenha:
 ${body}`,
-    }],
   })
 
-  const text = (msg.content ?? []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
-  const usd = recordSpend(email, msg.usage)
+  const text = out.text
+  const usd = recordSpend(email, out.usage)
   if (!text) throw new Error('O modelo não devolveu texto.')
 
   cache.set(key, { text, usd, at: Date.now() })

@@ -13,8 +13,22 @@ COPY scripts ./scripts
 COPY src ./src
 COPY tsconfig.json ./
 
+# tzdata + fuso explícito: sem isso o container roda em UTC, e três coisas
+# passam a mentir por 3 horas — o carimbo do log de auditoria, o "visto por
+# último" da aba Acessos e, principalmente, a VIRADA DO DIA do teto de gasto de
+# IA (que zera em `new Date().toISOString().slice(0,10)`, ver aiAssistant.mjs).
+# Alinhado ao comercial_pbi, que já fazia isso.
+RUN apk add --no-cache tzdata
+ENV TZ=America/Sao_Paulo
+
 ENV NODE_ENV=production
 ENV API_PORT=8788
+
+# Usuário sem privilégio, e o volume de dados entregue a ele. `data/` recebe
+# escrita em runtime (sessões, fontes, config de IA, chave de cifra), então a
+# posse precisa ser trocada ANTES do USER — depois dele não há permissão.
+RUN addgroup -S app && adduser -S app -G app && mkdir -p /app/data && chown -R app:app /app/data
+USER app
 
 EXPOSE 8788
 

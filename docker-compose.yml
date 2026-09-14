@@ -71,6 +71,12 @@ services:
     environment:
       API_PORT: 8788
       ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-sebratel.com.br}
+      # Arquivo que a API LÊ. O `etl` grava o mesmo arquivo, sob o nome
+      # SNAPSHOT_OUT. Aqui não é preciso declarar SNAPSHOT_OUT: quando a API
+      # dispara o ETL sozinha (ao cadastrar/editar uma fonte), o script usa
+      # este valor como destino — ver o comentário em scripts/fetch-install.mjs.
+      # Declarar os dois com valores diferentes quebra a atualização em segundo
+      # plano em silêncio: a fonte nova nunca chega no Builder.
       SNAPSHOT_PATH: /snapshot/installData.data
       # Quem é administrador (lista fixa, separada por vírgula) — ver
       # server/accessLog.mjs. Sem isto, valem só os e-mails embutidos no código.

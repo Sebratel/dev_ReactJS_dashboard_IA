@@ -4,6 +4,30 @@
 
 ---
 
+## 14/09/2026 — Fonte do Data Hub cadastrada não chegava no Builder: o ETL gravava o snapshot onde ninguém lia
+
+Usuário cadastrou duas fontes (`clientes-cancelados`, 185.564 linhas, e `infrastructure`, 5.663) e relatou que **não conseguia criar widget com elas, e elas não apareciam no dicionário de dados** — apesar de a tela de Configurações mostrar as duas ativas, com a contagem de linhas.
+
+**A contagem de linhas era a pista falsa.** Ela vem do registro da própria fonte (`rowCount`, gravado por `recordLakehouseRuns` em `data/lakehouseSources.json`), e não do snapshot. Dava pra ver "185.564 linhas" com o snapshot completamente vazio daquela fonte — foi exatamente o que aconteceu.
+
+**A causa**, uma assimetria de nome de variável:
+
+| Quem | Variável | Onde estava definida |
+|---|---|---|
+| API (lê o snapshot) | `SNAPSHOT_PATH` | serviço `api` |
+| ETL (grava o snapshot) | `SNAPSHOT_OUT` | serviço `etl` |
+
+Só que o ETL **também roda disparado pela própria API** — é o `triggerEtlRefresh` que faz a promessa da tela ("o snapshot é atualizado em segundo plano… as colunas aparecem no editor em pouco tempo"). Esse disparo usa `spawn(..., { env: process.env })`, ou seja, o ambiente do container da **api**, onde `SNAPSHOT_OUT` não existe. Sem ela, `fetch-install.mjs` caía no padrão `./public/installData.data` — **dentro do container da api**, um caminho que ninguém lê. A API seguia lendo `/snapshot/installData.data`.
+
+Resultado: a fonte era buscada de verdade (daí a contagem), o snapshot era gravado de verdade, e os dois nunca se encontravam. O catálogo de campos (`listSourceDefs`) só enxerga fonte que tem chave `dhub:<id>` no snapshot que a API lê — então nada de widget e nada de dicionário. A única forma de a fonte aparecer era esperar o serviço `etl` separado rodar; com a fonte agendada em 60 min, até uma hora.
+
+- **`scripts/fetch-install.mjs`**: o destino passou a ser `SNAPSHOT_OUT || SNAPSHOT_PATH || ./public/installData.data`. Quem escreve e quem lê agora apontam pro mesmo arquivo por construção, não por coincidência de configuração.
+- **`docker-compose.yml`**: comentário no `SNAPSHOT_PATH` do `api` explicando por que ali NÃO se declara `SNAPSHOT_OUT`, e que declarar os dois com valores diferentes quebra a atualização em segundo plano em silêncio.
+
+Verificado rodando o ETL com **apenas `SNAPSHOT_PATH` no ambiente** (que é a situação do container da api): antes caía em `./public`, agora grava no caminho lido pela API — conferido pelo log (`OK — snapshot gravado em …`) e pelo arquivo aparecendo no destino. O snapshot versionado do repositório não foi tocado. O serviço `etl`, que declara `SNAPSHOT_OUT`, continua igual.
+
+De brinde, o mesmo teste exercitou a mensagem de erro melhorada horas antes: a fonte antiga `infra-teste` falhou com **"Este token não tem acesso a este conjunto de dados. (HTTP 403 em https://data-hub.sebratel.net.br)"** — a frase do próprio Data Hub, com status e origem, em vez do "token recusado" genérico.
+
 ## 13/09/2026 — Login migrado para Firebase Authentication (projeto `authentication-dashboardsia`)
 
 Usuário mandou a configuração do Firebase do projeto `authentication-dashboardsia` — "esse aqui será o projeto que fará login" — e pediu pra deixar o `.env` 100% pra subir no Portainer.

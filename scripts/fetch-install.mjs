@@ -32,7 +32,19 @@ import {
 } from '../server/lakehouseSources.mjs'
 import { decryptSecret } from '../server/secretBox.mjs'
 
-const OUT = process.env.SNAPSHOT_OUT ? resolve(process.env.SNAPSHOT_OUT) : resolve(process.cwd(), 'public/installData.data')
+// Onde gravar o snapshot. `SNAPSHOT_OUT` é o nome que o serviço `etl` usa; mas
+// este script também roda disparado pela PRÓPRIA API (ao cadastrar/editar uma
+// fonte, ver triggerEtlRefresh em server/index.mjs), e lá o que existe no
+// ambiente é `SNAPSHOT_PATH` — o arquivo que ela LÊ.
+//
+// São o mesmo arquivo: quem escreve e quem lê têm de apontar pro mesmo lugar.
+// Sem este fallback, o ETL disparado pela API gravava em ./public dentro do
+// container dela (caminho que ninguém lê) enquanto a API seguia lendo
+// /snapshot/installData.data — a fonte recém-cadastrada aparecia em
+// Configurações, com contagem de linhas e tudo, e NUNCA chegava no Builder nem
+// no dicionário. Era preciso esperar o serviço `etl` rodar, o que com fonte
+// agendada de 60 min podia levar uma hora.
+const OUT = resolve(process.env.SNAPSHOT_OUT || process.env.SNAPSHOT_PATH || 'public/installData.data')
 
 // Tolerante a arquivo ausente/corrompido — nesse caso simplesmente não há
 // dado anterior pra carregar adiante (fontes agendadas ainda não vencidas

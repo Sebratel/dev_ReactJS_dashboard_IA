@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion'
 import { AlertCircle, Info, Loader2, Lock, Shield } from 'lucide-react'
-import { startGoogleLogin } from '@/store/authSession'
+import { loginWithGoogle } from '@/store/authSession'
+import { mensagemDeErro } from '@/lib/firebase'
+import { ApiError } from '@/lib/apiClient'
 
 // A biblioteca Google Identity Services não é mais carregada: o fluxo de login
 // acontece inteiro no servidor (redirect → callback), então não há mais objeto
@@ -49,18 +51,29 @@ export default function LoginPage() {
   const [searchParams] = useSearchParams()
   const [busy, setBusy] = useState(false)
 
-  // O login não acontece mais nesta página: ela só manda o navegador pro
-  // /api/auth/google/start, e o servidor conduz o fluxo de código de
-  // autorização (ver server/googleOAuth.mjs). Não há mais script do Google
-  // Identity Services para carregar aqui, nem token passando pelo JavaScript.
+  // O login acontece AQUI de novo, mas pelo SDK do Firebase (vindo do bundle,
+  // não de um script baixado do Google): popup, e o ID token vai pro servidor
+  // abrir a sessão. Ver src/lib/firebase.ts e a skill padrao-login-sso.
   //
-  // Quando algo falha no meio do fluxo, o servidor redireciona de volta pra
-  // /login?erro=… — é de lá que a mensagem abaixo vem.
-  const error = searchParams.get('erro')
+  // Dois lugares podem recusar, e a mensagem de cada um é diferente: o Google
+  // (popup bloqueado, domínio não autorizado no Firebase) e o nosso servidor
+  // (conta de fora do domínio, e-mail não verificado).
+  const [erroLocal, setErroLocal] = useState<string | null>(null)
+  // `?erro=` ainda é lido porque uma sessão encerrada pelo servidor pode
+  // mandar a pessoa pra cá com um motivo.
+  const error = erroLocal ?? searchParams.get('erro')
 
-  const handleGoogle = () => {
+  const handleGoogle = async () => {
     setBusy(true)
-    startGoogleLogin()
+    setErroLocal(null)
+    try {
+      await loginWithGoogle()
+      // Sessão criada: o router leva pra dashboard sozinho (o authStore mudou).
+    } catch (e) {
+      setErroLocal(e instanceof ApiError ? e.message : mensagemDeErro(e))
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

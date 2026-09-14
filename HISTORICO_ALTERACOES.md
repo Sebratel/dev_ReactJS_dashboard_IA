@@ -4,6 +4,51 @@
 
 ---
 
+## 13/09/2026 — Login migrado para Firebase Authentication (projeto `authentication-dashboardsia`)
+
+Usuário mandou a configuração do Firebase do projeto `authentication-dashboardsia` — "esse aqui será o projeto que fará login" — e pediu pra deixar o `.env` 100% pra subir no Portainer.
+
+**Antes de mexer, um fato que mudava a resposta**: o app não lia **nenhuma** variável do Firebase. O login era o fluxo de código de autorização conduzido pelo servidor, e o front não usava nenhuma `VITE_*` (a `VITE_GOOGLE_CLIENT_ID` que estava no `.env` era resto do fluxo implícito antigo e não fazia nada). Colar as `VITE_FIREBASE_*` sozinhas seria configuração decorativa. Perguntei, e o usuário escolheu **migrar para o Firebase Auth**, que é o padrão da casa (skill `padrao-login-sso`, referência `dev_HUBBI_ReactJS` + `lakehouse_sebratel`).
+
+Detalhe que ajudou a decidir: o `messagingSenderId` do Firebase (`456518568368`) é o **mesmo número de projeto** do client OAuth que já existia — os dois sempre estiveram no mesmo projeto do Google Cloud. O que mudou foi o método, não a conta.
+
+### Servidor
+
+- **`server/firebaseToken.mjs` (novo)**: verificação do ID token **local**, com a chave pública do Google. Portado de `apps/api/src/modules/auth/firebaseToken.ts` do `lakehouse_sebratel`, a implementação de referência que a skill cita. Valida, obrigatoriamente: `alg === RS256` (aceitar o algoritmo do cabeçalho é a porta do `alg:none`), `iss` e `aud` **deste** projeto (sem isso, token legítimo de qualquer outro projeto Firebase do mundo entraria), `exp`/`iat` com 5 min de tolerância, `sub`, e a assinatura contra o certificado do `kid`.
+- **Cache dos certificados** em memória **e em disco** (`data/.firebase-certs.json`, no volume): serve o que tem, renova em segundo plano quando envelhece (6 h) e só bloqueia esperando a rede quando não há nada utilizável. **Renovação que falha não invalida o cache** — é o que impede uma oscilação de rede de virar "ninguém mais entra". Sem a cópia em disco, um restart durante um bloqueio deixaria a API sem validar nada, exatamente o cenário que o padrão existe pra evitar.
+- **Sem `firebase-admin`**: ele faria o mesmo, mas arrasta `google-auth-library`, `gcp-metadata`, `gtoken`… e este repositório versiona o `node_modules`, então cada dependência entra como milhares de arquivos no histórico. São ~80 linhas de `node:crypto`.
+- **`POST /api/auth/session`** substitui `/api/auth/google/start` e `/callback` (ambas agora 404). A sessão continua sendo **a nossa**: cookie HttpOnly de 30 dias. O ID token só prova quem é na hora de entrar e vence em 1 h — quem sustenta a navegação é a sessão, então o front não renova token a cada requisição e um logout de verdade invalida no servidor.
+- **`server/googleOAuth.mjs` removido** e o `refresh_token` saiu do `sessions.mjs`: com o Firebase não existe mais renovação. O `access_token` do Google (o que lê **planilha** em nome da pessoa) vem do popup, é guardado cifrado e vale ~1 h; vencido, vira `null` e as planilhas respondem pelo cache. **Isso não derruba a sessão, de propósito** — seria repetir o erro que a skill chama de mais caro: jogar quem está logado numa tela de login por causa de uma credencial acessória.
+
+### Cliente
+
+- **`src/lib/firebase.ts` (novo)**: SDK pelo **npm**, nunca `<script src>` — é essa a diferença central do padrão. `signInWithPopup` com `hd=sebratel.com.br` (que só filtra o seletor de contas; **quem valida o domínio é o servidor**) e o escopo `spreadsheets.readonly`, que mantém a fonte por planilha funcionando.
+- **Erros do Firebase traduzidos** para frases que dizem o que fazer. Vale o trabalho: `auth/unauthorized-domain` é o passo manual mais esquecido do console e só aparece no primeiro clique real, nunca no build.
+- **"Sair" também encerra o vínculo com o Google** (`signOut`): sem isso, sair e entrar de novo voltaria com a mesma conta sem perguntar nada, e trocar de usuário viraria um mistério.
+
+### Deploy — a parte que o pedido era
+
+- **`VITE_FIREBASE_*` são de BUILD, não de runtime.** O Vite grava esses valores dentro do bundle. Então entraram como `ARG`/`ENV` no `Dockerfile` e `build.args` no compose, e o `Dockerfile` **falha o build** se a chave ou o project id vierem vazios — melhor quebrar ali do que subir uma imagem que só mostra "chave inválida" no primeiro clique. No Portainer: mudar qualquer uma delas exige **redeploy com rebuild**; recriar o container não muda nada.
+- **`FIREBASE_PROJECT_ID` do `api` é derivado de `VITE_FIREBASE_PROJECT_ID`** no próprio compose, pra não existirem dois valores podendo divergir.
+- **`WEB_PORT` virou obrigatória de verdade** (`${WEB_PORT:?…}`). Antes, em branco, o Docker publicava numa **porta aleatória**: a stack subia saudável e ficava inacessível no endereço esperado, com só um aviso perdido no log. Agora o deploy para e diz o que falta.
+- `.env` local preenchido com os valores do projeto; `GOOGLE_CLIENT_SECRET`, `APP_BASE_URL` e `VITE_GOOGLE_CLIENT_ID` saíram (ninguém mais os lê). `SECRETS_KEY` ficou **comentada de propósito**: já existe uma em `data/.secret-key`, e definir outra tornaria ilegível tudo que já está cifrado (token do Data Hub, credencial de IA). Em produção ela deve ser definida na stack.
+- `data/.firebase-certs.json` no `.gitignore` — é cache de chave **pública**, muda a cada 6 h e só sujaria o histórico.
+
+### Verificação
+
+- **`npm run test:auth` (novo): 21/21.** Gera um par de chaves próprio, injeta o certificado no cache e prova, um a um, que as fraudes param: **`alg:none`**, **HS256 assinado com a chave pública** (confusão de algoritmo), **payload adulterado depois da assinatura**, **assinado por outra chave**, **`aud`/`iss` de outro projeto Firebase**, expirado, sem `exp`, `iat` no futuro, sem `sub`, sem e-mail, `kid` desconhecido, sem `kid`, token malformado — e que **sem `FIREBASE_PROJECT_ID` nada entra**. Não usa rede.
+- **Rota testada na API rodando**: sem token → 400; token de lixo → 401; **JWT `alg:none` forjado com `iss`/`aud` certos e e-mail @sebratel.com.br → 401**. As rotas antigas do OAuth devolvem 404.
+- **Navegador**: a tela carrega sem **nenhum** script baixado de `accounts.google.com`/`apis.google.com` (o SDK vem do bundle — é a diferença que este padrão compra), e o clique abre o popup em `https://authentication-dashboardsia.firebaseapp.com/__/auth/handler?...`, no projeto certo.
+- `tsc --noEmit`, `npm run build`, `npm run test:ai` (63/63) e `docker compose config` limpos.
+
+### O que falta — e é com você, no console
+
+1. **Authentication → Sign-in method → Google → Ativar** (projeto novo vem com tudo desligado).
+2. **Authentication → Settings → Authorized domains** → adicionar o host de produção. Só `localhost` vem liberado, e o erro só aparece no primeiro clique real.
+3. **Restringir a chave** no Google Cloud a Identity Toolkit / Token Service. Ela é pública por design; isso só é inofensivo enquanto ela não servir a API cobrada.
+4. **API do Google Sheets habilitada** no mesmo projeto, se for usar fonte por planilha.
+5. **Não testei um login completo** — exigiria a sua credencial do Google. O que está medido vai até a escolha da conta no popup.
+
 ## 10/09/2026 — A lista de modelos passa a vir do provedor, e o `.env` sai de vez da configuração de IA
 
 Dois pedidos do usuário, logo depois da entrada anterior: **remover o modelo que vinha do `.env`** (ele já ia apagar as variáveis) e um bug real — **"após colocar a chave da Gemini os modelos não estão retornando para realizar a escolha"**.

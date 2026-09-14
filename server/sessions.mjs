@@ -2,11 +2,14 @@
 // Sessões de login, guardadas NO SERVIDOR (data/sessions.json) e referenciadas
 // pelo navegador por um cookie HttpOnly com um id opaco.
 //
-// Por que no servidor e não num JWT: aqui ficam o access_token e o
-// refresh_token do Google. Guardá-los no cliente é exatamente o que o fluxo
-// antigo fazia (localStorage) e o que esta migração elimina. Ficando no
-// servidor, o navegador nunca vê token do Google, e um logout de verdade
-// invalida a sessão (com JWT só daria pra esperar expirar).
+// Por que no servidor e não num JWT: um logout de verdade invalida a sessão
+// (com JWT só daria pra esperar expirar), e aqui fica também o access_token do
+// Google usado para ler planilha em nome de quem entrou — que o navegador não
+// precisa guardar.
+//
+// Desde a migração para o Firebase (13/09/2026) NÃO há mais refresh_token: o ID
+// token do Firebase prova a identidade uma vez, no login, e quem sustenta a
+// navegação daí em diante é esta sessão. Ver server/firebaseToken.mjs.
 //
 // Persistido em arquivo — e não em memória — para um restart do container (ou
 // um redeploy da stack no Portainer) não deslogar todo mundo. Mesmo padrão de
@@ -26,14 +29,14 @@ const STORE_PATH = process.env.SESSIONS_PATH
   : resolve(process.cwd(), 'data/sessions.json')
 
 export const COOKIE_NAME = 'ind_sessao'
-// Tempo de vida ABSOLUTO da sessão. Generoso de propósito: como o
-// `prompt=consent` do fluxo faz a tela de consentimento aparecer a cada login
-// (ver server/googleOAuth.mjs), logins raros são o comportamento desejado.
+// Tempo de vida ABSOLUTO da sessão. Generoso de propósito: o ID token do
+// Firebase prova a identidade só no momento de entrar, e é esta sessão que
+// sustenta a navegação depois — 30 dias evita pedir login toda semana.
 const TTL_DAYS = Math.max(1, Number(process.env.SESSION_TTL_DAYS) || 30)
 export const TTL_MS = TTL_DAYS * 24 * 60 * 60 * 1000
-// Margem para renovar o access_token antes de ele realmente vencer — evita a
-// corrida de usar um token que expira no meio da chamada ao Google.
-const REFRESH_SKEW_MS = 2 * 60 * 1000
+// Margem de segurança: um token que vence nos próximos 2 minutos já conta como
+// vencido, o que evita a corrida de usá-lo e ele expirar no meio da chamada.
+const TOKEN_SKEW_MS = 2 * 60 * 1000
 
 function load() {
   if (!existsSync(STORE_PATH)) return []
@@ -63,7 +66,6 @@ function pack(entry) {
   return {
     ...entry,
     accessToken: entry.accessToken ? encryptSecret(entry.accessToken) : null,
-    refreshToken: entry.refreshToken ? encryptSecret(entry.refreshToken) : null,
   }
 }
 
@@ -73,7 +75,6 @@ function unpack(entry) {
     return {
       ...entry,
       accessToken: entry.accessToken ? decryptSecret(entry.accessToken) : null,
-      refreshToken: entry.refreshToken ? decryptSecret(entry.refreshToken) : null,
     }
   } catch (e) {
     // Chave de cifra trocada — a sessão é inutilizável, então vale como
@@ -88,9 +89,10 @@ export function createSession({ email, name, picture }, tokens) {
   const entry = {
     id: randomBytes(32).toString('base64url'),
     email, name, picture: picture ?? null,
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    accessTokenExpiresAt: tokens.expiresAt,
+    // Só o access_token do Google (planilhas), quando o login trouxe um.
+    // Não há refresh_token no fluxo web do Firebase — ver validAccessToken().
+    accessToken: tokens.accessToken ?? null,
+    accessTokenExpiresAt: tokens.expiresAt ?? 0,
     createdAt: now,
     lastSeenAt: now,
     expiresAt: now + TTL_MS,
@@ -114,8 +116,8 @@ export function destroySession(id) {
   persist(load().filter((s) => s.id !== id && alive(s, now)))
 }
 
-// Um write por chamada; usado tanto pelo "visto por último" quanto pela
-// gravação do access_token renovado.
+// Um write por chamada. Hoje só o "visto por último" usa — a gravação de token
+// renovado sumiu junto com o refresh_token.
 function patch(id, fields) {
   const list = load()
   const idx = list.findIndex((s) => s.id === id)
@@ -131,32 +133,21 @@ export function touchSession(id) {
   patch(id, { lastSeenAt: Date.now() })
 }
 
-// Garante um access_token válido para a sessão, renovando pelo refresh_token
-// quando necessário. Devolve o token, ou null se a sessão não tem mais como se
-// renovar (refresh revogado no Google, consentimento retirado etc.) — nesse
-// caso o chamador deve tratar como sessão morta.
-export async function ensureAccessToken(session, refreshFn) {
-  const now = Date.now()
-  if (session.accessToken && session.accessTokenExpiresAt > now + REFRESH_SKEW_MS) {
-    return session.accessToken
-  }
-  if (!session.refreshToken) return null
-  try {
-    const renewed = await refreshFn(session.refreshToken)
-    const refreshToken = renewed.refreshToken ?? session.refreshToken
-    patch(session.id, pack({
-      ...session,
-      accessToken: renewed.accessToken,
-      refreshToken,
-      accessTokenExpiresAt: renewed.expiresAt,
-    }))
-    session.accessToken = renewed.accessToken
-    session.refreshToken = refreshToken
-    session.accessTokenExpiresAt = renewed.expiresAt
-    return renewed.accessToken
-  } catch (e) {
-    console.error(`[sessions] falha ao renovar a sessão de ${session.email}: ${e.message}`)
-    destroySession(session.id)
-    return null
-  }
+/**
+ * O access_token do Google guardado no login, se ainda valer — ou `null`.
+ *
+ * Serve só para ler PLANILHA em nome de quem entrou (sheetSources/googleSheets).
+ * Com o Firebase, o fluxo web não devolve refresh_token, então não há o que
+ * renovar: o token dura ~1h e depois disso simplesmente não existe mais.
+ *
+ * VENCIDO VALE COMO AUSENTE, NUNCA COMO SESSÃO MORTA. Derrubar a sessão aqui
+ * seria repetir o erro que a skill padrao-login-sso chama de mais caro — quem
+ * está logado há uma semana perderia o acesso ao app inteiro porque uma
+ * credencial acessória, usada por um recurso opcional, envelheceu.
+ */
+export function validAccessToken(session) {
+  if (!session?.accessToken) return null
+  const expira = Number(session.accessTokenExpiresAt ?? 0)
+  if (!(expira > Date.now() + TOKEN_SKEW_MS)) return null
+  return session.accessToken
 }

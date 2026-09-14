@@ -9,6 +9,7 @@
 // login. Um 401 aqui é o caso normal de "ninguém logado".
 import { useAuthStore } from './authStore'
 import { apiFetch, ApiError } from '@/lib/apiClient'
+import { entrarComGoogle, sairDoGoogle } from '@/lib/firebase'
 import type { AuthUser } from './authStore'
 
 export async function loadSession(): Promise<AuthUser | null> {
@@ -27,11 +28,38 @@ export async function loadSession(): Promise<AuthUser | null> {
   }
 }
 
-// Redireciona o navegador para o início do fluxo no servidor. Não é fetch: o
-// Google precisa de uma navegação de página de verdade (e é ela que traz o
-// cookie de volta no callback).
-export function startGoogleLogin(): void {
-  window.location.href = '/api/auth/google/start'
+/**
+ * Login: popup do Google pelo SDK do Firebase e, com o ID token na mão, uma
+ * chamada ao servidor pra abrir a sessão (cookie HttpOnly).
+ *
+ * Não é mais uma navegação de página: o fluxo de código de autorização, que
+ * mandava o navegador pro /api/auth/google/start, foi aposentado em 13/09/2026
+ * — ver a skill padrao-login-sso e server/firebaseToken.mjs.
+ *
+ * O ID token vive só o tempo desta função. Quem sustenta a navegação depois é
+ * o cookie, que o JavaScript não lê.
+ */
+export async function loginWithGoogle(): Promise<AuthUser> {
+  const { idToken, googleAccessToken, googleAccessTokenExpiresAt } = await entrarComGoogle()
+
+  const res = await apiFetch('/api/auth/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ idToken, googleAccessToken, googleAccessTokenExpiresAt }),
+  })
+  let body: any = null
+  try { body = await res.json() } catch { /* sem corpo */ }
+  if (!res.ok) {
+    // O servidor recusou (domínio errado, e-mail não verificado, token
+    // inválido). O vínculo com o Google no navegador não pode ficar de pé:
+    // senão a próxima tentativa entra sem popup e falha igual, sem a pessoa
+    // entender por quê.
+    await sairDoGoogle()
+    throw new ApiError(res.status, body?.error || 'Não foi possível entrar.')
+  }
+
+  useAuthStore.getState().setSession(body)
+  return body.user
 }
 
 export async function logout(): Promise<void> {
@@ -41,5 +69,9 @@ export async function logout(): Promise<void> {
     // Falha de rede não deve prender ninguém numa sessão que quis encerrar —
     // o estado local é limpo de qualquer forma.
   }
+  // Encerra também o vínculo com o Google: sem isto, "Sair" e "Entrar" de novo
+  // voltaria com a MESMA conta sem perguntar nada, e trocar de usuário viraria
+  // um mistério.
+  await sairDoGoogle()
   useAuthStore.getState().logout()
 }

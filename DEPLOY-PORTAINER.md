@@ -68,9 +68,10 @@ o que vale é o que está aqui. Referência completa e comentada:
 
 | Variável | Para quê |
 |---|---|
-| `GOOGLE_CLIENT_ID` | Client ID da aplicação Google. Só o `api` precisa. |
-| `GOOGLE_CLIENT_SECRET` | Client secret da mesma aplicação — é com ele que o servidor troca o `code` por tokens. Ver seção 5. |
-| `APP_BASE_URL` | Endereço público da aplicação (ex. `http://indicadores.interno:8081`). Monta o `redirect_uri` que precisa estar cadastrado no Google. Ver seção 5. |
+| `VITE_FIREBASE_API_KEY` | Chave web do projeto Firebase. **Entra no BUILD** do serviço `web` (é gravada no bundle), não no runtime. Ver seção 5. |
+| `VITE_FIREBASE_AUTH_DOMAIN` | `<projeto>.firebaseapp.com`. Também de build. |
+| `VITE_FIREBASE_PROJECT_ID` | Id do projeto Firebase (`authentication-dashboardsia`). De build **e** reaproveitada pelo `api` como `FIREBASE_PROJECT_ID`. |
+| `VITE_FIREBASE_APP_ID` | Id do app web. De build. |
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
@@ -111,61 +112,87 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
    **healthy**; `etl` não tem healthcheck, é um job em laço.
 2. Abra `http://<servidor>:8081/api/health` — deve responder
    `{"ok":true,...}`. Se der 502, o `api` não subiu (veja os logs dele).
-3. Faça login. Se a tela mostrar um erro em vez de ir para o Google, ele veio do
-   servidor — as causas usuais são `GOOGLE_CLIENT_SECRET` ausente ou o
-   `redirect_uri` não cadastrado (seção 5).
+3. Faça login. A mensagem de erro diz de onde veio a recusa, e cada uma tem uma
+   causa típica (seção 5): "endereço não está liberado no Firebase" é o host
+   faltando em **Authorized domains**; "chave do Firebase não é válida" é
+   `VITE_FIREBASE_*` ausente **no build** (redeploy com rebuild); "login não
+   configurado no servidor" é `FIREBASE_PROJECT_ID` faltando no `api`; e
+   "acesso restrito a contas @..." é conta de fora do domínio — essa é o
+   sistema funcionando.
 4. Vá em **Configurações** para cadastrar as fontes.
 
-Nenhuma credencial é assada na imagem: o Client ID e o Secret são lidos do
-ambiente pelo `api`, em runtime. Trocar de credencial é editar a variável e
-reiniciar a stack — sem reconstruir imagem.
+Nenhum **segredo** é assado na imagem. O que vai no bundle do `web` são as
+`VITE_FIREBASE_*`, que são públicas por design (o navegador precisa delas para
+falar com o Firebase) — e é justamente por irem no bundle que mudá-las exige
+**rebuild**, não só reiniciar. O que o `api` lê em runtime é o
+`FIREBASE_PROJECT_ID` e a `SECRETS_KEY`; esses sim trocam com um restart.
 
 ---
 
-## 5. SSO — fluxo de código de autorização
+## 5. SSO — Firebase Authentication
 
-O login é conduzido **pelo servidor**. O navegador nunca vê um token do Google:
-
-```
-navegador → GET /api/auth/google/start        (servidor gera `state`, redireciona)
-          → accounts.google.com               (usuário escolhe a conta)
-          → GET /api/auth/google/callback     (servidor troca o `code` por tokens
-                                               usando o GOOGLE_CLIENT_SECRET)
-          → cookie de sessão HttpOnly         (sessão gravada em data/sessions.json)
-```
-
-A sessão é um id opaco num cookie `HttpOnly`/`SameSite=Lax`; o `access_token` e
-o `refresh_token` do Google ficam no servidor, **cifrados** com a `SECRETS_KEY`
-(mesma chave dos tokens do Data Hub). Quando o access token vence, o servidor
-renova sozinho pelo refresh token — o usuário não é deslogado a cada hora.
-
-### O que configurar no Google Cloud (uma vez)
-
-Em **APIs e serviços → Credenciais → seu Client ID OAuth**, cadastre o
-**URI de redirecionamento autorizado**:
+Desde 13/09/2026 o login usa **Firebase Authentication** (projeto
+`authentication-dashboardsia`), no padrão da skill `padrao-login-sso`:
 
 ```
-<APP_BASE_URL>/api/auth/google/callback
+navegador → popup do Google pelo SDK do Firebase (que vem no BUNDLE, via npm)
+          → ID token (JWT RS256 assinado pelo Google)
+          → POST /api/auth/session
+          → servidor confere a ASSINATURA localmente, com a chave pública
+            em cache (server/firebaseToken.mjs)
+          → cookie de sessão HttpOnly (sessão gravada em data/sessions.json)
 ```
 
-Ele precisa ser **idêntico**, caractere por caractere, ao que a API monta —
-inclusive esquema e porta. Cadastre um por ambiente, por exemplo:
+**Por que isto e não o fluxo anterior:** o fluxo de código de autorização
+dependia da saída para o Google *a cada* validação. Aqui, depois de buscar os
+certificados uma vez (e eles ficam em cache no volume `data`), a API valida
+login **sem tocar na rede** — se a saída cair, quem tem token válido continua
+entrando. Não há mais `GOOGLE_CLIENT_SECRET`, `APP_BASE_URL` nem
+`redirect_uri` para cadastrar.
 
-```
-http://localhost:5173/api/auth/google/callback          (desenvolvimento)
-http://indicadores.interno:8081/api/auth/google/callback (produção)
-```
+A sessão continua sendo um id opaco num cookie `HttpOnly`/`SameSite=Lax`, com
+30 dias (`SESSION_TTL_DAYS`): o ID token do Firebase só prova quem é na hora de
+entrar, e vence em 1 h — quem sustenta a navegação é a sessão.
 
-Se o URI não bater, o Google recusa antes de qualquer coisa e a tela de login
-mostra a mensagem que ele devolveu (`redirect_uri_mismatch`).
+### ⚠️ As `VITE_FIREBASE_*` são de BUILD, não de runtime
+
+O Vite grava esses valores **dentro do JavaScript** na hora de compilar. No
+Portainer isso significa:
+
+> Mudou qualquer `VITE_FIREBASE_*`? **Redeploy com `Re-pull image and rebuild`.**
+> Recriar o container sozinho não muda nada — o bundle já foi gerado.
+
+O `Dockerfile` recebe as quatro como `ARG`/`ENV` e **falha o build** se a chave
+ou o project id vierem vazios: melhor quebrar aqui do que subir uma imagem que
+só mostra "chave inválida" no primeiro clique de quem for usar.
+
+O `api` recebe `FIREBASE_PROJECT_ID` (derivado de `VITE_FIREBASE_PROJECT_ID` no
+compose) como variável normal de runtime — é contra ele que o `aud` e o `iss`
+do token são conferidos.
+
+### O que configurar no console do Firebase (uma vez, e é sempre esquecido)
+
+1. **Authentication → Sign-in method → Google → Ativar.** Projeto novo vem com
+   todos os provedores desligados.
+2. **Authentication → Settings → Authorized domains** → adicionar o host de
+   produção (ex. `indicadores.interno`). Só `localhost` vem liberado de
+   fábrica. Sem isso o popup falha com `auth/unauthorized-domain` — e esse erro
+   só aparece no **primeiro clique real**, nunca no build. A tela de login
+   mostra essa mensagem já traduzida, dizendo exatamente onde configurar.
+3. **Google Cloud → APIs e serviços → Credenciais → a chave de navegador**:
+   restrinja a **Identity Toolkit / Token Service** e aos referenciadores HTTP
+   do sistema. A chave é pública por design (vai no bundle), e isso só é
+   inofensivo enquanto ela não servir a APIs cobradas.
+4. **API do Google Sheets habilitada** no mesmo projeto, se for usar fonte por
+   planilha (o escopo `spreadsheets.readonly` é pedido no popup).
 
 ### Detalhes que valem saber
 
-- **A tela de consentimento aparece a cada login.** É deliberado: o fluxo pede
-  `access_type=offline&prompt=consent`, e sem `prompt=consent` o Google só
-  devolve `refresh_token` no primeiro consentimento de cada usuário — nos
-  logins seguintes a sessão não teria como se renovar. Como a sessão dura
-  `SESSION_TTL_DAYS` (30 por padrão), logar é raro.
+- **Planilha do Google depende de um token que vence em ~1 h.** O fluxo web do
+  Firebase não devolve `refresh_token`, então o `access_token` capturado no
+  login serve por cerca de uma hora; depois disso as fontes por planilha
+  respondem pelo **cache** até a pessoa entrar de novo. Isso **não** derruba a
+  sessão — de propósito.
 - **`Secure` no cookie é condicional.** Marcado só quando a requisição chega por
   https. Num servidor interno em http puro, marcar `Secure` sempre faria o
   navegador descartar o cookie e o login nunca completaria.

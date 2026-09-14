@@ -17,6 +17,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # Configuração do Firebase para o BUILD do bundle. Não é `environment`:
+      # o Vite grava esses valores dentro do JavaScript na hora de compilar, e
+      # variável de runtime chegaria tarde demais. Consequência prática no
+      # Portainer: mudar qualquer uma delas exige **redeploy com rebuild** —
+      # recriar o container sozinho não muda nada.
+      args:
+        VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
+        VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN}
+        VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
+        VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
     image: indicadores-sebratel-web:latest
     pull_policy: build
     restart: unless-stopped
@@ -26,7 +36,11 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${WEB_PORT}:80"
+      # `:?` em vez de um valor vazio: sem WEB_PORT, o Docker publicava numa
+      # porta ALEATÓRIA — a stack subia "saudável" e ficava inacessível no
+      # endereço esperado, com só um aviso perdido no log do deploy. Agora o
+      # deploy para, dizendo o que falta.
+      - "${WEB_PORT:?defina WEB_PORT na stack (ex.: 8081) — sem isso o Docker publica numa porta aleatoria}:80"
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
@@ -61,17 +75,15 @@ services:
       # Quem é administrador (lista fixa, separada por vírgula) — ver
       # server/accessLog.mjs. Sem isto, valem só os e-mails embutidos no código.
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      # SSO do Google — fluxo de código de autorização conduzido aqui, no
-      # servidor. Os dois são obrigatórios: sem o secret não há troca de token,
-      # e o login falha com mensagem clara na tela.
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      # Endereço público da aplicação, usado para montar o `redirect_uri` que o
-      # Google exige que seja IDÊNTICO ao cadastrado no Google Cloud (ex.
-      # http://indicadores.interno:8081). Deixando vazio, é derivado dos
-      # cabeçalhos da requisição — funciona, mas depender do proxy é mais
-      # frágil do que declarar. Ver DEPLOY-PORTAINER.md, seção SSO.
-      APP_BASE_URL: ${APP_BASE_URL:-}
+      # SSO: Firebase Authentication. É contra ESTE id que o `aud` e o `iss` do
+      # ID token são conferidos (server/firebaseToken.mjs) — sem ele, o login
+      # devolve 503 dizendo o que falta; com um id errado, token de outro
+      # projeto Firebase entraria. Obrigatório.
+      #
+      # Não há mais client secret nem redirect_uri: o fluxo de código de
+      # autorização foi aposentado em 13/09/2026. O que o navegador precisa
+      # (VITE_FIREBASE_*) vai no BUILD do serviço `web`, acima.
+      FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
       # Tempo de vida da sessão de login, em dias.
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
       # Chave de cifra dos segredos guardados em disco: tokens do Data Hub e os

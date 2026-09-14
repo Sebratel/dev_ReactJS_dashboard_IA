@@ -38,7 +38,7 @@ Não existe um "esquema" fixo de dados: cada fonte cadastrada traz as colunas qu
 
 **Frontend**: React 18 + TypeScript, build com Vite 5, roteamento com `react-router-dom` 6, estado global com `zustand` 4, gráficos com `recharts` 2, grade de widgets arrastável/redimensionável com `react-grid-layout` 2, estilização com Tailwind CSS 3 (modo escuro via atributo `data-theme`, ver 3.10), ícones `lucide-react`, animações pontuais com `framer-motion`, formatação de data `date-fns`.
 
-**Backend**: Node.js + Express 4, todo em arquivos `.mjs` (ESM puro) rodados direto por `tsx` — sem etapa de build/transpilação no servidor (o `tsc` do `npm run build` checa só o TypeScript do frontend). `googleapis` cobre OAuth e Google Sheets; `@anthropic-ai/sdk` fala com a IA (3.7-quater); `dotenv` carrega as variáveis de ambiente. Sem ORM nem driver de banco — o "banco" é o próprio snapshot em memória descrito em 2.3.
+**Backend**: Node.js + Express 4, todo em arquivos `.mjs` (ESM puro) rodados direto por `tsx` — sem etapa de build/transpilação no servidor (o `tsc` do `npm run build` checa só o TypeScript do frontend). `googleapis` cobre o Google Sheets; a verificação do ID token do Firebase é feita à mão com `node:crypto` (~80 linhas em `firebaseToken.mjs`, em vez de arrastar a árvore do `firebase-admin`); `@anthropic-ai/sdk` fala com a IA (3.7-quater); `dotenv` carrega as variáveis de ambiente. Sem ORM nem driver de banco — o "banco" é o próprio snapshot em memória descrito em 2.3.
 
 ### 2.2 Estrutura de pastas
 
@@ -80,7 +80,7 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | `widgetQuery.mjs` | O motor: infere o schema de cada fonte por amostra, filtra/agrupa/agrega/pivota conforme o `WidgetConfig`. |
 | `lakehouseSources.mjs` | Catálogo de fontes do Data Hub (CRUD, 3.7-ter) + cliente HTTP paginado da API pública. |
 | `sheetSources.mjs` / `googleSheets.mjs` | Catálogo de planilhas cadastradas (3.7-bis) + cliente REST da Google Sheets API. |
-| `googleOAuth.mjs` / `sessions.mjs` | Fluxo de login (código de autorização) e persistência/renovação da sessão. |
+| `firebaseToken.mjs` / `sessions.mjs` | Verificação local do ID token do Firebase (assinatura, emissor, público, validade) e persistência da sessão. |
 | `secretBox.mjs` | Cifra AES-256-GCM usada em todo segredo salvo em disco (tokens do Data Hub, tokens do Google). |
 | `accessLog.mjs` | Papéis (admin/padrão), status "online" e o log de auditoria (3.11). |
 | `fieldDictionary.mjs` | Descrições e sobrescrita de tipo de dado por campo (3.7). |
@@ -93,7 +93,7 @@ Cada arquivo de `server/` tem uma responsabilidade:
 
 | Área | Rotas | Observação |
 |---|---|---|
-| Auth | `auth/google/start`, `auth/google/callback` (públicas), `auth/me`, `auth/logout` | Início/callback são o próprio login — não podem exigir sessão. |
+| Auth | `auth/session` (pública), `auth/me`, `auth/logout` | `auth/session` é o próprio login: recebe o ID token e abre a sessão, então não pode exigir sessão. |
 | Dataset | `health` (público), `dataset/status`, `sources` | `sources` é o catálogo de campos que alimenta o Builder. |
 | Widget | `widget-data`, `field-values` | O motor de agregação e a busca de valores distintos de um campo. |
 | Planilhas | `sheet-sources` (CRUD) + `:id/usage`, `:id/refresh` | Qualquer usuário cadastra (3.7-bis); editar/remover exige dono ou admin. |
@@ -107,7 +107,7 @@ Cada arquivo de `server/` tem uma responsabilidade:
 
 **Fluxo, do lakehouse até a tela**: `scripts/fetch-install.mjs` lê o catálogo de fontes, decifra cada token, pagina a API pública do Data Hub e grava **um único snapshot** (gzip, `public/installData.data`) — preservando o dado anterior de qualquer fonte que ainda não venceu seu ciclo, ou que falhou na última tentativa. `dataset.mjs` mantém esse arquivo em memória, recarregado sozinho quando o mtime muda: é o único "banco" do processo da API. Uma chamada a `POST /api/widget-data` lê esse snapshot, injeta ao vivo linhas de planilha do Google se o widget referenciar uma, valida os campos contra o catálogo, e devolve o resultado já agregado — pronto pro gráfico desenhar.
 
-**Autenticação**: login por OAuth do Google (código de autorização, nunca implícito) grava `{accessToken, refreshToken}` cifrados em `data/sessions.json`; o navegador recebe só um cookie `HttpOnly` com um id opaco (ver 3.9 pra visão do usuário final). Toda rota autenticada busca a sessão pelo cookie, confere o domínio `@sebratel.com.br` e renova o token do Google sozinha quando necessário. Rotas do workspace têm três camadas extras de permissão (acesso à pasta / gerente da pasta / edição da guia), refletindo 3.12.
+**Autenticação**: Firebase Authentication no cliente; o servidor confere a assinatura do ID token **localmente** (chave pública do Google em cache, ver 3.9) e abre uma sessão própria em `data/sessions.json`, referenciada por um cookie `HttpOnly` com id opaco. Toda rota autenticada busca a sessão pelo cookie e confere o domínio `@sebratel.com.br`. Rotas do workspace têm três camadas extras de permissão (acesso à pasta / gerente da pasta / edição da guia), refletindo 3.12.
 
 **Processo em segundo plano**: `scripts/etl-scheduler.mjs` roda em ciclo fixo (`ETL_BASE_INTERVAL_MINUTES`, padrão 2 minutos) chamando `fetch-install.mjs`; dentro dele, cada fonte decide sozinha se é a vez dela (tempo real roda todo ciclo; agendada, só quando o próprio intervalo configurado já passou desde a última vez). Criar/editar/(des)ativar/sincronizar uma fonte do Data Hub pela tela também dispara uma atualização imediata, sem esperar o próximo ciclo (3.8).
 
@@ -468,13 +468,15 @@ Até 10/09/2026 a IA era configurada **só por variável de ambiente** (`ANTHROP
 
 ### 3.9 Autenticação e acesso
 
-- Login via Google OAuth (**SSO**), restrito a contas do domínio **@sebratel.com.br**.
-- O login é conduzido **pelo servidor** (fluxo de código de autorização): clicar em "Entrar com Google" leva ao Google, e o retorno é tratado pelo backend, que troca o código por tokens usando o *client secret* da aplicação. A sessão fica num **cookie HttpOnly** — o navegador nunca tem acesso a token do Google, e nada de credencial é guardado no `localStorage`.
-- **Duração**: a sessão vale 30 dias por padrão (configurável). Enquanto ela existe, o servidor renova o acesso ao Google sozinho, então não há mais aquele efeito de "cair" depois de uma hora. **Sair** encerra a sessão de verdade no servidor, não só na aba.
-- Por conta de como o Google entrega a credencial de renovação, a **tela de consentimento do Google aparece a cada login** — em troca, logins são raros (a sessão dura semanas).
+- Login com conta Google via **Firebase Authentication** (projeto `authentication-dashboardsia`, um por sistema), restrito a contas do domínio **@sebratel.com.br**.
+- **Como funciona**: clicar em "Entrar com Google" abre um popup pelo SDK do Firebase — que vem **no bundle**, pelo npm, e não é baixado do Google em tempo de execução. O Google devolve um **ID token assinado**, o navegador manda esse token ao servidor uma única vez, e o servidor confere a **assinatura localmente**, com a chave pública do Google guardada em cache (inclusive em disco). Fechando, abre-se a sessão: um **cookie HttpOnly** com id opaco.
+- **Por que assim** (padrão da casa, skill `padrao-login-sso`): o método anterior — fluxo de código de autorização conduzido pelo servidor — dependia da saída para o Google *a cada* validação. Com a verificação local, depois de buscar os certificados uma vez a API valida login **sem tocar na rede**; se a saída cair, quem tem token válido continua entrando. Foi essa diferença que fez o HUBBI sobreviver a um bloqueio que derrubou outro sistema.
+- **O domínio é validado no servidor.** O `hd=sebratel.com.br` que o cliente manda ao Google só filtra o seletor de contas (evita escolher a conta pessoal e tomar "sem acesso" depois) — não é controle de acesso.
+- **Duração**: a sessão vale 30 dias por padrão (configurável). O ID token do Firebase vence em 1 h, mas ele só prova quem é **na hora de entrar**; quem sustenta a navegação é a sessão. **Sair** encerra a sessão no servidor e também o vínculo com o Google no navegador — sem isso, "Sair" e "Entrar" voltaria com a mesma conta sem perguntar nada.
+- **Fonte por planilha do Google**: o `access_token` capturado no popup é guardado cifrado na sessão e serve por ~1 h (o fluxo web do Firebase não devolve credencial de renovação). Vencido, as planilhas respondem pelo **cache** até o próximo login — e isso **não** derruba a sessão, de propósito.
 - O cadastro de fontes é aberto a qualquer pessoa logada (ver 3.7-ter); só quem cadastrou, ou um admin, edita/remove a sua. Dashboards, pastas e guias já têm controle de acesso por usuário — ver 3.1 e 3.12. A aba **Acessos** (3.11) e a gestão de **pastas** (3.1/3.12) são restritas a administradores.
 
-- **Bypass do login em desenvolvimento** (`AUTH_DISABLED=true` no `.env`, nunca em produção): a API deixa de exigir o cookie de sessão e atende toda requisição como o e-mail de `AUTH_DISABLED_EMAIL` (padrão `misael.cruz@sebratel.com.br`, que precisa ser do `ALLOWED_DOMAIN` — se não for, a API não sobe). Existe porque o fluxo do Google precisa de uma navegação de verdade até o `accounts.google.com`, que não funciona atrás do firewall daqui — era o motivo de tanta alteração no histórico vir com "não testado num navegador de verdade". Só o `requireAuth()` muda: permissão continua sendo resolvida pelo e-mail (admin, acesso a pasta, acesso a guia), então o que aparece na tela é o que aquela pessoa veria logada — não é "modo deus". Duas consequências durante o teste: não existe token do Google na requisição, então fonte de **planilha** só responde pelo cache (banco e Data Hub funcionam normal); e o botão **Sair** leva pra tela de login, mas um F5 entra de novo (não há sessão pra encerrar). A API avisa em letras garrafais na subida enquanto a flag estiver ligada.
+- **Bypass do login em desenvolvimento** (`AUTH_DISABLED=true` no `.env`, nunca em produção): a API deixa de exigir o cookie de sessão e atende toda requisição como o e-mail de `AUTH_DISABLED_EMAIL` (padrão `misael.cruz@sebratel.com.br`, que precisa ser do `ALLOWED_DOMAIN` — se não for, a API não sobe). Existe para conseguir abrir telas internas no navegador **sem ter uma sessão** — era o motivo de tanta alteração no histórico vir com "não testado num navegador de verdade". (A justificativa original dizia que o login não passava pelo firewall daqui; medido em 12/09/2026, passa — ver o histórico.) Só o `requireAuth()` muda: permissão continua sendo resolvida pelo e-mail (admin, acesso a pasta, acesso a guia), então o que aparece na tela é o que aquela pessoa veria logada — não é "modo deus". Duas consequências durante o teste: não existe token do Google na requisição, então fonte de **planilha** só responde pelo cache (banco e Data Hub funcionam normal); e o botão **Sair** leva pra tela de login, mas um F5 entra de novo (não há sessão pra encerrar). A API avisa em letras garrafais na subida enquanto a flag estiver ligada.
 
 ### 3.10 Modo escuro
 

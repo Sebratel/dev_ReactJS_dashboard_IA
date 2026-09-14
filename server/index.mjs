@@ -15,7 +15,6 @@
 import 'dotenv/config'
 import express from 'express'
 import { spawn } from 'node:child_process'
-import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -43,11 +42,9 @@ import {
 } from './workspace.mjs'
 import { isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS } from './accessLog.mjs'
 import {
-  COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, ensureAccessToken,
+  COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, validAccessToken,
 } from './sessions.mjs'
-import {
-  isConfigured as isOAuthConfigured, resolveRedirectUri, buildAuthUrl, exchangeCode, refreshAccessToken, fetchUserInfo,
-} from './googleOAuth.mjs'
+import { verifyFirebaseIdToken, firebaseProjectId } from './firebaseToken.mjs'
 
 const PORT = Number(process.env.API_PORT) || 8788
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -56,9 +53,9 @@ const ETL_SCRIPT = resolve(__dirname, '../scripts/fetch-install.mjs')
 
 // ─── Bypass do login (SÓ desenvolvimento) ─────────────────────────────────
 // Com AUTH_DISABLED=true, requireAuth() deixa de exigir o cookie de sessão e
-// atende toda requisição como AUTH_DISABLED_EMAIL. Serve pra testar as telas
-// sem passar pelo fluxo do Google (que precisa de uma navegação de verdade até
-// o accounts.google.com, e não funciona atrás de firewall).
+// atende toda requisição como AUTH_DISABLED_EMAIL. Serve pra abrir telas
+// internas no navegador sem ter uma sessão — num teste automatizado, por
+// exemplo, onde não há como escolher uma conta no popup do Google.
 //
 // O resto do sistema não muda: permissão continua sendo resolvida pelo e-mail
 // (isAdmin, hasFolderAccess...), então o bypass mostra exatamente o que aquela
@@ -102,11 +99,12 @@ app.use((req, res, next) => {
 })
 
 // ─── Auth ──────────────────────────────────────────────────────
-// Sessão de servidor + cookie HttpOnly (ver server/sessions.mjs) alimentada
-// pelo fluxo de código de autorização do Google (ver server/googleOAuth.mjs).
-// O navegador não vê token do Google em momento nenhum.
-const STATE_COOKIE = 'ind_oauth_state'
-const STATE_TTL_MS = 10 * 60 * 1000
+// Sessão de servidor + cookie HttpOnly (ver server/sessions.mjs), aberta a
+// partir do ID token do Firebase que o navegador manda uma vez, no login (ver
+// server/firebaseToken.mjs e a rota POST /api/auth/session).
+//
+// O navegador guarda o ID token só o tempo de mandá-lo aqui; o que sustenta a
+// navegação é o cookie, que o JavaScript não lê.
 // Escrever no arquivo de sessões a cada requisição autenticada seria muito I/O
 // (o front tem heartbeat periódico); o "visto por último" só precisa de
 // granularidade de minuto.
@@ -136,9 +134,10 @@ function writeCookie(res, req, name, value, maxAgeMs) {
     `${name}=${encodeURIComponent(value)}`,
     'Path=/',
     'HttpOnly',
-    // Lax (e não Strict) porque o retorno do Google é uma navegação de
-    // primeiro nível vinda de outro site: com Strict o cookie não seria
-    // enviado no callback e o login falharia.
+    // Lax (e não Strict): com Strict, abrir um link da dashboard vindo de
+    // fora (Slack, e-mail) não enviaria o cookie na PRIMEIRA navegação, e a
+    // pessoa cairia no login mesmo com sessão válida. O login em si já não
+    // depende disso — ele acontece por XHR de mesma origem.
     'SameSite=Lax',
     `Max-Age=${Math.floor(maxAgeMs / 1000)}`,
   ]
@@ -172,19 +171,21 @@ function requireAuth() {
     if (!session.email.endsWith('@' + ALLOWED_DOMAIN)) {
       return res.status(403).json({ error: `Acesso restrito a contas @${ALLOWED_DOMAIN}.` })
     }
-    // Renova o access_token do Google pelo refresh_token quando vencido. Sem
-    // conseguir (consentimento revogado no Google, refresh inválido), a sessão
-    // é destruída e o front manda pro login.
-    const accessToken = await ensureAccessToken(session, refreshAccessToken)
-    if (!accessToken) {
-      clearCookie(res, req, COOKIE_NAME)
-      return res.status(401).json({ error: 'Sua sessão com o Google expirou. Entre novamente.' })
-    }
     req.user = { email: session.email, name: session.name }
-    // Disponível pras rotas que falam com uma API do Google em nome do próprio
-    // usuário — ver server/sheetSources.mjs/googleSheets.mjs (planilhas
-    // cadastradas livremente).
-    req.accessToken = accessToken
+    // Token do Google para as rotas que falam com uma API dele em nome do
+    // próprio usuário (planilhas — ver sheetSources.mjs/googleSheets.mjs).
+    //
+    // MUDOU COM O FIREBASE: não existe mais refresh_token. O que existe é o
+    // access_token que veio junto do popup de login, guardado cifrado na
+    // sessão, e que vence em ~1h. Vencido, vira `null` — e a leitura de
+    // planilha cai no cache (resolveSheetRows já trata token ausente) até a
+    // pessoa entrar de novo.
+    //
+    // E isso NÃO derruba a sessão, de propósito: token de PLANILHA vencido não
+    // é sessão inválida. Encerrar a sessão aqui repetiria o erro que a skill
+    // padrao-login-sso chama de mais caro — jogar quem está logado numa tela de
+    // login por causa de uma credencial acessória.
+    req.accessToken = validAccessToken(session)
     req.sessionId = session.id
     if (Date.now() - (session.lastSeenAt ?? 0) > TOUCH_INTERVAL_MS) touchSession(session.id)
     touchUser(session.email, session.name)
@@ -192,64 +193,67 @@ function requireAuth() {
   }
 }
 
-// ─── Rotas do login (fluxo de código de autorização) ──────────────
-// Falha aqui não devolve JSON: quem está no meio do fluxo é o NAVEGADOR, numa
-// navegação de página. Redireciona pro /login com a mensagem, que a tela mostra.
-function failLogin(res, message) {
-  res.redirect(`/login?erro=${encodeURIComponent(message)}`)
-}
-
-app.get('/api/auth/google/start', (req, res) => {
-  if (!isOAuthConfigured()) {
-    return failLogin(res, 'Login do Google não configurado no servidor (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET).')
+// ─── Login (Firebase Authentication) ──────────────────────────────
+// O navegador faz o popup do Google pelo SDK do Firebase e manda AQUI o ID
+// token. Este servidor confere a ASSINATURA localmente (server/firebaseToken.mjs)
+// e, se fecha, abre a sessão de sempre: cookie HttpOnly com id opaco.
+//
+// Por que trocamos o fluxo de código de autorização por isto: ver a skill
+// padrao-login-sso e a entrada de 13/09/2026 no HISTORICO. Em uma frase: o
+// fluxo antigo dependia da saída para o Google a cada validação; este valida
+// com a chave pública em cache, então um bloqueio de rede não derruba quem já
+// tem token válido.
+//
+// A SESSÃO CONTINUA SENDO DO SERVIDOR. O ID token do Firebase vence em 1h e
+// serve só para PROVAR QUEM É na hora de entrar; quem sustenta a navegação
+// depois é o cookie (30 dias). Assim o front não precisa renovar token a cada
+// requisição, e um logout de verdade invalida a sessão no servidor.
+app.post('/api/auth/session', async (req, res) => {
+  const idToken = String(req.body?.idToken ?? '')
+  if (!idToken) return res.status(400).json({ error: 'Faltou o token de identificação.' })
+  if (!firebaseProjectId()) {
+    return res.status(503).json({ error: 'Login não configurado no servidor (falta FIREBASE_PROJECT_ID).' })
   }
+
+  let claims
   try {
-    // `state` guardado em cookie, e não em memória do processo: assim o fluxo
-    // sobrevive a um restart no meio do login e funciona com mais de uma
-    // instância da API, sem estado compartilhado.
-    const state = randomBytes(24).toString('base64url')
-    writeCookie(res, req, STATE_COOKIE, state, STATE_TTL_MS)
-    res.redirect(buildAuthUrl({ redirectUri: resolveRedirectUri(req), state }))
+    claims = await verifyFirebaseIdToken(idToken)
   } catch (e) {
-    failLogin(res, e.message)
+    // Só cai aqui por falha de INFRAESTRUTURA (primeira busca dos certificados
+    // sem rede). Token inválido devolve null, não exceção.
+    console.error(`[auth] não foi possível validar o token: ${e.message}`)
+    return res.status(503).json({ error: 'Não foi possível validar o login agora. Tente de novo em instantes.' })
   }
-})
+  if (!claims) return res.status(401).json({ error: 'Login inválido ou expirado. Entre novamente.' })
 
-app.get('/api/auth/google/callback', async (req, res) => {
-  const expectedState = readCookie(req, STATE_COOKIE)
-  clearCookie(res, req, STATE_COOKIE)
+  // E-mail não verificado não entra: no Google corporativo isso praticamente
+  // não acontece, mas é a diferença entre "provou que é dono do e-mail" e
+  // "digitou um e-mail".
+  if (!claims.emailVerified) {
+    return res.status(403).json({ error: 'Esta conta Google ainda não teve o e-mail verificado.' })
+  }
+  // O domínio é validado AQUI, no servidor. O `hd` que o cliente manda ao
+  // Google só filtra o seletor de contas — não é controle de acesso.
+  if (!claims.email.endsWith('@' + ALLOWED_DOMAIN)) {
+    return res.status(403).json({ error: `Acesso restrito a contas @${ALLOWED_DOMAIN}.` })
+  }
 
-  if (req.query.error) {
-    return failLogin(res, req.query.error === 'access_denied' ? 'Login cancelado.' : String(req.query.error))
-  }
-  // Proteção de CSRF do próprio fluxo: sem o state (ou divergente), o callback
-  // pode ter sido provocado por outro site.
-  if (!expectedState || req.query.state !== expectedState) {
-    return failLogin(res, 'Sessão de login expirada ou inválida. Tente entrar novamente.')
-  }
-  if (!req.query.code) return failLogin(res, 'O Google não devolveu o código de autorização.')
+  // O access_token do Google vem junto do popup (opcional): é o que permite ler
+  // PLANILHA em nome de quem entrou. Sem refresh_token no fluxo web, então vale
+  // ~1h — depois disso as planilhas respondem pelo cache até o próximo login.
+  const googleAccessToken = String(req.body?.googleAccessToken ?? '') || null
+  const expiresAt = Number(req.body?.googleAccessTokenExpiresAt)
 
-  try {
-    const tokens = await exchangeCode({ code: String(req.query.code), redirectUri: resolveRedirectUri(req) })
-    const user = await fetchUserInfo(tokens.accessToken)
-    if (!user.email.endsWith('@' + ALLOWED_DOMAIN)) {
-      return failLogin(res, `Acesso restrito a contas @${ALLOWED_DOMAIN}.`)
-    }
-    if (!tokens.refreshToken) {
-      // Não deveria acontecer (pedimos access_type=offline + prompt=consent),
-      // mas sem refresh_token a sessão morreria em 1h sem aviso — melhor falhar
-      // agora, com uma mensagem que diz o que fazer.
-      return failLogin(res, 'O Google não devolveu credencial de renovação. Remova o acesso do app na sua Conta Google e entre novamente.')
-    }
-    const session = createSession(user, tokens)
-    writeCookie(res, req, COOKIE_NAME, session.id, SESSION_TTL_MS)
-    touchUser(user.email, user.name)
-    appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email })
-    res.redirect('/')
-  } catch (e) {
-    console.error(`[auth] falha no callback: ${e.message}`)
-    failLogin(res, e.message)
-  }
+  const user = { email: claims.email, name: claims.name ?? claims.email, picture: claims.picture ?? null }
+  const session = createSession(user, {
+    accessToken: googleAccessToken,
+    refreshToken: null,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 55 * 60 * 1000,
+  })
+  writeCookie(res, req, COOKIE_NAME, session.id, SESSION_TTL_MS)
+  touchUser(user.email, user.name)
+  appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email })
+  res.json({ user: { email: user.email, name: user.name, picture: user.picture }, isAdmin: isAdmin(user.email) })
 })
 
 // Quem está logado — é o que o front chama ao carregar, em vez de guardar

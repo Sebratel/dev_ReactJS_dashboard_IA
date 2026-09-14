@@ -18,3 +18,8 @@ _probe_view.mjs
 # do .env/da tela, e em produção vive no volume, então não versioná-lo não
 # custa nada. Ver server/aiConfig.mjs.
 data/aiConfig.json
+
+# Cache local dos certificados públicos do Google (verificação do ID token do
+# Firebase). Não é segredo — é chave PÚBLICA —, mas é cache: muda sozinho a
+# cada ~6h e só sujaria o histórico. Recriado na primeira validação.
+data/.firebase-certs.json

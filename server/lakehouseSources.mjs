@@ -330,15 +330,29 @@ async function requestPage({ baseUrl, datasetSlug, token }, { limit, offset }) {
   if (!res.ok) {
     // A API pública responde { error: "..." } — a mensagem de lá é bem mais
     // útil que "HTTP 403" (token sem acesso ao dataset, token revogado etc.).
+    //
+    // E quando NÃO vem JSON, isso é a informação mais importante da falha:
+    // significa que quem respondeu não foi o Data Hub, e sim algo no caminho
+    // (proxy da empresa, firewall, um nginx errado). Antes essa pista era
+    // engolida e a tela dizia "token recusado" — mandando investigar o token,
+    // que podia estar perfeito. Agora o corpo cru aparece.
+    const corpo = await res.text().catch(() => '')
     let detail = ''
-    try { detail = (await res.json())?.error || '' } catch { /* corpo não-JSON */ }
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(detail || 'Token recusado pelo Data Hub (revogado, expirado ou sem acesso a este dataset).')
+    try { detail = JSON.parse(corpo)?.error || '' } catch { /* corpo não-JSON */ }
+
+    if (!detail) {
+      const trecho = corpo.replace(/\s+/g, ' ').trim().slice(0, 160)
+      console.error(`[data-hub] ${res.status} em ${url.origin} sem JSON de erro — corpo: ${trecho || '(vazio)'}`)
+      throw new Error(
+        `O Data Hub respondeu ${res.status} ao buscar "${datasetSlug}", mas o corpo não é JSON — ` +
+        'sinal de que quem respondeu não foi ele, e sim algo no caminho (proxy ou firewall da rede onde a API roda). ' +
+        (trecho ? `Começo da resposta: "${trecho}".` : 'A resposta veio vazia.'),
+      )
     }
-    if (res.status === 404) {
-      throw new Error(detail || `Dataset "${datasetSlug}" não existe no Data Hub.`)
-    }
-    throw new Error(detail || `O Data Hub respondeu ${res.status} ao buscar "${datasetSlug}".`)
+
+    // Com a mensagem de lá, o status ainda importa pra saber se é credencial
+    // (401), permissão (403) ou dataset (404).
+    throw new Error(`${detail} (HTTP ${res.status} em ${url.origin})`)
   }
   const body = await res.json()
   if (!Array.isArray(body?.rows)) {

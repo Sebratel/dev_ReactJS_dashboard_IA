@@ -186,6 +186,30 @@ do token são conferidos.
 4. **API do Google Sheets habilitada** no mesmo projeto, se for usar fonte por
    planilha (o escopo `spreadsheets.readonly` é pedido no popup).
 
+### Se o login falhar: de quem é a recusa
+
+| Mensagem | Onde está o problema |
+|---|---|
+| "endereço não está liberado no Firebase" (`auth/unauthorized-domain`) | Falta o host em **Authentication → Settings → Authorized domains**. |
+| "provedor Google deste projeto Firebase está com credencial inválida" (`auth/invalid-credential`) | O **client secret** em *Sign-in method → Google → Web SDK configuration* não confere com o client ID dele. Ver abaixo. |
+| "chave do Firebase não é válida" | `VITE_FIREBASE_*` ausente **no build** — redeploy com rebuild. |
+| "login não configurado no servidor" | Falta `FIREBASE_PROJECT_ID` no `api`. |
+| "acesso restrito a contas @…" | Conta de fora do domínio. É o sistema funcionando. |
+
+**Como saber se um client secret é válido, sem adivinhar** — peça um token ao
+Google com um código propositalmente falso:
+
+```bash
+curl -s -X POST https://oauth2.googleapis.com/token \
+  -d grant_type=authorization_code -d code=codigo-falso \
+  -d client_id=<CLIENT_ID> -d client_secret=<CLIENT_SECRET> \
+  -d redirect_uri=https://<projeto>.firebaseapp.com/__/auth/handler
+```
+
+- `invalid_client` → **o segredo não confere** com esse client ID.
+- `invalid_grant` (*Malformed auth code*) → **o par está certo**; o erro é só o
+  código falso, como esperado. O problema está no que o console guardou.
+
 ### Detalhes que valem saber
 
 - **Planilha do Google depende de um token que vence em ~1 h.** O fluxo web do

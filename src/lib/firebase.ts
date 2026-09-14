@@ -115,6 +115,15 @@ export function mensagemDeErro(e: unknown): string {
       return 'A chave do Firebase não é válida para este endereço. Confira as VITE_FIREBASE_* usadas no build.'
     case 'auth/operation-not-allowed':
       return 'O login com Google não está ativado neste projeto do Firebase (Authentication → Sign-in method).'
+    case 'auth/invalid-credential':
+    case 'auth/internal-error':
+      // Erro de CONFIGURAÇÃO do provedor, não do usuário e não deste código: o
+      // backend do Firebase troca o código por token usando o client ID e o
+      // client secret guardados em Authentication → Sign-in method → Google →
+      // Web SDK configuration. Se esse par não autentica no Google, vem um 401
+      // `invalid_client` embrulhado num texto enorme, que não diz onde
+      // configurar. Apontar a tela certa aqui economiza a investigação inteira.
+      return 'O provedor Google deste projeto Firebase está com credencial inválida. Um administrador precisa conferir o client ID e o client secret em Authentication → Sign-in method → Google → Web SDK configuration (o secret tem que ser o mesmo que está no Google Cloud → Credenciais, para aquele client ID).'
     default:
       return (e as Error)?.message || 'Não foi possível entrar. Tente de novo.'
   }

@@ -20,6 +20,9 @@
 // atual antes de sobrescrever), então ela não some do Builder entre uma
 // execução e outra.
 //
+// ETL_FORCE_IDS (ver FORCED, abaixo) fura a agenda para as fontes listadas —
+// é o que dá sentido às ações manuais da tela.
+//
 // Grava um snapshot (gzip) em SNAPSHOT_OUT/public/installData.data.
 // Rodado sob demanda (`npm run fetch:install`) ou pelo scheduler.
 // ─────────────────────────────────────────────────────────────────────────
@@ -60,11 +63,23 @@ function readPreviousSnapshot(path) {
   }
 }
 
+// Fontes que devem ser buscadas MESMO fora da agenda delas. É o que sustenta
+// as ações manuais da tela — "Sincronizar agora", salvar uma edição, reativar
+// uma fonte: em todas elas a pessoa acabou de pedir o dado, e responder "sua
+// janela de 60 min ainda não venceu" seria contrariar o que a tela promete.
+//
+// Passado pela API que dispara este script (triggerEtlRefresh, em
+// server/index.mjs). Vazio = ciclo normal, só quem venceu a agenda.
+const FORCED = new Set(
+  (process.env.ETL_FORCE_IDS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+)
+
 async function main() {
   const previous = readPreviousSnapshot(OUT)
   const now = Date.now()
   const data = {}
   const runs = []
+  if (FORCED.size) console.log(`[etl] busca manual pedida para: ${[...FORCED].join(', ')}`)
 
   const sources = listLakehouseForEtl()
   if (sources.length === 0) {
@@ -80,7 +95,7 @@ async function main() {
       console.log(`[etl] ${key}: desativada — pulando`)
       continue
     }
-    if (!isDue(src, now)) {
+    if (!FORCED.has(src.id) && !isDue(src, now)) {
       if (previous.data[key]) data[key] = previous.data[key]
       console.log(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${(data[key] ?? []).length} linha(s) anteriores`)
       continue

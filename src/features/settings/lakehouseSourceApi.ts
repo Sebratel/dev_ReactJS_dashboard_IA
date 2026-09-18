@@ -110,6 +110,47 @@ export async function syncLakehouseSource(id: string): Promise<void> {
   await parse(await send(at(id, '/sync'), 'PATCH'))
 }
 
+// A chave com que a fonte aparece no snapshot e no Builder — espelha
+// SOURCE_PREFIX em server/lakehouseSources.mjs, e é a mesma string que o card
+// mostra como "Chave no Builder".
+export const builderKey = (id: string) => `dhub:${id}`
+
+// Cadastrar/editar/remover responde NA HORA: o servidor só grava o catálogo e
+// dispara o ETL (triggerEtlRefresh, server/index.mjs), que é quem busca as
+// linhas no Data Hub e reescreve o snapshot de onde saem as colunas. Enquanto
+// esse ciclo não termina, a fonte já existe no catálogo e ainda não tem coluna
+// nenhuma — e uma tela que recarregasse na hora mostraria a lista velha.
+//
+// Foi essa janela que fez "cadastrei a fonte e as colunas não vêm" parecer um
+// bug sem causa: o dado chegava segundos depois, mas nada na tela voltava a
+// perguntar. Aqui a espera é explícita e olha o MESMO /api/sources que o
+// Builder lê, então o que a tela mostra é o que o Builder vai ver.
+//
+// Devolve false no estouro do prazo (o ETL pode estar num dataset grande, ou
+// ter falhado) — quem chama deve recarregar assim mesmo e deixar o erro da
+// fonte falar por si.
+//
+// `isCancelled` corta a espera na hora: sem ela, sair da tela de Configurações
+// no meio deixaria a sondagem batendo em /api/sources a cada 2s por até 3 min,
+// pra atualizar um card que não está mais montado.
+export async function waitForSourceColumns(
+  sourceKey: string,
+  { gone = false, timeoutMs = 180_000, intervalMs = 2_000, isCancelled }:
+    { gone?: boolean; timeoutMs?: number; intervalMs?: number; isCancelled?: () => boolean } = {},
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs))
+    if (isCancelled?.()) return false
+    try {
+      const body = await parse<{ sources: { key: string; fields: unknown[] }[] }>(await apiFetch('/api/sources'))
+      const found = body.sources.find((s) => s.key === sourceKey)
+      if (gone ? !found : !!found?.fields.length) return true
+    } catch { /* o ETL reescreve o arquivo no meio — tenta de novo no próximo giro */ }
+  }
+  return false
+}
+
 export interface LakehouseSourceUsage { folderId: string; folderName: string; dashboardNames: string[] }
 
 export async function fetchLakehouseSourceUsage(id: string): Promise<LakehouseSourceUsage[]> {

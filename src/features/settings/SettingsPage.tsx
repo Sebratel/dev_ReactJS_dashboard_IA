@@ -23,6 +23,10 @@ export default function SettingsPage() {
   // ser usada) — /api/workspace/folders é admin-only, então nem tentamos
   // buscar se o usuário não for admin.
   const [allFolders, setAllFolders] = useState<Folder[] | null>(null)
+  // Sobe quando o card de fontes termina de mexer no catálogo E o ETL já
+  // reescreveu o snapshot — é o gatilho pro dicionário reler os campos em vez
+  // de continuar mostrando o que existia quando a tela abriu.
+  const [sourcesVersion, setSourcesVersion] = useState(0)
 
   useEffect(() => {
     if (!isAdmin) { setAllFolders([]); return }
@@ -43,12 +47,12 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 animate-slide-up">
-      <LakehouseSourcesCard allFolders={allFolders} />
+      <LakehouseSourcesCard allFolders={allFolders} onSourcesChanged={() => setSourcesVersion((v) => v + 1)} />
       {/* Provedor de IA e dicionário são os dois cards de admin. O provedor vem
           primeiro porque é o que decide gasto — e é onde alguém vai olhar
           quando a IA parar de responder. */}
       {isAdmin && <AiProviderCard />}
-      {isAdmin && <FieldDictionaryCard />}
+      {isAdmin && <FieldDictionaryCard reloadKey={sourcesVersion} />}
     </div>
   )
 }

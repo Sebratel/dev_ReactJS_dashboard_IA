@@ -9,7 +9,7 @@
 // O token é enviado uma vez e nunca volta do servidor: a tela mostra só a
 // dica ("dhub_…6T97"). Por isso, ao editar, deixar o campo de token vazio
 // mantém o token que já está salvo.
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Waypoints, Plus, Pencil, Trash2, Loader2, AlertTriangle, RefreshCw, FolderCog, X, Play, KeyRound,
 } from 'lucide-react'
@@ -23,7 +23,7 @@ import { Toggle, RefreshControl, FolderControl, type RefreshPatch } from './Sour
 import {
   fetchLakehouseSources, createLakehouseSource, updateLakehouseSource, deleteLakehouseSource,
   setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, syncLakehouseSource,
-  testLakehouseSource, fetchLakehouseSourceUsage,
+  testLakehouseSource, fetchLakehouseSourceUsage, waitForSourceColumns, builderKey,
   ApiError, type LakehouseSource, type LakehousePreview,
 } from './lakehouseSourceApi'
 
@@ -62,7 +62,9 @@ function PreviewTable({ preview }: { preview: LakehousePreview }) {
 function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
   initial: LakehouseSource | null // null = criar nova
   defaultBaseUrl: string
-  onSaved: () => void
+  // Recebe a fonte já gravada: quem chama precisa do id pra esperar o ETL
+  // trazer as colunas dela (ver waitForSourceColumns).
+  onSaved: (saved: LakehouseSource) => void
   onClose: () => void
 }) {
   const isEdit = !!initial
@@ -119,9 +121,8 @@ function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
     setSaving(true); setSaveError(null)
     try {
       const payload = { label, baseUrl, datasetSlug, ...(token.trim() ? { token: token.trim() } : {}) }
-      if (isEdit) await updateLakehouseSource(initial.id, payload)
-      else await createLakehouseSource(payload)
-      onSaved()
+      const saved = isEdit ? await updateLakehouseSource(initial.id, payload) : await createLakehouseSource(payload)
+      onSaved(saved)
     } catch (e) {
       setSaveError(e instanceof ApiError ? e.message : 'Erro inesperado ao salvar.')
     } finally {
@@ -199,7 +200,7 @@ function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
   )
 }
 
-function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, onToggleEnabled, onSaveRefresh, onSaveFolders }: {
+function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, onToggleEnabled, onSaveRefresh, onSaveFolders, onSynced }: {
   source: LakehouseSource
   isAdmin: boolean
   canManage: boolean
@@ -209,6 +210,7 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
   onToggleEnabled: (enabled: boolean) => void
   onSaveRefresh: (refresh: RefreshPatch) => Promise<void>
   onSaveFolders: (folderIds: string[] | null) => Promise<void>
+  onSynced: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [syncing, setSyncing] = useState(false)
@@ -219,6 +221,9 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
     try {
       await syncLakehouseSource(source.id)
       setSyncMsg('Busca iniciada em segundo plano — as linhas novas aparecem no Builder em instantes.')
+      // O PATCH só dispara o ETL; quem espera ele terminar (e recarrega o
+      // dicionário desta mesma tela) é o card pai.
+      onSynced()
     } catch (e) {
       setSyncMsg(e instanceof ApiError ? e.message : 'Falha ao iniciar a busca.')
     } finally {
@@ -305,7 +310,13 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
   )
 }
 
-export function LakehouseSourcesCard({ allFolders }: { allFolders: Folder[] }) {
+// `onSourcesChanged` avisa a tela toda (hoje: o dicionário de dados logo
+// abaixo) que o catálogo de campos mudou — e só DEPOIS que o ETL terminou de
+// reescrever o snapshot, que é quando as colunas realmente existem.
+export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
+  allFolders: Folder[]
+  onSourcesChanged?: () => void
+}) {
   const isAdmin = useAuthStore((s) => s.isAdmin)
   const myEmail = useAuthStore((s) => s.user?.email ?? null)
   const [sources, setSources] = useState<LakehouseSource[] | null>(null)
@@ -315,6 +326,38 @@ export function LakehouseSourcesCard({ allFolders }: { allFolders: Folder[] }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [editorOpen, setEditorOpen] = useState<{ open: boolean; source: LakehouseSource | null }>({ open: false, source: null })
   const [confirmState, setConfirmState] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null)
+  // Enquanto o ETL busca as linhas da fonte que acabou de ser mexida. Sem isso
+  // a tela ficava muda nesses segundos e parecia que nada tinha acontecido —
+  // que foi o que levou a apagar e recadastrar a fonte achando que quebrou.
+  const [awaitingEtl, setAwaitingEtl] = useState<string | null>(null)
+  // A espera pelo ETL dura até 3 min; se a pessoa sair da tela nesse meio, não
+  // há mais card pra atualizar — e a sondagem precisa parar junto.
+  //
+  // O `unmounted.current = false` na ENTRADA não é redundante: em StrictMode
+  // (dev) o React monta, roda a limpeza e monta de novo. Só com o valor
+  // inicial, a limpeza dessa primeira montagem deixava o ref preso em `true`
+  // pro resto da vida do componente — e aí toda espera se cancelava sozinha no
+  // primeiro giro, deixando o aviso na tela pra sempre e nunca recarregando.
+  const unmounted = useRef(false)
+  useEffect(() => {
+    unmounted.current = false
+    return () => { unmounted.current = true }
+  }, [])
+
+  // Espera o snapshot alcançar a mudança e só então recarrega a lista e avisa
+  // a tela. `gone` = a fonte foi removida (aí o que se espera é ela sumir).
+  const awaitEtl = async (id: string, label: string, gone = false) => {
+    setAwaitingEtl(label)
+    try {
+      await waitForSourceColumns(builderKey(id), { gone, isCancelled: () => unmounted.current })
+    } finally {
+      if (!unmounted.current) {
+        setAwaitingEtl(null)
+        setReloadKey((k) => k + 1)
+        onSourcesChanged?.()
+      }
+    }
+  }
 
   useEffect(() => {
     let alive = true
@@ -349,6 +392,7 @@ export function LakehouseSourcesCard({ allFolders }: { allFolders: Folder[] }) {
         try {
           await deleteLakehouseSource(source.id)
           setReloadKey((k) => k + 1)
+          await awaitEtl(source.id, source.label, true)
         } catch (e) {
           alert(e instanceof ApiError ? e.message : 'Falha ao remover.')
         }
@@ -402,11 +446,19 @@ export function LakehouseSourcesCard({ allFolders }: { allFolders: Folder[] }) {
             onToggleEnabled={(enabled) => toggleEnabled(s.id, enabled)}
             onSaveRefresh={async (refresh) => { replace(await setLakehouseRefresh(s.id, refresh)) }}
             onSaveFolders={async (folderIds) => { replace(await setLakehouseFolders(s.id, folderIds)) }}
+            onSynced={() => { void awaitEtl(s.id, s.label) }}
           />
         ))}
       </div>
 
-      {sources && sources.length > 0 && (
+      {awaitingEtl && (
+        <p className="flex items-center justify-center gap-1.5 text-[11px] text-brand-cyan">
+          <Loader2 size={11} className="animate-spin shrink-0" />
+          Buscando as linhas de "{awaitingEtl}" no Data Hub — as colunas aparecem aqui e no Builder assim que terminar.
+        </p>
+      )}
+
+      {!awaitingEtl && sources && sources.length > 0 && (
         <p className="text-[10px] text-gray-500 text-center">
           Ao cadastrar, editar ou remover uma fonte, o snapshot é atualizado em segundo plano — as colunas aparecem no
           editor de widgets do Builder em pouco tempo.
@@ -417,7 +469,11 @@ export function LakehouseSourcesCard({ allFolders }: { allFolders: Folder[] }) {
         <LakehouseSourceModal
           initial={editorOpen.source}
           defaultBaseUrl={defaultBaseUrl}
-          onSaved={() => { setEditorOpen({ open: false, source: null }); setReloadKey((k) => k + 1) }}
+          onSaved={(saved) => {
+            setEditorOpen({ open: false, source: null })
+            setReloadKey((k) => k + 1)
+            void awaitEtl(saved.id, saved.label)
+          }}
           onClose={() => setEditorOpen({ open: false, source: null })}
         />
       )}

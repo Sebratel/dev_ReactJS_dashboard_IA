@@ -22,7 +22,12 @@ const DATA_TYPE_GROUPS = Array.from(new Set(DATA_TYPES.map((t) => t.group)))
 
 interface DictValue { description: string; dataType: DataTypeKey | undefined }
 
-export function FieldDictionaryCard() {
+// `reloadKey` muda quando o catálogo de fontes muda no card acima (ver
+// LakehouseSourcesCard). Sem ele, esta lista ficava congelada no que existia
+// quando a tela abriu: cadastrar uma fonte não trazia coluna nenhuma aqui, e
+// como esta é justamente a tela onde se vai conferir, parecia que a fonte
+// tinha entrado sem campos.
+export function FieldDictionaryCard({ reloadKey = 0 }: { reloadKey?: number }) {
   const [sources, setSources] = useState<SourceDef[] | null>(null)
   const [dict, setDict] = useState<Map<string, DictValue>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -50,7 +55,7 @@ export function FieldDictionaryCard() {
       .catch((e) => { if (alive) setError(e instanceof ApiError ? e.message : 'Erro ao carregar o dicionário de dados.') })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [])
+  }, [reloadKey])
 
   const toggle = (key: string) => setExpanded((prev) => {
     const next = new Set(prev)

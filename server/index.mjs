@@ -316,12 +316,49 @@ function requireTabEdit() {
 
 // ─── Disparo do ETL após alterar o catálogo de fontes ─────────────
 let etlRunning = false
-function triggerEtlRefresh(reason) {
-  if (etlRunning) return
+// Pedido que chegou com um ciclo já em andamento. NÃO dá pra simplesmente
+// ignorá-lo: o ciclo em andamento leu o catálogo de fontes quando COMEÇOU,
+// então ele não enxerga a fonte que acabou de ser cadastrada/editada. Descartar
+// o pedido deixava essa fonte fora do snapshot até o próximo ciclo agendado —
+// 60 min por padrão, e em dev não há scheduler nenhum rodando (só o serviço
+// `etl` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
+// fonte, ela aparece em Configurações e as colunas não chegam em lugar nenhum".
+let etlPending = null
+// `forceIds`: fontes que o ciclo deve buscar mesmo fora da agenda — ações
+// manuais ("Sincronizar agora", salvar edição, reativar). Ver FORCED em
+// scripts/fetch-install.mjs.
+function triggerEtlRefresh(reason, forceIds = []) {
+  if (etlRunning) {
+    // Acumula em vez de sobrescrever: dois pedidos manuais empilhados no mesmo
+    // ciclo não podem fazer um engolir o outro — quem clicou primeiro também
+    // está esperando o dado dele.
+    etlPending = {
+      reason,
+      forceIds: new Set([...(etlPending?.forceIds ?? []), ...forceIds]),
+    }
+    console.log(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
+    return
+  }
   etlRunning = true
-  const child = spawn(process.execPath, [ETL_SCRIPT], { stdio: 'inherit', env: process.env })
-  child.on('exit', () => { etlRunning = false })
-  child.on('error', (e) => { etlRunning = false; console.error(`[etl] falha ao disparar: ${e.message}`) })
+  const child = spawn(process.execPath, [ETL_SCRIPT], {
+    stdio: 'inherit',
+    env: { ...process.env, ETL_FORCE_IDS: forceIds.join(',') },
+  })
+  // 'error' e 'exit' podem vir os dois na mesma falha — sem a trava, o ciclo
+  // enfileirado seria disparado duas vezes.
+  let settled = false
+  const done = () => {
+    if (settled) return
+    settled = true
+    etlRunning = false
+    if (etlPending !== null) {
+      const next = etlPending
+      etlPending = null
+      triggerEtlRefresh(next.reason, [...next.forceIds])
+    }
+  }
+  child.on('exit', done)
+  child.on('error', (e) => { console.error(`[etl] falha ao disparar: ${e.message}`); done() })
   console.log(`[etl] atualizando snapshot em segundo plano (${reason})`)
 }
 
@@ -544,7 +581,10 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), async (req, res) => {
       label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token,
     }, req.user.email)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug } })
-    triggerEtlRefresh(`fonte do Data Hub "${saved.datasetSlug}" editada`)
+    // Força: a edição pode ter trocado o dataset ou o token, e `lastRunAt`
+    // continua o mesmo — sem forçar, a fonte seguiria servindo as linhas do
+    // dataset ANTIGO até a agenda vencer.
+    triggerEtlRefresh(`fonte do Data Hub "${saved.datasetSlug}" editada`, [saved.id])
     res.json({ ok: true, source: saved })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -568,7 +608,13 @@ app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), (req, res) => {
   try {
     const saved = setLakehouseEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.enabled', target: saved.id, meta: { enabled: saved.enabled } })
-    triggerEtlRefresh(`fonte do Data Hub "${saved.datasetSlug}" ${saved.enabled ? 'ativada' : 'desativada'}`)
+    // Força ao REATIVAR: enquanto desativada a fonte sai do snapshot por
+    // inteiro, então não há "dado anterior" pra manter. Sem forçar, reativar
+    // uma fonte agendada a deixava invisível no Builder até a agenda vencer.
+    triggerEtlRefresh(
+      `fonte do Data Hub "${saved.datasetSlug}" ${saved.enabled ? 'ativada' : 'desativada'}`,
+      saved.enabled ? [saved.id] : [],
+    )
     res.json({ ok: true, source: saved })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -592,7 +638,10 @@ app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), (req, res) => {
 app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), (req, res) => {
   const entry = getLakehouseSource(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Fonte não encontrada.' })
-  triggerEtlRefresh(`sincronização manual da fonte do Data Hub "${entry.datasetSlug}"`)
+  // Força: o sentido do botão é "busca agora". Sem isso, uma fonte agendada
+  // dentro da janela dela era simplesmente pulada pelo ciclo, e a tela dizia
+  // "busca iniciada" tendo iniciado nada.
+  triggerEtlRefresh(`sincronização manual da fonte do Data Hub "${entry.datasetSlug}"`, [entry.id])
   res.json({ ok: true, started: true })
 })
 

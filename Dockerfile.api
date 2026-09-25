@@ -24,10 +24,21 @@ ENV TZ=America/Sao_Paulo
 ENV NODE_ENV=production
 ENV API_PORT=8788
 
-# Usuário sem privilégio, e o volume de dados entregue a ele. `data/` recebe
-# escrita em runtime (sessões, fontes, config de IA, chave de cifra), então a
-# posse precisa ser trocada ANTES do USER — depois dele não há permissão.
-RUN addgroup -S app && adduser -S app -G app && mkdir -p /app/data && chown -R app:app /app/data
+# Usuário sem privilégio, e os DOIS volumes que recebem escrita em runtime
+# entregues a ele: `/app/data` (sessões, fontes, config de IA, chave de cifra)
+# e `/snapshot` (o snapshot que o ETL grava e a API lê). A posse precisa ser
+# trocada ANTES do USER — depois dele não há permissão.
+#
+# Criar `/snapshot` aqui não é detalhe. Volume nomeado montado num caminho que
+# não existe na imagem nasce root:root 755, e o Docker só copia a posse da
+# imagem para o volume quando o caminho existe nela e o volume está vazio. Sem
+# esta pasta, o ETL buscava o dado no Data Hub e morria com EACCES ao gravar o
+# snapshot: a fonte aparecia em Configurações com contagem de linhas e nunca
+# chegava no Builder. Volume que JÁ tem arquivo de outro dono não é corrigido
+# por isto (o Docker não mexe em volume com conteúdo) — ver a seção de
+# problemas em DEPLOY-PORTAINER.md.
+RUN addgroup -S app && adduser -S app -G app \
+ && mkdir -p /app/data /snapshot && chown -R app:app /app/data /snapshot
 USER app
 
 EXPOSE 8788

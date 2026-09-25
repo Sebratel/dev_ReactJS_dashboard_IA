@@ -63,6 +63,19 @@ function readPreviousSnapshot(path) {
   }
 }
 
+// Vira o erro da fonte em Configurações, então precisa dizer onde mexer — não
+// só "EACCES". No container, permissão negada quase sempre é o volume do
+// snapshot pertencendo a outro usuário que não o da imagem.
+function describeWriteError(e) {
+  const base = `o dado foi buscado, mas o snapshot não pôde ser gravado em ${OUT} (${e.code || e.message})`
+  if (e.code === 'EACCES' || e.code === 'EPERM') {
+    const uid = typeof process.getuid === 'function' ? ` (uid ${process.getuid()})` : ''
+    return `${base}: o processo${uid} não tem permissão de escrita ali. No Docker, o volume do snapshot precisa pertencer ao usuário da imagem — ver Dockerfile.api.`
+  }
+  if (e.code === 'EROFS') return `${base}: o volume está montado como somente leitura.`
+  return base
+}
+
 // Fontes que devem ser buscadas MESMO fora da agenda delas. É o que sustenta
 // as ações manuais da tela — "Sincronizar agora", salvar uma edição, reativar
 // uma fonte: em todas elas a pessoa acabou de pedir o dado, e responder "sua
@@ -95,9 +108,14 @@ async function main() {
       console.log(`[etl] ${key}: desativada — pulando`)
       continue
     }
-    if (!FORCED.has(src.id) && !isDue(src, now)) {
-      if (previous.data[key]) data[key] = previous.data[key]
-      console.log(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${(data[key] ?? []).length} linha(s) anteriores`)
+    // "Manter o dado anterior" só vale se ele existe. Fora da agenda mas
+    // AUSENTE do snapshot — o ciclo em que ela rodou não conseguiu gravar, ou
+    // o volume do snapshot foi recriado — a fonte é buscada agora: senão ela
+    // ficava fora do Builder até a janela vencer, com o catálogo dizendo que
+    // já tinha rodado.
+    if (!FORCED.has(src.id) && !isDue(src, now) && previous.data[key]) {
+      data[key] = previous.data[key]
+      console.log(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${data[key].length} linha(s) anteriores`)
       continue
     }
     try {
@@ -118,12 +136,23 @@ async function main() {
       console.log(`[etl] ${key} (${src.datasetSlug}): falhou (${e.message}) — mantendo ${data[key].length} linha(s) anteriores`)
     }
   }
-  if (runs.length) recordLakehouseRuns(runs)
-
   const snapshot = { meta: { generatedAt: new Date().toISOString() }, data }
   const json = JSON.stringify(snapshot)
   const gz = gzipSync(Buffer.from(json, 'utf8'))
-  writeFileSync(OUT, gz)
+  // A execução só é registrada DEPOIS que o snapshot foi gravado. Antes era o
+  // contrário, e uma gravação que falhava (volume sem permissão de escrita)
+  // mentia duas vezes: a tela mostrava a fonte saudável, com contagem de
+  // linhas, sem nenhuma coluna no Builder; e a agenda a considerava em dia,
+  // adiando a próxima tentativa. Agora o motivo vai para o erro da fonte, que
+  // é o que Configurações mostra.
+  try {
+    writeFileSync(OUT, gz)
+  } catch (e) {
+    const reason = describeWriteError(e)
+    if (runs.length) recordLakehouseRuns(runs.map((r) => ({ id: r.id, error: r.error ?? reason })))
+    throw new Error(reason, { cause: e })
+  }
+  if (runs.length) recordLakehouseRuns(runs)
   const ok = runs.filter((r) => !r.error).length
   console.log(`OK — snapshot gravado em ${OUT} (${(json.length / 1048576).toFixed(1)} MB → gzip ${(gz.length / 1048576).toFixed(1)} MB) · ${ok} dataset(s) do Data Hub executado(s)`)
 }

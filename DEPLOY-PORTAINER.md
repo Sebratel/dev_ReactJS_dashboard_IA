@@ -247,3 +247,21 @@ curl -s -X POST https://oauth2.googleapis.com/token \
   segundo plano quando alguém mexe no catálogo de fontes, e é o ETL que escreve
   ali. Montar como somente-leitura faz essa atualização sob demanda falhar
   silenciosamente.
+- **O volume `snapshot` precisa pertencer ao usuário da imagem (`app`).** A
+  imagem da API roda sem privilégio, e quem grava o snapshot é esse usuário. O
+  [`Dockerfile.api`](Dockerfile.api) cria `/snapshot` já com esse dono, o que
+  resolve volume novo ou vazio — mas o Docker não mexe em volume que já tem
+  conteúdo. Um volume com arquivo de outro dono continua recusando a gravação,
+  e o sintoma é a fonte em Configurações com o erro "o snapshot não pôde ser
+  gravado … EACCES" (em versões anteriores do ETL, pior: contagem de linhas na
+  tela e nenhuma coluna no Builder, sem erro nenhum). Correção de uma vez, sem perder
+  nada — no Portainer, *Containers → `<stack>-api-1` → Console*, usuário
+  `root`, ou pelo host:
+
+  ```bash
+  docker exec -u 0 <container-da-api> chown -R app:app /snapshot
+  ```
+
+  Depois, **Sincronizar agora** na fonte. Alternativa: remover o volume
+  `<stack>_snapshot` e redeployar — o snapshot é cache, o ETL reconstrói tudo
+  a partir do Data Hub.

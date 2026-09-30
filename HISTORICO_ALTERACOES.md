@@ -4,6 +4,31 @@
 
 ---
 
+## 30/09/2026 — Montar com IA: a resposta não chegava à tela, e o Gemini 3 recusava a segunda ida
+
+Com o provedor Google Gemini (`gemini-3.8-flash`) configurado e a chave válida — a listagem trazia 44 modelos da conta —, o painel "Montar com IA" terminava em **"Falha ao falar com a IA."**. Essa mensagem não vem da API nem do Gemini: a tela só a mostra quando a leitura do stream quebra no meio (`reader.read()` falhando), nunca para erro HTTP.
+
+**Eram dois problemas empilhados, e o primeiro escondia o segundo.**
+
+**1. O servidor nunca escrevia o stream.** A rota `POST /api/ai/conversations/:id/messages` marcava a desconexão do navegador com `req.on('close')`. Desde o Node 16, esse evento dispara assim que o corpo do pedido termina de ser lido — ou seja, logo no começo. O turno rodava inteiro no servidor, mas `emit()` descartava todo evento (inclusive o de erro) e o `finally` não fechava a resposta. Sem `proxy_read_timeout` no `docker/nginx.conf`, o nginx cortava a conexão em 60 s, e o navegador via o stream quebrar.
+
+**2. O adaptador do Gemini descartava a thought signature.** Os modelos Gemini 3 mandam uma assinatura junto de cada chamada de ferramenta e recusam (HTTP 400) o histórico em que ela não volta. O adaptador lia só `functionCall` e devolvia a chamada sem a assinatura. Como quase todo turno da montagem chama uma ferramenta, a segunda ida ao Gemini falhava — e, por causa do item 1, esse erro também nunca chegava à tela.
+
+- **`server/index.mjs`**: a desconexão passa a vir de `res.on('close')`, e só conta se a resposta ainda não terminou. Um comentário SSE `: ping` a cada 15 s mantém a conexão viva nas idas longas ao modelo, que passariam dos 60 s do nginx; o leitor do navegador ignora linha que não é `data:`.
+- **`server/aiProvider.mjs`**: a assinatura da resposta do Gemini (`thoughtSignature`) é guardada no bloco canônico e volta na mesma parte na ida seguinte. Como a Anthropic recusa campo desconhecido num bloco, `withoutGeminiFields` tira a assinatura antes de mandar o histórico pra ela — trocar de provedor no meio da conversa continua valendo. A OpenAI já montava as mensagens campo a campo.
+- **`scripts/test-ai-providers.mjs`**: 6 checagens novas (a assinatura volta pro Gemini, não vai pra Anthropic nem pra OpenAI, e a da resposta é guardada). `npm run test:ai`: 69/69.
+
+Verificado ponta a ponta localmente, com dados fictícios e um Gemini falso que se comporta como o Gemini 3 (recusa o histórico sem assinatura):
+
+| Código | O que chegou ao navegador |
+|---|---|
+| Antes (`5f8cc18`) | nada; o stream ficou aberto até o corte. Log da API: `turno falhou: HTTP 400 — Function call is missing a thought_signature` |
+| Só a correção do stream | `tool`, `widgets`, e `error` com a mensagem do Gemini |
+| As duas correções | `tool`, `widgets`, `text`, `done`, em 45 ms |
+| As duas, com o Gemini demorando 16,5 s | o mesmo, com um `: ping` no meio |
+
+Fica pendente na configuração do staging: os preços do modelo estão zerados, então o gasto aparece sempre como US$ 0,00 e o orçamento diário não limita nada.
+
 ## 14/09/2026 — Fonte do Data Hub cadastrada não chegava no Builder: o ETL gravava o snapshot onde ninguém lia
 
 Usuário cadastrou duas fontes (`clientes-cancelados`, 185.564 linhas, e `infrastructure`, 5.663) e relatou que **não conseguia criar widget com elas, e elas não apareciam no dicionário de dados** — apesar de a tela de Configurações mostrar as duas ativas, com a contagem de linhas.

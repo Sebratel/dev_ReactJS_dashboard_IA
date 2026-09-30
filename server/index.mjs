@@ -778,12 +778,21 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
   res.setHeader('X-Accel-Buffering', 'no')
   res.flushHeaders?.()
 
+  // Desconexão do navegador vem do `res`, não do `req`: desde o Node 16 o
+  // 'close' do req dispara assim que o corpo termina de ser lido. Com ele, o
+  // turno se achava sem ouvinte logo no início — não escrevia evento nenhum
+  // nem fechava a resposta, e o nginx cortava a conexão em 60 s ("Falha ao
+  // falar com a IA." na tela, com o turno concluído no servidor).
   let closed = false
-  req.on('close', () => { closed = true })
+  res.on('close', () => { if (!res.writableFinished) closed = true })
   const emit = (event) => {
     if (closed) return
     res.write(`data: ${JSON.stringify(event)}\n\n`)
   }
+  // Comentário SSE a cada 15 s: uma ida longa ao modelo (raciocínio sem texto
+  // saindo) passaria do proxy_read_timeout do nginx (60 s, ver
+  // docker/nginx.conf). O leitor do navegador ignora linha que não é `data:`.
+  const keepAlive = setInterval(() => { if (!closed) res.write(': ping\n\n') }, 15_000)
 
   try {
     await runTurn({
@@ -795,6 +804,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
     console.error(`[ai] turno falhou: ${e.message}`)
     emit({ type: 'error', message: e.message })
   } finally {
+    clearInterval(keepAlive)
     if (!closed) res.end()
   }
 })

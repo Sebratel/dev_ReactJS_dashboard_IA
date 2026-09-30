@@ -67,6 +67,15 @@ function anthropicClient(apiKey, baseUrl) {
   return anthropicCache.client
 }
 
+// O canônico pode carregar a thought signature que o Gemini exige de volta
+// (ver toGeminiContents). A Anthropic recusa campo desconhecido num bloco, então
+// ele sai aqui — é o que mantém a troca de provedor no meio da conversa valendo.
+function withoutGeminiFields(messages) {
+  return messages.map((m) => (Array.isArray(m.content)
+    ? { ...m, content: m.content.map(({ thoughtSignature, ...b }) => b) }
+    : m))
+}
+
 async function anthropicTurn({ cfg, system, messages, tools, onText }) {
   const stream = anthropicClient(cfg.apiKey, cfg.baseUrl).messages.stream({
     model: cfg.model,
@@ -74,7 +83,7 @@ async function anthropicTurn({ cfg, system, messages, tools, onText }) {
     output_config: { effort: cfg.effort },
     system,
     ...(tools?.length ? { tools } : {}),
-    messages,
+    messages: withoutGeminiFields(messages),
   })
   if (onText) stream.on('text', (delta) => onText(delta))
   const message = await stream.finalMessage()
@@ -372,10 +381,14 @@ function toGeminiContents(messages) {
       continue
     }
 
+    // A thought signature volta na MESMA parte em que chegou. Os modelos
+    // Gemini 3 recusam (HTTP 400) um histórico cuja chamada de ferramenta do
+    // turno atual veio sem ela — e quase todo turno da montagem chama uma.
+    const sig = (b) => (b.thoughtSignature ? { thoughtSignature: b.thoughtSignature } : {})
     const parts = []
     for (const b of blocks) {
-      if (b.type === 'text' && b.text) parts.push({ text: b.text })
-      if (b.type === 'tool_use') parts.push({ functionCall: { name: b.name, args: b.input ?? {} } })
+      if (b.type === 'text' && b.text) parts.push({ text: b.text, ...sig(b) })
+      if (b.type === 'tool_use') parts.push({ functionCall: { name: b.name, args: b.input ?? {} }, ...sig(b) })
     }
     if (!parts.length) continue
     out.push({ role: m.role === 'assistant' ? 'model' : 'user', parts })
@@ -411,6 +424,7 @@ async function geminiTurn({ cfg, system, messages, tools, onText }) {
   })
 
   let text = ''
+  let textSignature = null
   let finish = null
   const usage = usageZero()
   const toolCalls = []
@@ -426,6 +440,9 @@ async function geminiTurn({ cfg, system, messages, tools, onText }) {
     if (cand.finishReason) finish = cand.finishReason
     for (const part of cand.content?.parts ?? []) {
       if (part.text) { text += part.text; onText?.(part.text) }
+      // Modelos com raciocínio mandam uma assinatura junto da parte; ela é
+      // guardada no canônico pra voltar na próxima ida (ver toGeminiContents).
+      if (part.thoughtSignature && !part.functionCall) textSignature = part.thoughtSignature
       if (part.functionCall) {
         toolCalls.push({
           // Id sintético: o Gemini não manda um, e o formato canônico precisa
@@ -433,6 +450,7 @@ async function geminiTurn({ cfg, system, messages, tools, onText }) {
           id: `gem_${randomUUID()}`,
           name: part.functionCall.name,
           input: part.functionCall.args ?? {},
+          ...(part.thoughtSignature ? { thoughtSignature: part.thoughtSignature } : {}),
         })
       }
     }
@@ -442,7 +460,7 @@ async function geminiTurn({ cfg, system, messages, tools, onText }) {
     text,
     toolCalls,
     stopReason: mapGeminiFinish(finish, toolCalls.length),
-    content: canonicalAssistantContent(text, toolCalls),
+    content: canonicalAssistantContent(text, toolCalls, textSignature),
     usage,
   }
 }
@@ -457,10 +475,13 @@ function mapGeminiFinish(finish, toolCount) {
 // Reconstrói o conteúdo do assistente no formato CANÔNICO, pro histórico ficar
 // igual independente de quem respondeu — é isso que permite trocar de provedor
 // no meio de uma conversa sem corromper o que já foi dito.
-function canonicalAssistantContent(text, toolCalls) {
+function canonicalAssistantContent(text, toolCalls, textSignature = null) {
   const content = []
-  if (text) content.push({ type: 'text', text })
-  for (const c of toolCalls) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input })
+  if (text) content.push({ type: 'text', text, ...(textSignature ? { thoughtSignature: textSignature } : {}) })
+  for (const c of toolCalls) {
+    content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input,
+      ...(c.thoughtSignature ? { thoughtSignature: c.thoughtSignature } : {}) })
+  }
   return content
 }
 

@@ -122,7 +122,7 @@ const server = createServer((req, res) => {
     if (req.url.includes(':streamGenerateContent')) {
       return sse(res, [
         { data: { candidates: [{ content: { parts: [{ text: 'Vou olhar os valores.' }] } }] } },
-        { data: { candidates: [{ content: { parts: [{ functionCall: { name: 'field_values', args: { source: 'protocolos', field: 'status' } } }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 190, candidatesTokenCount: 27, cachedContentTokenCount: 40 } } },
+        { data: { candidates: [{ content: { parts: [{ functionCall: { name: 'field_values', args: { source: 'protocolos', field: 'status' } }, thoughtSignature: 'assinatura-nova' }] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 190, candidatesTokenCount: 27, cachedContentTokenCount: 40 } } },
       ])
     }
 
@@ -163,7 +163,9 @@ const MESSAGES = [
     role: 'assistant',
     content: [
       { type: 'text', text: 'Preciso ver os valores primeiro.' },
-      { type: 'tool_use', id: 'toolu_1', name: 'field_values', input: { source: 'protocolos', field: 'status' } },
+      // Assinatura como a que o Gemini 3 manda: tem de voltar pro Gemini e NÃO
+      // pode ir pra Anthropic (lá é campo desconhecido e derruba a chamada).
+      { type: 'tool_use', id: 'toolu_1', name: 'field_values', input: { source: 'protocolos', field: 'status' }, thoughtSignature: 'assinatura-de-volta' },
     ],
   },
   {
@@ -234,6 +236,8 @@ console.log('\n── Anthropic (repasse) ──')
   ok(b.tools?.[0]?.input_schema?.additionalProperties === false, 'schema vai inteiro (Anthropic aceita additionalProperties)')
   ok(b.messages?.length === MESSAGES.length, `histórico vai inteiro (${b.messages?.length} de ${MESSAGES.length})`)
   ok(b.messages?.[5]?.role === 'system', 'mensagem de sistema no meio segue como system')
+  ok(!JSON.stringify(b.messages).includes('thoughtSignature'), 'assinatura do Gemini NÃO vai pra Anthropic (campo desconhecido lá)')
+  ok(b.messages?.[1]?.content?.[1]?.id === 'toolu_1', 'resto do bloco tool_use preservado depois de tirar a assinatura')
   ok(enviado.headers['x-api-key'] === 'chave-de-teste', 'credencial vai no cabeçalho x-api-key')
 
   ok(turno.stopReason === 'tool_use', 'stopReason normalizado = tool_use')
@@ -260,6 +264,7 @@ console.log('\n── OpenAI (tradução) ──')
   ok(m[6].role === 'system' && m[6].content.includes('Conclua agora'), 'aviso de operador continua system')
   ok(enviado.body.tools?.[0]?.function?.parameters?.additionalProperties === undefined, 'additionalProperties retirado do schema')
   ok(enviado.body.stream_options?.include_usage === true, 'pede usage no stream (senão o medidor de gasto fica em zero)')
+  ok(!JSON.stringify(m).includes('thoughtSignature'), 'assinatura do Gemini NÃO vai pra OpenAI')
 
   ok(turno.stopReason === 'tool_use', 'finish_reason=tool_calls vira stopReason=tool_use')
   ok(turno.toolCalls.length === 1 && turno.toolCalls[0].id === 'call_xyz', 'id da chamada preservado')
@@ -280,6 +285,8 @@ console.log('\n── Gemini (tradução) ──')
   ok(enviado.body.systemInstruction?.parts?.[0]?.text?.includes('CATÁLOGO'), 'system vira systemInstruction')
   ok(c[1].role === 'model', 'assistente vira role=model')
   ok(c[1].parts?.[1]?.functionCall?.name === 'field_values', 'tool_use vira functionCall')
+  ok(c[1].parts?.[1]?.thoughtSignature === 'assinatura-de-volta', 'thought signature volta na mesma parte do functionCall (Gemini 3 exige)')
+  ok(c[3].parts?.[0]?.functionCall && c[3].parts[0].thoughtSignature === undefined, 'chamada sem assinatura no histórico não ganha uma inventada')
   ok(c[2].parts?.[0]?.functionResponse?.name === 'field_values', 'tool_result vira functionResponse COM O NOME (o id não serve)')
   ok(c[2].parts[0].functionResponse.response?.result === 'Concluído, Cancelado, Em aberto', 'conteúdo do resultado embrulhado em objeto')
   ok(c[4].parts?.[0]?.functionResponse?.response?.error === 'campo inexistente', 'resultado com erro vai como {error}')
@@ -289,6 +296,7 @@ console.log('\n── Gemini (tradução) ──')
   ok(turno.stopReason === 'tool_use', 'functionCall presente vira stopReason=tool_use')
   ok(turno.toolCalls.length === 1 && turno.toolCalls[0].name === 'field_values', 'chamada extraída')
   ok(typeof turno.toolCalls[0].id === 'string' && turno.toolCalls[0].id.startsWith('gem_'), 'id sintetizado (o Gemini não manda um)')
+  ok(turno.content?.find((b) => b.type === 'tool_use')?.thoughtSignature === 'assinatura-nova', 'thought signature da resposta guardada no histórico canônico')
   ok(turno.usage.inputTokens === 190 && turno.usage.outputTokens === 27, 'usageMetadata normalizado', JSON.stringify(turno.usage))
   ok(turno.usage.cacheReadTokens === 40, 'cachedContentTokenCount vira cacheReadTokens')
   ok(textos.join('') === 'Vou olhar os valores.', 'texto chegou por streaming')

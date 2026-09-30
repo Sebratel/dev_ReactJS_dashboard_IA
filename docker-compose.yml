@@ -78,8 +78,9 @@ services:
       # Declarar os dois com valores diferentes quebra a atualização em segundo
       # plano em silêncio: a fonte nova nunca chega no Builder.
       SNAPSHOT_PATH: /snapshot/installData.data
-      # Quem é administrador (lista fixa, separada por vírgula) — ver
-      # server/accessLog.mjs. Sem isto, valem só os e-mails embutidos no código.
+      # Administradores iniciais, separados por vírgula — ver
+      # server/accessLog.mjs. Só valem enquanto não há nenhum admin salvo em
+      # data/users.json; sem isto, valem os e-mails embutidos no código.
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       # SSO: Firebase Authentication. É contra ESTE id que o `aud` e o `iss` do
       # ID token são conferidos (server/firebaseToken.mjs) — sem ele, o login

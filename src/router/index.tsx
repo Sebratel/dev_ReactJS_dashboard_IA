@@ -102,7 +102,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardRedirect /> },
       { path: 'dashboard/:folderId/:dashboardId', element: <PageSuspense><DashboardPage /></PageSuspense> },
-      { path: 'configuracoes', element: <PageSuspense><SettingsPage /></PageSuspense> },
+      { path: 'configuracoes', element: <RequireAdmin><PageSuspense><SettingsPage /></PageSuspense></RequireAdmin> },
       { path: 'acessos', element: <RequireAdmin><PageSuspense><AccessPage /></PageSuspense></RequireAdmin> },
     ],
   },

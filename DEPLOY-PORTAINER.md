@@ -73,7 +73,7 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `VITE_FIREBASE_PROJECT_ID` | Id do projeto Firebase (`authentication-dashboardsia`). De build **e** reaproveitada pelo `api` como `FIREBASE_PROJECT_ID`. |
 | `VITE_FIREBASE_APP_ID` | Id do app web. De build. |
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
-| `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. |
+| `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
 | `WEB_PORT` | Porta publicada no host (ex. `8081`). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
 
@@ -119,7 +119,8 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
    configurado no servidor" é `FIREBASE_PROJECT_ID` faltando no `api`; e
    "acesso restrito a contas @..." é conta de fora do domínio — essa é o
    sistema funcionando.
-4. Vá em **Configurações** para cadastrar as fontes.
+4. Com uma conta de administrador (ver `ADMIN_EMAILS`), vá em **Configurações**
+   para cadastrar as fontes — a tela não aparece para o usuário Padrão.
 
 Nenhum **segredo** é assado na imagem. O que vai no bundle do `web` são as
 `VITE_FIREBASE_*`, que são públicas por design (o navegador precisa delas para

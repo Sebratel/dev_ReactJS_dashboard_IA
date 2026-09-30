@@ -7,10 +7,12 @@ import { useWorkspaceStore } from '@/store/workspaceStore'
 import { FolderSettingsModal } from '@/features/workspace/FolderSettingsModal'
 import { cn } from '@/utils/cn'
 
-const STATIC_NAV_ITEMS = [
+// As duas telas são de administrador: quem é Padrão não vê nenhuma delas, e a
+// rota também barra quem digitar o endereço (ver src/router/index.tsx).
+const ADMIN_NAV_ITEMS = [
   { path: '/configuracoes', icon: Settings, label: 'Configurações', sublabel: 'Fontes de dados' },
+  { path: '/acessos', icon: ShieldCheck, label: 'Acessos', sublabel: 'Usuários e log de ações' },
 ]
-const ADMIN_NAV_ITEM = { path: '/acessos', icon: ShieldCheck, label: 'Acessos', sublabel: 'Usuários e log de ações' }
 
 export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useAppStore()
@@ -29,7 +31,7 @@ export function Sidebar() {
   }, [params.folderId])
 
   const toggleFolder = (id: string) => setOpenFolders((prev) => ({ ...prev, [id]: !prev[id] }))
-  const bottomNavItems = isAdmin ? [...STATIC_NAV_ITEMS, ADMIN_NAV_ITEM] : STATIC_NAV_ITEMS
+  const bottomNavItems = isAdmin ? ADMIN_NAV_ITEMS : []
 
   return (
     // transition-[width] (não transition-all): "all" tenta transicionar
@@ -149,7 +151,7 @@ export function Sidebar() {
           </>
         )}
 
-        <div className="h-px bg-app-border my-2 mx-1" />
+        {bottomNavItems.length > 0 && <div className="h-px bg-app-border my-2 mx-1" />}
 
         {bottomNavItems.map(({ path, icon: Icon, label, sublabel }) => {
           const isActive = location.pathname.startsWith(path)

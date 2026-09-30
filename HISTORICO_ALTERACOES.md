@@ -4,6 +4,36 @@
 
 ---
 
+## 30/09/2026 — Acessos: quem entra pela primeira vez é Padrão, e Configurações passa a ser só de administrador
+
+Dois relatos: usuário novo entrava direto como administrador; e um usuário com acesso Padrão continuava vendo a aba Configurações.
+
+**1. Usuário novo como administrador.** O papel é decidido no primeiro acesso (`touchUser`, em `server/accessLog.mjs`). A regra era: e-mail na lista de bootstrap — `ADMIN_EMAILS` ou, com ela vazia, os 7 e-mails embutidos no código — entra como admin **a qualquer momento**. A lista existe para a instalação não nascer sem admin, mas continuava promovendo quem estivesse nela e acessasse pela primeira vez meses depois do deploy. Não havia outro caminho no código que desse papel de admin.
+
+- **`server/accessLog.mjs`**: `initialRole()` — o primeiro acesso é `standard` (Padrão). A lista só vale enquanto `data/users.json` não tem nenhum admin salvo (instalação nova, ou o arquivo perdido). Quem já tem papel salvo não muda: os admins de hoje continuam admins.
+- **`scripts/test-access.mjs`** (novo, `npm run test:access`): 15 checagens — primeiro acesso dentro e fora da lista, com e sem admin salvo, promoção e rebaixamento, bloqueio do último admin e `users.json` perdido. Usa pasta temporária e e-mails fictícios.
+
+**2. Configurações visível para o Padrão.** O item estava na lista fixa do menu lateral, a engrenagem do topo aparecia para todos, a rota `/configuracoes` não tinha guarda, e as rotas de fontes do Data Hub eram auto-serviço: qualquer pessoa logada listava, testava, cadastrava, ligava/desligava, agendava e sincronizava fontes.
+
+- **`src/components/layout/Sidebar.tsx`** e **`TopBar.tsx`**: Configurações e Acessos só aparecem para admin, e a engrenagem do topo também.
+- **`src/router/index.tsx`**: `/configuracoes` passa por `RequireAdmin` — digitar o endereço devolve para o início.
+- **`src/features/settings/SettingsPage.tsx`**: sem as checagens de `isAdmin`, que ficaram redundantes.
+- **`server/index.mjs`**: todas as rotas `/api/lakehouse-sources*` exigem admin (403 para o Padrão). Esconder a aba sem isso seria só aparência. Continuam abertas as que o Builder usa (`/api/sources`, `/api/widget-data`, `/api/field-values`, a leitura do dicionário) e as planilhas.
+- Textos atualizados: card do Data Hub, README, DOCUMENTACAO, DEPLOY-PORTAINER, `docker-compose.yml` e `.env.example`.
+
+Verificado localmente, com dados e e-mails fictícios, contra a API — `ADMIN_EMAILS` com o admin da demonstração (já salvo) e um e-mail que nunca tinha entrado:
+
+| Quem entra | Papel gravado (antes → depois) | Rotas de fontes (antes → depois) | `/api/sources` |
+|---|---|---|---|
+| admin já salvo | admin → admin | liberadas → liberadas | 200 |
+| Padrão já salvo | standard → standard | 200 → **403** | 200 |
+| novo, na lista `ADMIN_EMAILS` | **admin → standard** | 200 → **403** | 200 |
+| novo, fora da lista | standard → standard | 200 → **403** | 200 |
+
+No navegador: como o usuário novo da lista, sem Configurações e Acessos na barra lateral, sem engrenagem no topo, e `/configuracoes` volta para a dashboard. Como admin, as duas entradas e os três cards de Configurações continuam lá, e Acessos mostra o usuário novo como Padrão. `npm run test:access` 15/15, `test:auth` 21/21, `test:ai` 69/69.
+
+**No staging**: quem já entrou mantém o papel salvo — quem entrou como admin pela lista continua admin, e rebaixar é na aba Acessos. Fontes que um usuário Padrão tenha cadastrado continuam existindo e sendo buscadas; só passam a ser editadas por admin.
+
 ## 30/09/2026 — Montar com IA: a resposta não chegava à tela, e o Gemini 3 recusava a segunda ida
 
 Com o provedor Google Gemini (`gemini-3.8-flash`) configurado e a chave válida — a listagem trazia 44 modelos da conta —, o painel "Montar com IA" terminava em **"Falha ao falar com a IA."**. Essa mensagem não vem da API nem do Gemini: a tela só a mostra quando a leitura do stream quebra no meio (`reader.read()` falhando), nunca para erro HTTP.

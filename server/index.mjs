@@ -273,8 +273,8 @@ app.post('/api/auth/logout', async (req, res) => {
   res.sendStatus(204)
 })
 
-// Restringe uma rota a administradores (gestão de acessos) — lista fixa via
-// ADMIN_EMAILS, ver server/accessLog.mjs. Usar sempre depois de requireAuth().
+// Restringe uma rota a administradores — o papel salvo em data/users.json,
+// ver server/accessLog.mjs. Usar sempre depois de requireAuth().
 function requireAdmin() {
   return (req, res, next) => {
     if (!isAdmin(req.user?.email)) return res.status(403).json({ error: 'Acesso restrito a administradores.' })
@@ -502,14 +502,15 @@ app.patch('/api/sheet-sources/:id/refresh', requireAuth(), async (req, res) => {
 // ─── Fontes do Data Hub / lakehouse (server/lakehouseSources.mjs) ──
 // Consumo da API pública do lakehouse como BARRAMENTO de dados: em vez de uma
 // query SQL batendo no banco de origem, cadastra-se um dataset publicado lá
-// mais um token de acesso. Auto-serviço como as planilhas (qualquer usuário
-// logado cadastra a sua), com a mesma regra de dono/admin pra editar e
-// remover; só admin decide em quais pastas a fonte aparece.
+// mais um token de acesso. Todas estas rotas são só de admin: é o que a tela
+// de Configurações usa, e ela deixou de existir para o usuário Padrão — que
+// continua usando as fontes das pastas liberadas pra ele pelo Builder
+// (/api/sources, /api/widget-data), não por aqui.
 //
 // O token nunca volta pro navegador em nenhuma destas rotas — a UI recebe só
 // `tokenHint`. Quem precisa do token em claro é o ETL, que decifra na hora de
 // buscar (ver scripts/fetch-install.mjs).
-app.get('/api/lakehouse-sources', requireAuth(), (_req, res) => {
+app.get('/api/lakehouse-sources', requireAuth(), requireAdmin(), (_req, res) => {
   res.json({ sources: listLakehouseSources(), defaultBaseUrl: DHUB_DEFAULT_BASE_URL })
 })
 
@@ -517,7 +518,7 @@ app.get('/api/lakehouse-sources', requireAuth(), (_req, res) => {
 // devolve total de linhas + colunas detectadas, pra pessoa confirmar que é o
 // dataset certo antes de criar a fonte. Também serve pra revalidar uma fonte
 // existente: sem `token` no corpo, reusa o token já cadastrado em `id`.
-app.post('/api/lakehouse-sources/test', requireAuth(), async (req, res) => {
+app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (req, res) => {
   try {
     const b = req.body || {}
     let { baseUrl, datasetSlug, token } = b
@@ -537,7 +538,7 @@ app.post('/api/lakehouse-sources/test', requireAuth(), async (req, res) => {
 // salvo e o erro real de lá volta pra tela (mesmo espírito de POST
 // /api/sheet-sources). Em seguida dispara o ETL, pra fonte já aparecer no
 // Builder sem esperar o próximo ciclo.
-app.post('/api/lakehouse-sources', requireAuth(), async (req, res) => {
+app.post('/api/lakehouse-sources', requireAuth(), requireAdmin(), async (req, res) => {
   const b = req.body || {}
   try {
     await previewDataset({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
@@ -558,12 +559,9 @@ app.post('/api/lakehouse-sources', requireAuth(), async (req, res) => {
 
 // `token` vazio/ausente no corpo mantém o token atual — a tela nunca recebe o
 // token de volta, então não teria como reenviá-lo a cada edição.
-app.put('/api/lakehouse-sources/:id', requireAuth(), async (req, res) => {
+app.put('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), async (req, res) => {
   const existing = getLakehouseSource(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Fonte não encontrada.' })
-  if (existing.createdBy !== req.user.email && !isAdmin(req.user.email)) {
-    return res.status(403).json({ error: 'Só quem cadastrou esta fonte (ou um administrador) pode editá-la.' })
-  }
   const b = req.body || {}
   try {
     // Valida a combinação que vai ficar salva (o que mudou + o que ficou),
@@ -591,7 +589,7 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), async (req, res) => {
   }
 })
 
-app.delete('/api/lakehouse-sources/:id', requireAuth(), (req, res) => {
+app.delete('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), (req, res) => {
   try {
     deleteLakehouseSource(req.params.id, req.user.email, isAdmin(req.user.email))
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.delete', target: req.params.id })
@@ -602,9 +600,7 @@ app.delete('/api/lakehouse-sources/:id', requireAuth(), (req, res) => {
   }
 })
 
-// enabled e refresh: qualquer usuário logado ajusta (mesma decisão das
-// queries SQL — é ritmo de atualização, não permissão).
-app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), (req, res) => {
+app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), requireAdmin(), (req, res) => {
   try {
     const saved = setLakehouseEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.enabled', target: saved.id, meta: { enabled: saved.enabled } })
@@ -621,7 +617,7 @@ app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), (req, res) => {
   }
 })
 
-app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), (req, res) => {
+app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), requireAdmin(), (req, res) => {
   try {
     const { mode, minutes } = req.body || {}
     const saved = setLakehouseRefresh(req.params.id, { mode, minutes }, req.user.email)
@@ -635,7 +631,7 @@ app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), (req, res) => {
 // Busca agora, sem esperar o ciclo. Dispara o ETL inteiro (é ele que escreve o
 // snapshot) — a resposta volta na hora e a atualização acontece em segundo
 // plano, igual ao que já acontece ao mexer no catálogo de queries.
-app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), (req, res) => {
+app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), requireAdmin(), (req, res) => {
   const entry = getLakehouseSource(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Fonte não encontrada.' })
   // Força: o sentido do botão é "busca agora". Sem isso, uma fonte agendada
@@ -660,7 +656,7 @@ app.patch('/api/lakehouse-sources/:id/folders', requireAuth(), requireAdmin(), (
 
 // Em quais pastas/dashboards esta fonte já está em uso — findFoldersUsingQuery
 // aceita qualquer string de fonte, não é específico de SQL.
-app.get('/api/lakehouse-sources/:id/usage', requireAuth(), (req, res) => {
+app.get('/api/lakehouse-sources/:id/usage', requireAuth(), requireAdmin(), (req, res) => {
   res.json({ folders: findFoldersUsingQuery(lakehouseSourceKey(req.params.id)) })
 })
 

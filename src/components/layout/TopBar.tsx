@@ -16,6 +16,7 @@ export function TopBar() {
   const params = useParams<{ folderId?: string; dashboardId?: string }>()
   const folders = useWorkspaceStore((s) => s.folders)
   const user = useAuthStore((s) => s.user)
+  const isAdmin = useAuthStore((s) => s.isAdmin)
   const theme = useAppStore((s) => s.theme)
   const toggleTheme = useAppStore((s) => s.toggleTheme)
   // Sair de verdade: destrói a sessão no servidor e apaga o cookie — não basta
@@ -47,9 +48,12 @@ export function TopBar() {
         >
           {theme === 'dark' ? <Moon size={13} /> : <Sun size={13} />}
         </button>
-        <button onClick={() => navigate('/configuracoes')} className="h-7 w-7 flex items-center justify-center rounded-lg bg-app-card border border-app-border text-gray-400 hover:text-gray-100 hover:border-app-borderLight transition-all" aria-label="Configurações">
-          <Settings size={13} />
-        </button>
+        {/* Mesmo critério da barra lateral: Configurações é tela de admin. */}
+        {isAdmin && (
+          <button onClick={() => navigate('/configuracoes')} className="h-7 w-7 flex items-center justify-center rounded-lg bg-app-card border border-app-border text-gray-400 hover:text-gray-100 hover:border-app-borderLight transition-all" aria-label="Configurações">
+            <Settings size={13} />
+          </button>
+        )}
 
         <div className="flex items-center gap-2 h-7 pl-1 pr-1 rounded-lg bg-app-card border border-app-border">
           {user?.picture ? (

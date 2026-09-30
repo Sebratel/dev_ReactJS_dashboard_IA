@@ -14,7 +14,9 @@
     "test:ai": "tsx scripts/test-ai-providers.mjs",
     "//test:ai": "Verifica os adaptadores de provedor de IA (Anthropic/OpenAI/Gemini) contra um servidor de mentira que fala o protocolo de cada um: traducao de ida, normalizacao de volta, validacao da config e mascara da credencial. Nao usa chave real e nao gasta nada.",
     "test:auth": "tsx scripts/test-auth.mjs",
-    "//test:auth": "Teste de fumaca da verificacao do ID token do Firebase (server/firebaseToken.mjs): prova que token bom entra e que alg:none, HS256 com a chave publica, payload adulterado, aud/iss de outro projeto, expirado e kid desconhecido NAO entram. Nao usa rede."
+    "//test:auth": "Teste de fumaca da verificacao do ID token do Firebase (server/firebaseToken.mjs): prova que token bom entra e que alg:none, HS256 com a chave publica, payload adulterado, aud/iss de outro projeto, expirado e kid desconhecido NAO entram. Nao usa rede.",
+    "test:access": "tsx scripts/test-access.mjs",
+    "//test:access": "Papel de quem entra (server/accessLog.mjs): primeiro acesso e Padrao, mesmo estando em ADMIN_EMAILS, quando ja existe admin salvo; a lista so vale enquanto nao ha nenhum admin. Usa pasta temporaria e e-mails ficticios, nao toca em data/."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

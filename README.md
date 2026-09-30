@@ -535,9 +535,11 @@ faria o navegador **descartar o cookie em silêncio** e o login nunca completari
 Papéis globais são exatamente dois, `admin` e `standard`. **O papel não vem do
 token** — o ID token diz o e-mail; quem resolve papel é o servidor. Confiar numa
 claim do cliente para decidir permissão seria deixar o navegador escolher o
-próprio nível de acesso. `ADMIN_EMAILS` (ou a lista de 7 e-mails embutida em
-[server/accessLog.mjs](server/accessLog.mjs)) é só **bootstrap**: o papel é
-gravado uma vez, no primeiro acesso, e dali em diante o valor salvo manda.
+próprio nível de acesso. Quem entra pela primeira vez é `standard` (Padrão).
+`ADMIN_EMAILS` (ou a lista de 7 e-mails embutida em
+[server/accessLog.mjs](server/accessLog.mjs)) é só **bootstrap**: vale apenas
+enquanto não existe nenhum admin salvo em `data/users.json`. O papel é gravado
+uma vez, no primeiro acesso, e dali em diante o valor salvo manda.
 Rebaixar o último administrador é bloqueado, para não travar o acesso à própria
 tela que gerencia isso.
 
@@ -683,7 +685,9 @@ fora, `/api/` responde 502 e volta sozinho.
   variável na tela da stack não muda a porta; o nginx também tem `api:8788` fixo.
 - **`ADMIN_EMAILS` vazio não deixa a instalação sem admin** — há 7 e-mails
   embutidos como bootstrap. Quem espera que "vazio = ninguém é admin" vai se
-  surpreender.
+  surpreender. O contrário também: com um admin já salvo, pôr um e-mail em
+  `ADMIN_EMAILS` não o torna admin — ele entra como Padrão e é promovido na aba
+  Acessos.
 - Heap limitado de propósito (`--max-old-space-size` 1024 no `api`, 2048 no
   `etl`): o processo carrega o snapshot inteiro em memória, e sem teto um dataset
   grande derruba o container por OOM do host em vez de falhar só a consulta.
@@ -801,9 +805,6 @@ E os limites de projeto, declarados:
 - **Um campo cujo nome comece com `year:`, `quarter:`, `month:` ou `day:`** é
   mal-interpretado como bucket de data. Não corrigido: exigiria mudar a forma como
   bucket é codificado, que hoje é só um prefixo de string.
-- **O catálogo de fontes não tem permissão por usuário.** Qualquer pessoa logada
-  cadastra uma fonte do Data Hub, mesmo sem acesso a nenhuma pasta; só quem
-  cadastrou, ou um admin, edita a sua.
 - **Uma guia aberta não percebe que o dado mudou.** Sem "Atualização automática"
   ligada naquela guia, é F5 — não há aviso de "há dados novos".
 - **Não há exportação** (PDF, imagem, Excel) nem alerta por e-mail ou Slack.

@@ -13,11 +13,12 @@ const LOG_PATH = process.env.ACCESS_LOG_PATH
   ? resolve(process.env.ACCESS_LOG_PATH)
   : resolve(process.cwd(), 'data/audit-log.json')
 
-// Lista de administradores "de fábrica" — só usada como fallback pra quem
-// ainda não tem um papel salvo em data/users.json (bootstrap inicial e rede
-// de segurança se o arquivo for perdido). Uma vez que alguém troca o papel de
-// um usuário pela aba Acessos, o valor salvo manda e essa lista deixa de
-// valer pra aquele e-mail — ver resolveRole().
+// Lista de administradores "de fábrica" — bootstrap de uma instalação que
+// ainda não tem NENHUM administrador salvo em data/users.json (instalação nova,
+// ou o arquivo perdido). Enquanto houver pelo menos um admin salvo, ela não dá
+// papel a ninguém: quem entra pela primeira vez entra como `standard` (Padrão),
+// esteja ou não na lista, e só vira admin se outro admin promover na aba
+// Acessos — ver initialRole().
 const DEFAULT_ADMIN_EMAILS = new Set(
   (process.env.ADMIN_EMAILS || [
     'gustavo.santos@sebratel.com.br',
@@ -33,10 +34,22 @@ const DEFAULT_ADMIN_EMAILS = new Set(
     .filter(Boolean),
 )
 
+function hasSavedAdmin(users) {
+  return Object.values(users).some((u) => u?.role === 'admin')
+}
+
+// Papel de quem ainda não tem um salvo. Antes bastava estar na lista para
+// entrar como admin a qualquer momento: um e-mail dela que acessasse pela
+// primeira vez meses depois do deploy caía direto como administrador. Agora a
+// lista só serve para a instalação não nascer sem nenhum admin.
+function initialRole(users, key) {
+  return !hasSavedAdmin(users) && DEFAULT_ADMIN_EMAILS.has(key) ? 'admin' : 'standard'
+}
+
 function resolveRole(users, key) {
   const saved = users[key]?.role
   if (saved === 'admin' || saved === 'standard') return saved
-  return DEFAULT_ADMIN_EMAILS.has(key) ? 'admin' : 'standard'
+  return initialRole(users, key)
 }
 
 export function isAdmin(email) {
@@ -84,9 +97,9 @@ export function touchUser(email, name) {
   users[key] = {
     email: key,
     name: name || existing?.name || key,
-    // Papel só é decidido uma vez, no primeiro acesso (a lista de fallback é
-    // só o ponto de partida) — depois disso, só muda pela aba Acessos.
-    role: existing?.role ?? (DEFAULT_ADMIN_EMAILS.has(key) ? 'admin' : 'standard'),
+    // Papel só é decidido uma vez, no primeiro acesso — Padrão, exceto no
+    // bootstrap (ver initialRole) — e depois disso só muda pela aba Acessos.
+    role: existing?.role ?? initialRole(users, key),
     firstSeenAt: existing?.firstSeenAt || new Date(now).toISOString(),
     lastSeenAt: new Date(now).toISOString(),
   }

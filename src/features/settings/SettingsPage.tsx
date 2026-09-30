@@ -1,5 +1,7 @@
 // Configurações — as fontes de dados do Builder, o provedor de IA e o
-// dicionário de dados.
+// dicionário de dados. Tela só de administrador: o usuário Padrão não a vê na
+// navegação e a rota o devolve para o início (src/router/index.tsx); as rotas
+// de API que ela usa também são admin-only.
 //
 // A fonte de dado corporativo é UMA: os datasets publicados no Data Hub
 // (lakehouse), cadastrados no card abaixo. Existia antes um catálogo de
@@ -10,7 +12,6 @@
 // editor de widget, para dado que ninguém vai publicar no Data Hub.
 import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
-import { useAuthStore } from '@/store/authStore'
 import { fetchFolders } from '@/features/workspace/workspaceApi'
 import type { Folder } from '@/features/workspace/types'
 import { FieldDictionaryCard } from './FieldDictionaryCard'
@@ -18,10 +19,8 @@ import { LakehouseSourcesCard } from './LakehouseSourcesCard'
 import { AiProviderCard } from './AiProviderCard'
 
 export default function SettingsPage() {
-  const isAdmin = useAuthStore((s) => s.isAdmin)
-  // Só alimenta o seletor de pastas do admin (em qual pasta cada fonte pode
-  // ser usada) — /api/workspace/folders é admin-only, então nem tentamos
-  // buscar se o usuário não for admin.
+  // Alimenta o seletor de pastas de cada fonte (em qual pasta ela pode ser
+  // usada) — /api/workspace/folders é admin-only, como esta tela.
   const [allFolders, setAllFolders] = useState<Folder[] | null>(null)
   // Sobe quando o card de fontes termina de mexer no catálogo E o ETL já
   // reescreveu o snapshot — é o gatilho pro dicionário reler os campos em vez
@@ -29,13 +28,12 @@ export default function SettingsPage() {
   const [sourcesVersion, setSourcesVersion] = useState(0)
 
   useEffect(() => {
-    if (!isAdmin) { setAllFolders([]); return }
     let alive = true
     fetchFolders()
       .then((f) => { if (alive) setAllFolders(f) })
       .catch(() => { if (alive) setAllFolders([]) })
     return () => { alive = false }
-  }, [isAdmin])
+  }, [])
 
   if (allFolders === null) {
     return (
@@ -48,11 +46,10 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 animate-slide-up">
       <LakehouseSourcesCard allFolders={allFolders} onSourcesChanged={() => setSourcesVersion((v) => v + 1)} />
-      {/* Provedor de IA e dicionário são os dois cards de admin. O provedor vem
-          primeiro porque é o que decide gasto — e é onde alguém vai olhar
-          quando a IA parar de responder. */}
-      {isAdmin && <AiProviderCard />}
-      {isAdmin && <FieldDictionaryCard reloadKey={sourcesVersion} />}
+      {/* O provedor de IA vem antes do dicionário porque é o que decide gasto
+          — e é onde alguém vai olhar quando a IA parar de responder. */}
+      <AiProviderCard />
+      <FieldDictionaryCard reloadKey={sourcesVersion} />
     </div>
   )
 }

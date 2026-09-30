@@ -3,8 +3,9 @@
 //
 // A ideia é consumir o dado pelo BARRAMENTO: em vez de uma query SQL batendo
 // no banco de origem, cadastra-se um dataset já publicado no Data Hub mais um
-// token de acesso próprio. Auto-serviço — qualquer usuário logado cadastra a
-// sua fonte, com o seu token; só quem cadastrou (ou um admin) edita/remove.
+// token de acesso. Só administrador cadastra, edita e remove (a tela de
+// Configurações inteira é de admin); o usuário Padrão usa as fontes que o
+// admin libera para as pastas dele.
 //
 // O token é enviado uma vez e nunca volta do servidor: a tela mostra só a
 // dica ("dhub_…6T97"). Por isso, ao editar, deixar o campo de token vazio
@@ -417,7 +418,7 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
 
       <p className="text-[10px] text-gray-500">
         Consome datasets publicados no Data Hub pela API pública dele, em vez de bater direto no banco de origem. Cada
-        pessoa cadastra o dataset e o próprio token — o token fica cifrado no servidor e nunca é exibido de volta.
+        fonte leva o dataset e um token de acesso — o token fica cifrado no servidor e nunca é exibido de volta.
       </p>
 
       {loading && !sources && (

@@ -3,6 +3,12 @@ dist
 .git
 .gitignore
 
+# Snapshot versionado (dado real da empresa). Dentro do contexto, o Vite o copia
+# de public/ para dist/ e o nginx da imagem `web` o serve SEM LOGIN em
+# /installData.data. Nenhuma imagem precisa dele: a API e o ETL usam o snapshot
+# vivo do volume /snapshot.
+public/installData.data
+
 .env
 .env.*
 !.env.example

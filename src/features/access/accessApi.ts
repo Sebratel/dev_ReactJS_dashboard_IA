@@ -50,6 +50,54 @@ export async function setUserRole(email: string, role: UserRole): Promise<Access
   return body.user
 }
 
+// ─── Solicitações de acesso a pastas (ver server/accessRequests.mjs) ──
+export type AccessRequestStatus = 'pending' | 'approved' | 'rejected'
+
+export interface AccessRequest {
+  id: string
+  email: string
+  name: string
+  folderId: string
+  folderName: string // nome da pasta no momento do pedido
+  message: string | null
+  status: AccessRequestStatus
+  createdAt: string
+  decidedAt: string | null
+  decidedBy: string | null
+}
+
+// Uma pasta do catálogo da página "Manual de uso": todas as pastas, com o
+// acesso de quem pergunta e o último pedido dele nela.
+export interface FolderCatalogEntry {
+  id: string
+  name: string
+  icon?: string
+  hasAccess: boolean
+  request: { id: string; status: AccessRequestStatus; createdAt: string; decidedAt: string | null } | null
+}
+
+export async function fetchFolderCatalog(): Promise<FolderCatalogEntry[]> {
+  const body = await parse<{ folders: FolderCatalogEntry[] }>(await apiFetch('/api/access/folders'))
+  return body.folders
+}
+
+export async function requestFolderAccess(folderId: string, message: string): Promise<AccessRequest> {
+  const body = await parse<{ request: AccessRequest }>(await apiFetch('/api/access/requests', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folderId, message }),
+  }))
+  return body.request
+}
+
+export async function fetchAccessRequests(status: AccessRequestStatus | 'all' = 'pending'): Promise<AccessRequest[]> {
+  const body = await parse<{ requests: AccessRequest[] }>(await apiFetch(`/api/access/requests?status=${status}`))
+  return body.requests
+}
+
+export async function decideAccessRequest(id: string, decision: 'approve' | 'reject'): Promise<AccessRequest> {
+  const body = await parse<{ request: AccessRequest }>(await apiFetch(`/api/access/requests/${encodeURIComponent(id)}/${decision}`, { method: 'POST' }))
+  return body.request
+}
+
 export async function sendHeartbeat(): Promise<void> {
   await apiFetch('/api/access/heartbeat', { method: 'POST' })
 }

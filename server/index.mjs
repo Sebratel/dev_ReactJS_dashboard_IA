@@ -15,6 +15,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -28,19 +29,23 @@ import {
   sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
 } from './lakehouseSources.mjs'
 import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
-import { isAiConfigured, usageFor, startConversation, runTurn } from './aiAssistant.mjs'
+import { isAiConfigured, usageFor, startConversation, runTurn, conversationStatus, endConversation } from './aiAssistant.mjs'
 import { aiConfigPublic, saveAiConfig, apiKeyFor } from './aiConfig.mjs'
 import { testConnection, listProviderModels } from './aiProvider.mjs'
 import { explainWidgetData } from './aiInsight.mjs'
 import { listCommentsForWidget, addComment, deleteComment, commentCountsByWidget } from './widgetComments.mjs'
 import {
   getFolder, getTab, hasFolderAccess, canManageFolder, canEditTabWidgets,
-  getWorkspaceTreeForUser, getDashboardForUser, listFoldersFull, getFolderFull,
-  createFolder, updateFolder, deleteFolder, setFolderAccess, setFolderManagers, listFolderMembers,
+  getWorkspaceTreeForUser, getDashboardForUser, listFoldersFull, getFolderFull, listFolderCatalogForUser,
+  createFolder, updateFolder, deleteFolder, setFolderAccess, grantFolderAccess, setFolderManagers, listFolderMembers,
   createDashboard, updateDashboard, deleteDashboard, saveDashboardFull, saveTabWidgets, setTabAccess,
   findFoldersUsingQuery,
 } from './workspace.mjs'
-import { isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS } from './accessLog.mjs'
+import {
+  isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS,
+  isManualPending, markManualSeen,
+} from './accessLog.mjs'
+import { listRequests, latestRequestsByFolder, getRequest, createRequest, decideRequest } from './accessRequests.mjs'
 import {
   COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, validAccessToken,
 } from './sessions.mjs'
@@ -253,14 +258,20 @@ app.post('/api/auth/session', async (req, res) => {
   writeCookie(res, req, COOKIE_NAME, session.id, SESSION_TTL_MS)
   touchUser(user.email, user.name)
   appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email })
-  res.json({ user: { email: user.email, name: user.name, picture: user.picture }, isAdmin: isAdmin(user.email) })
+  res.json({
+    user: { email: user.email, name: user.name, picture: user.picture },
+    isAdmin: isAdmin(user.email),
+    manualPending: isManualPending(user.email),
+  })
 })
 
 // Quem está logado — é o que o front chama ao carregar, em vez de guardar
 // identidade no localStorage. `isAdmin` vem junto pra economizar um
-// round-trip (a checagem de verdade continua sendo no servidor, por rota).
+// round-trip (a checagem de verdade continua sendo no servidor, por rota), e
+// `manualPending` diz se é o primeiro acesso — quem ainda não viu o manual
+// cai nele em vez de na primeira dashboard.
 app.get('/api/auth/me', requireAuth(), (req, res) => {
-  res.json({ user: req.user, isAdmin: isAdmin(req.user.email) })
+  res.json({ user: req.user, isAdmin: isAdmin(req.user.email), manualPending: isManualPending(req.user.email) })
 })
 
 app.post('/api/auth/logout', async (req, res) => {
@@ -742,7 +753,9 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
     if (!isAiConfigured()) {
       return res.status(503).json({ error: 'Montagem com IA não configurada — um administrador precisa cadastrar o provedor em Configurações › Provedor de IA.' })
     }
-    const { folderId, sourceKeys } = req.body || {}
+    // `history`: só numa retomada — o que já foi dito, quando a conversa
+    // anterior sumiu da memória do servidor (ver resumeHistory).
+    const { folderId, sourceKeys, history } = req.body || {}
     const folder = getFolder(folderId)
     if (!folder) return res.status(404).json({ error: 'Pasta não encontrada.' })
     if (!hasFolderAccess(folder, req.user.email)) return res.status(403).json({ error: 'Sem acesso a esta pasta.' })
@@ -750,9 +763,9 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
       return res.status(400).json({ error: 'Selecione pelo menos uma fonte de dados.' })
     }
     const started = await startConversation({
-      email: req.user.email, folderId, sourceKeys, accessToken: req.accessToken,
+      email: req.user.email, folderId, sourceKeys, accessToken: req.accessToken, history,
     })
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'ai.conversation.start', target: started.conversationId, meta: { folderId, sources: started.sources.map((s) => s.key) } })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'ai.conversation.start', target: started.conversationId, meta: { folderId, sources: started.sources.map((s) => s.key), resumed: started.resumed } })
     res.json(started)
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -764,6 +777,11 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
 app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
   const { text, dashboardMeasures } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
+  // Antes do stream, com status próprio: dentro dele viraria só um evento de
+  // erro. 410 é o que faz o navegador retomar a conversa com o que já foi dito.
+  const access = conversationStatus(req.params.id, req.user.email)
+  if (access === 'missing') return res.status(410).json({ error: 'Esta conversa expirou.', code: 'conversation_expired' })
+  if (access === 'forbidden') return res.status(403).json({ error: 'Esta conversa pertence a outro usuário.' })
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache, no-transform')
@@ -803,6 +821,13 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
     clearInterval(keepAlive)
     if (!closed) res.end()
   }
+})
+
+// "Nova conversa" no painel: libera a anterior da memória na hora. Só a dona;
+// id que não existe (ou de outra pessoa) não faz nada e responde igual.
+app.delete('/api/ai/conversations/:id', requireAuth(), (req, res) => {
+  endConversation(req.params.id, req.user.email)
+  res.sendStatus(204)
 })
 
 // Leitura de UM gráfico ("que história ele conta"). Uma ida só ao modelo,
@@ -1043,6 +1068,35 @@ app.put('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/access', requireA
   }
 })
 
+// ─── Manual de uso (página /manual) ───────────────────────────────
+// O manual é UM PDF. Para trocar o material, substitua manual/manual-de-uso.pdf
+// por outro com o mesmo nome e publique (o Dockerfile.api copia a pasta) — ou
+// aponte MANUAL_PATH para outro arquivo. A página conta as páginas sozinha:
+// não existe lista de slides para manter em lugar nenhum.
+//
+// Sai pela API, e não pelo nginx a partir de public/, porque tudo que está em
+// public/ fica alcançável sem login (ver o aviso sobre o snapshot no README).
+const MANUAL_PATH = process.env.MANUAL_PATH
+  ? resolve(process.env.MANUAL_PATH)
+  : resolve(process.cwd(), 'manual/manual-de-uso.pdf')
+
+app.get('/api/manual', requireAuth(), (_req, res) => {
+  if (!existsSync(MANUAL_PATH)) return res.status(404).json({ error: 'O manual de uso ainda não foi publicado.' })
+  // no-cache = revalida a cada abertura (304 quando nada mudou): o arquivo
+  // trocado vale na próxima vez que alguém abrir a página.
+  res.type('application/pdf')
+  res.set('Cache-Control', 'private, no-cache')
+  res.sendFile(MANUAL_PATH, { cacheControl: false }, (err) => {
+    if (err && !res.headersSent) res.status(500).json({ error: 'Não foi possível ler o manual de uso.' })
+  })
+})
+
+// A página do manual avisa que foi aberta — encerra o "primeiro acesso".
+app.post('/api/manual/seen', requireAuth(), (req, res) => {
+  markManualSeen(req.user.email)
+  res.sendStatus(204)
+})
+
 // ─── Gestão de acessos (aba "Acessos", só administradores) ────────
 app.get('/api/access/is-admin', requireAuth(), (req, res) => {
   res.json({ isAdmin: isAdmin(req.user.email) })
@@ -1067,6 +1121,70 @@ app.patch('/api/access/users/:email/role', requireAuth(), requireAdmin(), (req, 
 
 app.get('/api/access/log', requireAuth(), requireAdmin(), (req, res) => {
   res.json({ entries: listAuditLog({ limit: Number(req.query.limit) || 200 }) })
+})
+
+// ─── Solicitações de acesso a pastas (server/accessRequests.mjs) ──
+// Catálogo da página "Manual de uso": TODAS as pastas, com o acesso de quem
+// pergunta e o último pedido dele em cada uma. Só nome e status — o conteúdo
+// de uma pasta continua invisível para quem não foi liberado.
+app.get('/api/access/folders', requireAuth(), (req, res) => {
+  const latest = latestRequestsByFolder(req.user.email)
+  const folders = listFolderCatalogForUser(req.user.email).map((f) => {
+    const r = latest.get(f.id)
+    return { ...f, request: r ? { id: r.id, status: r.status, createdAt: r.createdAt, decidedAt: r.decidedAt } : null }
+  })
+  res.json({ folders })
+})
+
+// Qualquer logado pede acesso a uma pasta que ainda não enxerga. Um pedido
+// pendente por pasta: pedir de novo só depois da resposta.
+app.post('/api/access/requests', requireAuth(), (req, res) => {
+  try {
+    const { folderId, message } = req.body || {}
+    const folder = getFolder(String(folderId ?? ''))
+    if (!folder) return res.status(404).json({ error: 'Pasta não encontrada.' })
+    if (hasFolderAccess(folder, req.user.email)) return res.status(409).json({ error: 'Você já tem acesso a esta pasta.' })
+    const request = createRequest({ email: req.user.email, name: req.user.name, folderId: folder.id, folderName: folder.name, message })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'access.request.create', target: folder.name, meta: { folderId: folder.id, requestId: request.id } })
+    res.status(201).json({ ok: true, request })
+  } catch (e) {
+    res.status(e.status ?? 400).json({ error: e.message })
+  }
+})
+
+// Fila do administrador (aba Acessos). Sem ?status, só as pendentes.
+app.get('/api/access/requests', requireAuth(), requireAdmin(), (req, res) => {
+  const status = ['pending', 'approved', 'rejected', 'all'].includes(req.query.status) ? req.query.status : 'pending'
+  res.json({ requests: listRequests(status === 'all' ? {} : { status }) })
+})
+
+// Liberar põe o e-mail na lista de acesso da pasta e fecha o pedido. Guias
+// restritas da pasta continuam dependendo da liberação por guia.
+app.post('/api/access/requests/:id/approve', requireAuth(), requireAdmin(), (req, res) => {
+  try {
+    const pending = getRequest(req.params.id)
+    if (!pending) return res.status(404).json({ error: 'Solicitação não encontrada.' })
+    if (pending.status !== 'pending') return res.status(409).json({ error: 'Esta solicitação já foi respondida.' })
+    if (!getFolder(pending.folderId)) {
+      return res.status(404).json({ error: 'A pasta deste pedido não existe mais — recuse a solicitação.' })
+    }
+    grantFolderAccess(pending.folderId, pending.email, req.user.email)
+    const request = decideRequest(pending.id, 'approved', req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'access.request.approve', target: `${request.email} · ${request.folderName}`, meta: { folderId: request.folderId, requestId: request.id } })
+    res.json({ ok: true, request })
+  } catch (e) {
+    res.status(e.status ?? 400).json({ error: e.message })
+  }
+})
+
+app.post('/api/access/requests/:id/reject', requireAuth(), requireAdmin(), (req, res) => {
+  try {
+    const request = decideRequest(req.params.id, 'rejected', req.user.email)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'access.request.reject', target: `${request.email} · ${request.folderName}`, meta: { folderId: request.folderId, requestId: request.id } })
+    res.json({ ok: true, request })
+  } catch (e) {
+    res.status(e.status ?? 400).json({ error: e.message })
+  }
 })
 
 // Ping periódico do front (ver src/hooks/useHeartbeat.ts) — mantém o usuário

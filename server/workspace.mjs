@@ -277,6 +277,16 @@ export function getWorkspaceTreeForUser(email) {
     }))
 }
 
+// TODAS as pastas, para a página "Manual de uso" pedir acesso: só nome, ícone e
+// se quem pergunta já entra. Nada de dashboards, guias ou lista de acesso — quem
+// está de fora não enxerga o conteúdo de uma pasta antes de ser liberado.
+export function listFolderCatalogForUser(email) {
+  const ws = loadWorkspace()
+  return [...ws.folders]
+    .sort((a, b) => a.order - b.order)
+    .map((f) => ({ id: f.id, name: f.name, icon: f.icon, hasAccess: hasFolderAccess(f, email) }))
+}
+
 // Dashboard completa (guias + widgets), só com as guias que o usuário pode
 // ver — cada uma anotada com `canEdit` pro Builder decidir o que habilitar.
 export function getDashboardForUser(folderId, dashboardId, email) {
@@ -369,6 +379,22 @@ export function setFolderAccess(folderId, accessEmails, actorEmail) {
   const ws = loadWorkspace()
   const folder = requireFolder(ws, folderId)
   folder.accessEmails = accessEmails === null ? null : normalizeEmails(accessEmails)
+  folder.updatedBy = actorEmail
+  folder.updatedAt = nowIso()
+  saveWorkspace(ws)
+  return folder
+}
+
+// Libera a pasta para UM e-mail — é o que aprovar uma solicitação de acesso
+// faz (ver server/accessRequests.mjs). Pasta aberta (accessEmails null) já
+// atende todo mundo, e e-mail já liberado não muda nada: nos dois casos não há
+// o que gravar.
+export function grantFolderAccess(folderId, email, actorEmail) {
+  const ws = loadWorkspace()
+  const folder = requireFolder(ws, folderId)
+  const key = String(email).toLowerCase()
+  if (folder.accessEmails === null || folder.accessEmails.includes(key)) return folder
+  folder.accessEmails = normalizeEmails([...folder.accessEmails, key])
   folder.updatedBy = actorEmail
   folder.updatedAt = nowIso()
   saveWorkspace(ws)

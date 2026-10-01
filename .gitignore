@@ -23,3 +23,10 @@ data/aiConfig.json
 # Firebase). Não é segredo — é chave PÚBLICA —, mas é cache: muda sozinho a
 # cada ~6h e só sujaria o histórico. Recriado na primeira validação.
 data/.firebase-certs.json
+
+# node_modules/ é versionado (commit 2e1d8f3), menos este pacote: é a
+# dependência OPCIONAL do pdf.js para renderizar PDF no Node, que o navegador
+# nunca usa — um binário nativo da plataforma de quem instalou (~37 MB no
+# Windows), inútil nas outras máquinas e no Docker, onde o `npm ci` baixa o da
+# própria plataforma.
+node_modules/@napi-rs/

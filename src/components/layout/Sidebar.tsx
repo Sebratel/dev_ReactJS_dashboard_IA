@@ -1,22 +1,30 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation, useParams } from 'react-router-dom'
-import { Settings, ShieldCheck, Settings2, Folder, LayoutDashboard, LayoutGrid, ChevronLeft, ChevronRight, ChevronDown, Plus, Zap } from 'lucide-react'
+import { Settings, ShieldCheck, Settings2, Folder, LayoutDashboard, LayoutGrid, ChevronLeft, ChevronRight, ChevronDown, Plus, Zap, BookOpen } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
+import { useAccessRequestsStore } from '@/store/accessRequestsStore'
 import { FolderSettingsModal } from '@/features/workspace/FolderSettingsModal'
 import { cn } from '@/utils/cn'
 
-// As duas telas são de administrador: quem é Padrão não vê nenhuma delas, e a
-// rota também barra quem digitar o endereço (ver src/router/index.tsx).
+// O manual é de todo mundo. Configurações e Acessos são de administrador: quem
+// é Padrão não vê nenhuma das duas, e a rota também barra quem digitar o
+// endereço (ver src/router/index.tsx).
+const MANUAL_NAV_ITEM = { path: '/manual', icon: BookOpen, label: 'Manual de uso', sublabel: 'Acesso às pastas e guia' }
 const ADMIN_NAV_ITEMS = [
   { path: '/configuracoes', icon: Settings, label: 'Configurações', sublabel: 'Fontes de dados' },
   { path: '/acessos', icon: ShieldCheck, label: 'Acessos', sublabel: 'Usuários e log de ações' },
 ]
+// De quanto em quanto tempo o admin vê o número de pedidos de acesso
+// pendentes ao lado de "Acessos" se atualizar sozinho.
+const PENDING_POLL_MS = 60_000
 
 export function Sidebar() {
   const { sidebarCollapsed, toggleSidebar } = useAppStore()
   const isAdmin = useAuthStore((s) => s.isAdmin)
+  const pendingCount = useAccessRequestsStore((s) => s.pendingCount)
+  const refreshPendingCount = useAccessRequestsStore((s) => s.refreshPendingCount)
   const folders = useWorkspaceStore((s) => s.folders)
   const location = useLocation()
   const params = useParams<{ folderId?: string }>()
@@ -30,8 +38,15 @@ export function Sidebar() {
     if (params.folderId) setOpenFolders((prev) => (prev[params.folderId!] ? prev : { ...prev, [params.folderId!]: true }))
   }, [params.folderId])
 
+  useEffect(() => {
+    if (!isAdmin) return
+    void refreshPendingCount()
+    const id = setInterval(() => void refreshPendingCount(), PENDING_POLL_MS)
+    return () => clearInterval(id)
+  }, [isAdmin, refreshPendingCount])
+
   const toggleFolder = (id: string) => setOpenFolders((prev) => ({ ...prev, [id]: !prev[id] }))
-  const bottomNavItems = isAdmin ? ADMIN_NAV_ITEMS : []
+  const bottomNavItems = isAdmin ? [MANUAL_NAV_ITEM, ...ADMIN_NAV_ITEMS] : [MANUAL_NAV_ITEM]
 
   return (
     // transition-[width] (não transition-all): "all" tenta transicionar
@@ -151,15 +166,18 @@ export function Sidebar() {
           </>
         )}
 
-        {bottomNavItems.length > 0 && <div className="h-px bg-app-border my-2 mx-1" />}
+        <div className="h-px bg-app-border my-2 mx-1" />
 
         {bottomNavItems.map(({ path, icon: Icon, label, sublabel }) => {
           const isActive = location.pathname.startsWith(path)
+          // Pedidos de acesso esperando o admin — ver accessRequestsStore.
+          const badge = path === '/acessos' ? pendingCount : 0
+          const badgeHint = badge > 0 ? `${badge} pedido(s) de acesso aguardando` : null
           return (
             <NavLink
               key={path}
               to={path}
-              title={sidebarCollapsed ? `${label} — ${sublabel}` : undefined}
+              title={sidebarCollapsed ? [`${label} — ${sublabel}`, badgeHint].filter(Boolean).join(' · ') : badgeHint ?? undefined}
               className={cn(
                 'flex items-center gap-3 rounded-2xl transition-all duration-300 ease-nexa group relative min-h-[44px]',
                 sidebarCollapsed ? 'justify-center h-11 w-11 mx-auto' : 'px-3 py-2.5',
@@ -168,12 +186,20 @@ export function Sidebar() {
                   : 'text-white hover:bg-app-surface'
               )}
             >
-              <Icon size={16} strokeWidth={2} className={cn('shrink-0', isActive ? 'text-white' : 'text-primary')} />
+              <span className="relative shrink-0">
+                <Icon size={16} strokeWidth={2} className={isActive ? 'text-white' : 'text-primary'} />
+                {badge > 0 && sidebarCollapsed && <span className="absolute -top-1 -right-1 h-2 w-2 rounded-full bg-risk-critical" />}
+              </span>
               {!sidebarCollapsed && (
                 <div className="flex flex-col leading-tight min-w-0">
                   <span className="text-xs font-semibold truncate">{label}</span>
                   <span className={cn('text-[10px] truncate', isActive ? 'text-white/70' : 'text-gray-500')}>{sublabel}</span>
                 </div>
+              )}
+              {badge > 0 && !sidebarCollapsed && (
+                <span className="ml-auto shrink-0 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-risk-critical text-[10px] font-bold text-white">
+                  {badge}
+                </span>
               )}
             </NavLink>
           )

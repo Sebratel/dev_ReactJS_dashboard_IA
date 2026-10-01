@@ -86,6 +86,57 @@ function pruneConversations() {
   }
 }
 
+// O navegador guarda a conversa da sessão (src/features/builder/ai/aiChatStore.ts)
+// e pergunta antes de cada turno se ela ainda está aqui: 'missing' vira 410, o
+// sinal para ele retomá-la mandando o que já foi dito (ver resumeHistory).
+export function conversationStatus(conversationId, email) {
+  const conv = conversations.get(conversationId)
+  if (!conv) return 'missing'
+  return conv.email === email ? 'ok' : 'forbidden'
+}
+
+// "Nova conversa": libera a anterior na hora, em vez de esperar o prazo.
+export function endConversation(conversationId, email) {
+  const conv = conversations.get(conversationId)
+  if (conv && conv.email === email) conversations.delete(conversationId)
+}
+
+// Retomada: quando a conversa sumiu daqui (2 h sem uso, teto de conversas ou a
+// API reiniciou), o navegador abre outra mandando o que já foi DITO na tela. Só
+// texto — nunca resultado de ferramenta: o modelo relê o diálogo e, se precisar
+// de um valor de novo, consulta. Com teto, porque é texto vindo do navegador e
+// cada caractere vira token cobrado.
+const RESUME_MAX_MESSAGES = 30
+const RESUME_MAX_CHARS_EACH = 4000
+const RESUME_MAX_CHARS_TOTAL = 24000
+
+export function resumeHistory(history) {
+  if (!Array.isArray(history)) return []
+  const clean = history
+    .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim())
+    .map((m) => ({ role: m.role, content: m.text.trim().slice(0, RESUME_MAX_CHARS_EACH) }))
+    .slice(-RESUME_MAX_MESSAGES)
+  // Teto total cortando do começo: o fim da conversa é o que mais importa.
+  const kept = []
+  let total = 0
+  for (let i = clean.length - 1; i >= 0; i--) {
+    total += clean[i].content.length
+    if (total > RESUME_MAX_CHARS_TOTAL) break
+    kept.unshift(clean[i])
+  }
+  // Os provedores querem a conversa começando pelo usuário e alternando, e o
+  // turno novo entra como usuário — então o histórico termina no assistente.
+  const merged = []
+  for (const m of kept) {
+    const last = merged[merged.length - 1]
+    if (last && last.role === m.role) last.content += `\n\n${m.content}`
+    else merged.push({ ...m })
+  }
+  while (merged.length && merged[0].role !== 'user') merged.shift()
+  while (merged.length && merged[merged.length - 1].role !== 'assistant') merged.pop()
+  return merged
+}
+
 // ─── Teto de gasto por usuário/dia (em memória, zera na virada do dia) ──
 const spendByUser = new Map() // email → { day, usd }
 
@@ -421,7 +472,8 @@ async function runTool(name, input, ctx) {
 }
 
 // ─── Conversa ──────────────────────────────────────────────────────────
-export async function startConversation({ email, folderId, sourceKeys, accessToken }) {
+// `history` só vem numa retomada (ver resumeHistory): conversa nova começa vazia.
+export async function startConversation({ email, folderId, sourceKeys, accessToken, history }) {
   const all = await listSourceDefs(folderId, accessToken)
   const selected = all.filter((s) => sourceKeys.includes(s.key))
   if (selected.length === 0) {
@@ -429,11 +481,13 @@ export async function startConversation({ email, folderId, sourceKeys, accessTok
   }
   pruneConversations()
   const id = randomUUID()
+  const messages = resumeHistory(history)
   conversations.set(id, {
-    email, folderId, sourceKeys: selected.map((s) => s.key), messages: [], lastUsedAt: Date.now(),
+    email, folderId, sourceKeys: selected.map((s) => s.key), messages, lastUsedAt: Date.now(),
   })
   return {
     conversationId: id,
+    resumed: messages.length > 0,
     sources: selected.map((s) => ({ key: s.key, label: s.label, fieldCount: s.fields.length })),
   }
 }

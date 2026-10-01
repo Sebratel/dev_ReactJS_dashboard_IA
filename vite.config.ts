@@ -27,5 +27,23 @@ export default defineConfig(({ mode }) => {
         '/api': { target: `http://localhost:${apiPort}`, changeOrigin: true },
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // O worker do pdf.js (página "Manual de uso") vem do pacote como .mjs,
+          // e o mime.types padrão do nginx da imagem `web` não conhece essa
+          // extensão: serviria como application/octet-stream, e o navegador
+          // recusa worker de módulo sem MIME de JavaScript — o manual não abriria
+          // em produção, só no dev. Como .js, sai com o tipo certo em qualquer
+          // servidor.
+          assetFileNames: (asset) => {
+            // `names` é o campo novo do rollup; chamadas internas do Vite (CSS)
+            // ainda mandam só `name`.
+            const name = asset.names?.[0] ?? asset.name ?? ''
+            return name.endsWith('.mjs') ? 'assets/[name]-[hash].js' : 'assets/[name]-[hash][extname]'
+          },
+        },
+      },
+    },
   }
 })

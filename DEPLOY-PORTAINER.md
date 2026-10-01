@@ -98,6 +98,7 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
 | `ETL_RUN_ON_START` | `false` | `true` força uma execução do ETL assim que o container sobe. |
 | `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `10000` / `500000` / `120000` | Ajuste fino da busca no Data Hub. O padrão de página é 10.000 porque é o teto do próprio Data Hub — pedir mais só gasta round-trip. |
 | `SESSION_TTL_DAYS` | `30` | Tempo de vida da sessão de login. |
+| `MANUAL_PATH` | `manual/manual-de-uso.pdf` (dentro da imagem `api`) | PDF da página "Manual de uso". Apontar para um arquivo no volume `data` (ex.: `/app/data/manual-de-uso.pdf`) permite trocar o manual sem rebuild. |
 
 > `SECRETS_KEY` precisa ser **a mesma** nos serviços `api` e `etl` — o compose
 > já garante isso passando a mesma variável para os dois. Trocar a chave depois
@@ -121,6 +122,10 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
    sistema funcionando.
 4. Com uma conta de administrador (ver `ADMIN_EMAILS`), vá em **Configurações**
    para cadastrar as fontes — a tela não aparece para o usuário Padrão.
+5. **Trocar o manual de uso**: substitua `manual/manual-de-uso.pdf` no
+   repositório por outro PDF com o mesmo nome e faça o redeploy (a imagem `api`
+   copia a pasta). O número de slides é lido do arquivo. Para trocar sem
+   rebuild, use `MANUAL_PATH` (seção 3) apontando para o volume `data`.
 
 Nenhum **segredo** é assado na imagem. O que vai no bundle do `web` são as
 `VITE_FIREBASE_*`, que são públicas por design (o navegador precisa delas para
@@ -234,6 +239,11 @@ curl -s -X POST https://oauth2.googleapis.com/token \
 
 ## 6. Detalhes que evitam dor de cabeça
 
+- **Tudo em `public/` é público.** O nginx do `web` serve o `dist/` inteiro sem
+  login. Por isso o snapshot versionado (`public/installData.data`, dado real)
+  está no `.dockerignore` desde 01/10/2026 — antes disso,
+  `/installData.data` respondia para qualquer um. Imagem construída antes dessa
+  data continua servindo o arquivo até o próximo redeploy.
 - **Sem `container_name` fixo.** O Portainer prefixa os containers com o nome
   da stack. Nome fixo colide se você tiver duas stacks no mesmo host (ex.
   homologação e produção) e atrapalha o redeploy.

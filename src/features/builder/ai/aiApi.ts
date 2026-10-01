@@ -25,7 +25,16 @@ export interface AiStatus {
 
 export interface AiConversation {
   conversationId: string
+  // true quando a conversa foi aberta já com o histórico de uma retomada.
+  resumed: boolean
   sources: { key: string; label: string; fieldCount: number }[]
+}
+
+// O que já foi dito, para retomar uma conversa que o servidor esqueceu (ver
+// resumeHistory em server/aiAssistant.mjs). Só texto.
+export interface ResumeMessage {
+  role: 'user' | 'assistant'
+  text: string
 }
 
 export type AiEvent =
@@ -48,11 +57,17 @@ export async function fetchAiStatus(): Promise<AiStatus> {
   return parse(await apiFetch('/api/ai/status'))
 }
 
-export async function startAiConversation(folderId: string, sourceKeys: string[]): Promise<AiConversation> {
+export async function startAiConversation(folderId: string, sourceKeys: string[], history?: ResumeMessage[]): Promise<AiConversation> {
   return parse(await apiFetch('/api/ai/conversations', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ folderId, sourceKeys }),
+    body: JSON.stringify({ folderId, sourceKeys, history }),
   }))
+}
+
+// "Nova conversa": libera a anterior no servidor. Falhar aqui não importa — o
+// servidor a esquece sozinho depois de 2 h sem uso.
+export async function endAiConversation(conversationId: string): Promise<void> {
+  await apiFetch(`/api/ai/conversations/${encodeURIComponent(conversationId)}`, { method: 'DELETE' })
 }
 
 export interface WidgetInsight {

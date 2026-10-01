@@ -9,6 +9,8 @@ const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
 const DashboardPage = lazy(() => import('@/features/dashboard/DashboardPage'))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage'))
 const AccessPage = lazy(() => import('@/features/access/AccessPage'))
+// Lazy também por peso: é a única página que carrega o pdf.js.
+const ManualPage = lazy(() => import('@/features/manual/ManualPage'))
 
 function PageLoader() {
   return (
@@ -68,9 +70,11 @@ function LoginRoute() {
 
 // `/` sozinho não é mais uma página própria — redireciona pra 1ª dashboard
 // que o usuário pode ver (primeira pasta, primeira dashboard dela, ambas
-// ordenadas). Sem nenhuma pasta/dashboard liberada, mostra um estado vazio
-// em vez de tentar navegar pra algo que não existe.
+// ordenadas). Vai para o Manual de uso em dois casos: primeiro acesso (antes
+// de qualquer dashboard), e quando não há nenhuma dashboard liberada — é lá
+// que a pessoa vê as pastas e pede acesso ao administrador.
 function DashboardRedirect() {
+  const manualPending = useAuthStore((s) => s.manualPending)
   const folders = useWorkspaceStore((s) => s.folders)
   const loading = useWorkspaceStore((s) => s.loading)
   const error = useWorkspaceStore((s) => s.error)
@@ -78,19 +82,14 @@ function DashboardRedirect() {
 
   useEffect(() => { if (!folders && !loading && !error) refresh() }, [folders, loading, error, refresh])
 
+  if (manualPending) return <Navigate to="/manual" replace />
   if (error) {
     return <p className="text-sm text-rose-300 rounded-xl border border-app-border bg-app-card px-5 py-16 text-center">{error}</p>
   }
   if (!folders || loading) return <PageLoader />
 
   const firstWithDashboard = folders.find((f) => f.dashboards.length > 0)
-  if (!firstWithDashboard) {
-    return (
-      <p className="text-sm text-gray-400 rounded-xl border border-dashed border-app-border px-5 py-16 text-center">
-        Nenhuma dashboard disponível ainda — peça acesso a um administrador.
-      </p>
-    )
-  }
+  if (!firstWithDashboard) return <Navigate to="/manual" replace />
   return <Navigate to={`/dashboard/${firstWithDashboard.id}/${firstWithDashboard.dashboards[0].id}`} replace />
 }
 
@@ -102,6 +101,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <DashboardRedirect /> },
       { path: 'dashboard/:folderId/:dashboardId', element: <PageSuspense><DashboardPage /></PageSuspense> },
+      { path: 'manual', element: <PageSuspense><ManualPage /></PageSuspense> },
       { path: 'configuracoes', element: <RequireAdmin><PageSuspense><SettingsPage /></PageSuspense></RequireAdmin> },
       { path: 'acessos', element: <RequireAdmin><PageSuspense><AccessPage /></PageSuspense></RequireAdmin> },
     ],

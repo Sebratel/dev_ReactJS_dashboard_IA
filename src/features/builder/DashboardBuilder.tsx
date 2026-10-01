@@ -735,6 +735,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
       {aiPanelOpen && (
         <AiPanel
           folderId={folderId}
+          dashboardId={dashboardId}
           initialPrompt={aiInitialPrompt}
           dashboardMeasures={dashboard?.measures ?? []}
           onApply={applyAiWidgets}

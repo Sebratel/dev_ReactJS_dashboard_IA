@@ -7,7 +7,8 @@ import { logout as endSession } from '@/store/authSession'
 
 const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
   '/configuracoes': { title: 'Configurações', subtitle: 'Fontes de dados e dicionário' },
-  '/acessos': { title: 'Acessos', subtitle: 'Usuários, status online e log de ações' },
+  '/acessos': { title: 'Acessos', subtitle: 'Usuários, pedidos de acesso e log de ações' },
+  '/manual': { title: 'Manual de uso', subtitle: 'Pedir acesso às pastas e aprender a usar o sistema' },
 }
 
 export function TopBar() {

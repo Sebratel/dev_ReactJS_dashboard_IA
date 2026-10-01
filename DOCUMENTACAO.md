@@ -48,20 +48,22 @@ src/                    — frontend (React + Vite + TypeScript)
   store/                  estado global (Zustand): sessão, workspace, preferências de UI
   features/               1 pasta por área da aplicação
     auth/                   tela de login (o fluxo OAuth em si acontece todo no servidor)
-    access/                 aba "Acessos" — usuários, online, log de auditoria (3.11)
+    access/                 aba "Acessos" — usuários, online, pedidos de acesso, log de auditoria (3.11)
+    manual/                 página "Manual de uso": leitor do PDF (pdf.js) e pedido de acesso às pastas (3.15)
     dashboard/              casca fina: resolve a URL (pasta/dashboard) e delega ao builder
     builder/                o editor de dashboards em si — a maior pasta do projeto (3.2 em diante)
     settings/               cadastro de fontes (Data Hub) e Dicionário & Tipo de dado (3.7)
     workspace/              modal de configuração de pasta + client HTTP de pastas/dashboards
   components/             layout (Sidebar/TopBar/MainLayout) e UI genérica (Card, modais, skeleton)
-  hooks/                  só useHeartbeat (mantém o usuário "online", ver 3.11)
+  hooks/                  useHeartbeat (mantém o usuário "online", ver 3.11) e useElementSize
   lib/                    apiClient (client HTTP central) e constante do escopo OAuth
   utils/                  cn() (classnames) e formatadores de número/data em pt-BR
   types/                  ver nota abaixo
 
 server/                 — backend Express (.mjs, ESM, sem build) — ver 2.3
 scripts/                — processos batch: ETL (fetch-install.mjs, etl-scheduler.mjs)
-data/                   — estado persistente em JSON (fontes, sessões, workspace, comentários...)
+data/                   — estado persistente em JSON (fontes, sessões, workspace, comentários, pedidos de acesso...)
+manual/                 — o PDF do manual de uso (manual-de-uso.pdf), servido por GET /api/manual (3.15)
 public/                 — assets estáticos + installData.data (o snapshot em si, gzip)
 docker/                 — nginx.conf (produção)
 Dockerfile / Dockerfile.api / docker-compose.yml / DEPLOY-PORTAINER.md — build e deploy (ver 2.5)
@@ -82,7 +84,8 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | `sheetSources.mjs` / `googleSheets.mjs` | Catálogo de planilhas cadastradas (3.7-bis) + cliente REST da Google Sheets API. |
 | `firebaseToken.mjs` / `sessions.mjs` | Verificação local do ID token do Firebase (assinatura, emissor, público, validade) e persistência da sessão. |
 | `secretBox.mjs` | Cifra AES-256-GCM usada em todo segredo salvo em disco (tokens do Data Hub, tokens do Google). |
-| `accessLog.mjs` | Papéis (admin/padrão), status "online" e o log de auditoria (3.11). |
+| `accessLog.mjs` | Papéis (admin/padrão), primeiro acesso (manual pendente), status "online" e o log de auditoria (3.11). |
+| `accessRequests.mjs` | Pedidos de acesso a pastas e a resposta de cada um, em `data/accessRequests.json` (3.15). |
 | `fieldDictionary.mjs` | Descrições e sobrescrita de tipo de dado por campo (3.7). |
 | `widgetComments.mjs` | Comentários por widget (3.13). |
 | `workspace.mjs` | A árvore Pasta → Dashboard → Guia, permissões e migrações de schema do `workspace.json`. |
@@ -98,12 +101,14 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | Widget | `widget-data`, `field-values` | O motor de agregação e a busca de valores distintos de um campo. |
 | Planilhas | `sheet-sources` (CRUD) + `:id/usage`, `:id/refresh` | Qualquer usuário cadastra (3.7-bis); editar/remover exige dono ou admin. |
 | Data Hub | `lakehouse-sources` (CRUD) + `test`, `:id/enabled\|refresh\|sync\|usage`, `:id/folders` | Todas admin-only, como a tela de Configurações (3.7-ter). |
-| IA | `ai/status`, `ai/conversations`, `ai/conversations/:id/messages` (streaming) | 3.7-quater. |
+| IA | `ai/status`, `ai/conversations` (abrir; com `history`, retomar), `ai/conversations/:id/messages` (streaming; 410 quando o servidor esqueceu a conversa), `ai/conversations/:id` (DELETE, "Nova conversa") | 3.7-quater. |
 | Insight | `ai/insight` | 3.14. |
 | Dicionário | `field-dictionary` (GET/PUT) | Leitura livre, escrita admin-only (3.7). |
 | Comentários | `widget-comments` (listar/contar/criar/apagar) | 3.13. |
 | Workspace | `workspace/tree`, `workspace/folders[/:fid[/dashboards[/:did[/tabs/:tid...]]]]` | Camadas de permissão por rota — acesso à pasta, gerente da pasta, ou edição da guia (3.12). |
 | Acessos | `access/is-admin`, `access/users`, `access/users/:email/role`, `access/log`, `access/heartbeat` | Tudo admin-only, exceto `is-admin` e `heartbeat` (3.11). |
+| Pedidos de acesso | `access/folders`, `access/requests` (GET/POST), `access/requests/:id/approve`, `access/requests/:id/reject` | `folders` e criar pedido: qualquer logado; listar, liberar e recusar: admin-only (3.15). |
+| Manual | `manual` (o PDF), `manual/seen` | Com sessão; `seen` encerra o primeiro acesso (3.15). |
 
 **Fluxo, do lakehouse até a tela**: `scripts/fetch-install.mjs` lê o catálogo de fontes, decifra cada token, pagina a API pública do Data Hub e grava **um único snapshot** (gzip, `public/installData.data`) — preservando o dado anterior de qualquer fonte que ainda não venceu seu ciclo, ou que falhou na última tentativa. `dataset.mjs` mantém esse arquivo em memória, recarregado sozinho quando o mtime muda: é o único "banco" do processo da API. Uma chamada a `POST /api/widget-data` lê esse snapshot, injeta ao vivo linhas de planilha do Google se o widget referenciar uma, valida os campos contra o catálogo, e devolve o resultado já agregado — pronto pro gráfico desenhar.
 
@@ -118,14 +123,15 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | Caminho | Página | Acesso |
 |---|---|---|
 | `/login` | Login (Google SSO) | Pública |
-| `/` | Redireciona pra dashboard atual/primeira visível | Sessão |
+| `/` | Redireciona pra primeira dashboard visível — ou pro Manual de uso, no primeiro acesso e quando não há nenhuma dashboard liberada (3.15) | Sessão |
 | `/dashboard/:folderId/:dashboardId` | O Builder (3.2 em diante) | Sessão |
-| `/configuracoes` | Fontes de dados + Dicionário (3.7) | Sessão |
+| `/manual` | Manual de uso + pastas e pedido de acesso (3.15) | Sessão |
+| `/configuracoes` | Fontes de dados + Provedor de IA + Dicionário (3.7) | Sessão + admin |
 | `/acessos` | Gestão de acessos (3.11) | Sessão + admin |
 
 A proteção de verdade mora sempre no servidor — cada rota da API confere de novo quem está pedindo; o React Router só evita mostrar a tela errada por um instante enquanto a sessão carrega.
 
-**Estado global** (`src/store/`, Zustand): `authStore` guarda só "quem está logado" (identidade em memória — não é a sessão de verdade, essa é o cookie do servidor); `workspaceStore` guarda a árvore de pastas/dashboards visíveis ao usuário atual, sempre recarregada do servidor a cada mudança relevante; `appStore` guarda preferências puramente locais (tema, barra lateral recolhida), persistidas no `localStorage` do navegador — não compartilhadas entre pessoas nem dispositivos. Não existe um "store" do builder: o estado de um dashboard sendo editado (rascunho, ver 3.2) vive local ao próprio componente do editor.
+**Estado global** (`src/store/`, Zustand): `authStore` guarda só "quem está logado" (identidade em memória — não é a sessão de verdade, essa é o cookie do servidor); `workspaceStore` guarda a árvore de pastas/dashboards visíveis ao usuário atual, sempre recarregada do servidor a cada mudança relevante; `appStore` guarda preferências puramente locais (tema, barra lateral recolhida), persistidas no `localStorage` do navegador — não compartilhadas entre pessoas nem dispositivos. As conversas com a IA ficam em `features/builder/ai/aiChatStore.ts`, uma por dashboard, no `sessionStorage` da aba — sobrevivem a fechar o painel e a recarregar a página, e somem no logout ou ao fechar a aba (3.7-quater). Não existe um "store" do builder: o estado de um dashboard sendo editado (rascunho, ver 3.2) vive local ao próprio componente do editor.
 
 **Comunicação com o backend**: um client HTTP central (`src/lib/apiClient.ts`) usa `fetch` nativo, sempre com o cookie de sessão automático (nenhum token é manipulado no front); uma resposta `401` desloga sozinho e manda pro login. Cada feature tem seu próprio arquivo `*Api.ts` (`builderApi.ts`, `workspaceApi.ts`, `accessApi.ts` etc.) por cima desse client central. Sem axios nem react-query — sem cache/retry automático de requisição.
 
@@ -174,8 +180,10 @@ O conteúdo do app tem 3 níveis, pensados pra organizar setores/equipes diferen
 - **Dashboard**: vive dentro de uma pasta; uma pasta pode ter várias. Cada uma tem seu próprio conjunto de guias.
 - **Guia** (o que antes era chamado de "aba"): vive dentro de uma dashboard — é onde ficam os widgets de fato. Ver 3.2 pra funcionalidade da guia em si (inalterada) e 3.12 pra quem pode ver/editar cada uma.
 
+**Quem acessa e quem gerencia** são escolhidos, no modal da pasta, numa lista de quem já acessou o sistema — com busca por nome ou e-mail, sem acento —, e não digitados: um e-mail escrito errado não liberava nada e ninguém percebia. Um e-mail liberado antes do primeiro acesso da pessoa continua valendo e aparece como "ainda não acessou", para poder ser tirado.
+
 **Gerente de pasta**: o administrador pode nomear um ou mais usuários como gerentes de uma pasta específica (o mesmo usuário pode ser gerente de uma pasta e não ter nenhum poder especial em outra). Dentro da própria pasta, um gerente pode:
-- Criar novas dashboards.
+- Criar novas dashboards, renomear (lápis ao lado do nome, no modal da pasta) e remover.
 - Decidir quem vê e quem edita cada guia das dashboards daquela pasta (ver 3.12).
 
 Um gerente **não** precisa ser administrador global — o poder dele vale só dentro da pasta em que foi nomeado.
@@ -442,7 +450,10 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 - **Medidas comparativas e cálculos**: pedidos do tipo "últimos 3 meses comparado com o mesmo período do ano passado", "percentual de X sobre Y", "percentual de reincidência sobre o total" (isolando um status/categoria), ou qualquer conta que combine dois números — inclusive de fontes diferentes — fazem a IA propor **medidas nomeadas** (ver 3.5-bis) em vez de tentar forçar isso num filtro/dimensão comum. Mesmo fluxo de aprovação dos widgets: ela apresenta as medidas propostas, você aprova (ou descarta), e elas entram na tabela de medidas da dashboard — que também depende do "Salvar". Quando o pedido também envolver VER o resultado, ela já propõe um widget (normalmente um Card) usando a medida recém-criada, na mesma resposta. Toda medida que for uma taxa/percentual (nome "Taxa de..."/"% de...", ou fórmula que termina multiplicando por 100) já vem marcada pra mostrar o sinal "%" no Card, sem precisar pedir. **Editar uma medida já existente** ("marca a Taxa de X como percentual", "muda o filtro dessa medida", "renomeia essa medida") é reconhecido como uma ATUALIZAÇÃO — tela de aprovação própria (ícone de lápis) — e não cria uma medida nova; só quando o pedido for claramente sobre algo novo é que uma medida nova é proposta, e se o nome escolhido colidir com uma já existente, ela é salva com um sufixo automático ("Nome (2)") em vez de dar erro. **Não é só sob pedido explícito**: mesmo num pedido vago numa dashboard nova ("monte os principais indicadores"), se o assunto tiver uma taxa/percentual/comparativo óbvio pro domínio (ex. taxa de reincidência, crescimento vs. ano anterior), a IA é instruída a considerar isso como um dos indicadores da resposta, criando a medida por conta própria — a mesma liberdade que ela já tem pra escolher o TIPO de gráfico sem o pedido especificar. **Limites conhecidos** (não é qualquer cálculo): a IA não sabe propor arredondamento, mínimo/máximo nativo, um "se isso então aquilo" com um texto como resultado (ex. "Crítico"/"Normal"), desvio padrão/mediana, nem uma medida como série ao longo do tempo (ex. "acumulado mês a mês") — ver item 2.16 do `MELHORIAS_FUTURAS.md`.
 - **Acesso**: a conversa só alcança fontes que você já veria no Builder daquela pasta (as mesmas regras de 3.7 e 3.12 valem, sem exceção).
 - **Custo e limite**: cada interação custa centavos e o painel mostra, no canto, quanto você já gastou hoje e qual o limite diário. Batendo o limite, o campo de mensagem bloqueia até o dia seguinte (ajustável em Configurações › Provedor de IA). Passar o mouse no contador diz qual provedor e modelo responderam; um asterisco ao lado avisa que o modelo escolhido está **sem preço cadastrado** — nesse caso o contador fica em zero por falta de tabela, não por a IA ser gratuita.
-- **Trocar de fontes**: a seleção trava depois da primeira mensagem — para mudar, comece uma conversa nova. As conversas ficam só em memória e expiram em 2 horas; nada de transcrição salva em disco.
+- **A conversa fica guardada durante a sessão, uma por dashboard**: fechar o painel, trocar de dashboard e voltar, ou recarregar a página (F5) não apaga nada — as mensagens, as propostas (inclusive se já foram adicionadas) e a memória da IA continuam de onde pararam. Fechar o painel no meio de uma resposta também não a perde: ela termina em segundo plano e está lá ao reabrir. Cada dashboard tem a sua conversa. **Sair do sistema, ou fechar a aba do navegador, apaga tudo.** Uma resposta que a conexão ou um F5 cortou no meio fica na tela com o aviso "Resposta interrompida".
+- **Nova conversa**: o botão ↺ no topo do painel (com confirmação) apaga a conversa daquela dashboard e reabre a escolha de fontes — o que já foi adicionado à guia continua lá.
+- **Trocar de fontes**: a seleção trava depois da primeira mensagem — para mudar, use **Nova conversa**.
+- **Onde fica guardada**: o que aparece na tela vive no navegador (`sessionStorage` da aba, apagado no logout); a memória da IA vive no servidor, só em memória — nada vai para disco. O servidor esquece uma conversa depois de 2 horas sem uso ou quando a API reinicia (um redeploy, por exemplo); nesse caso, a próxima mensagem retoma a conversa sozinha, reenviando à IA o que já foi dito na tela (só o texto, com teto de tamanho), e ela segue de onde parou.
 - **Requisito de configuração**: uma credencial de provedor cadastrada em Configurações › Provedor de IA (3.7-quinquies). Sem ela o botão continua aparecendo, mas o painel avisa que a IA não está configurada; o resto do app não é afetado.
 
 ### 3.7-quinquies Provedor de IA (Configurações, só admin)
@@ -485,6 +496,7 @@ Até 10/09/2026 a IA era configurada **só por variável de ambiente** (`ANTHROP
 ### 3.11 Gestão de acessos (aba "Acessos")
 
 - Visível só para administradores; para os demais usuários, a aba fica escondida no menu e a API recusa o acesso (403).
+- **Pedidos de acesso a pastas**: o card do topo lista os pedidos feitos pela página Manual de uso (3.15) que esperam resposta — quem pediu, a pasta, a mensagem e a data —, com **Liberar** e **Recusar** (com confirmação). O número de pendentes aparece ao lado de "Acessos" no menu, atualizado a cada minuto.
 - **Usuários**: todo mundo que já logou pelo menos uma vez, com primeiro e último acesso.
 - **Papel (Admin/Padrão)**: qualquer administrador pode promover ou rebaixar outro usuário direto na tabela (com confirmação antes) — vale só para quem já acessou pelo menos uma vez. Quem entra pela primeira vez entra como **Padrão**. A lista de e-mails em `ADMIN_EMAILS` (env) ou no código de `server/accessLog.mjs` só vale enquanto a instalação não tem **nenhum** administrador salvo (instalação nova, ou `data/users.json` perdido): nesse caso, quem está nela entra como admin, para o sistema não nascer sem ninguém que libere acesso. Existindo um admin, a lista não dá papel a ninguém — um e-mail dela que entre depois é Padrão até ser promovido aqui. O sistema nunca deixa remover o último administrador restante. Esse papel é diferente de "gerente de pasta" (3.1/3.12) — um usuário `padrão` pode ser gerente de uma ou mais pastas sem virar administrador global.
 - **Online agora**: calculado por "visto nos últimos 90 segundos" — o navegador manda um sinal (heartbeat) a cada 45s enquanto a aba está visível, então uma tela aberta e parada ainda aparece online.
@@ -498,9 +510,9 @@ Resumo de quem pode fazer o quê (ver 3.1 pra contexto):
 | Ação | Quem pode |
 |---|---|
 | Criar/editar/remover pasta | Administrador |
-| Definir quem acessa uma pasta (aberta a todos ou lista de e-mails) | Administrador |
+| Definir quem acessa uma pasta (aberta a todos ou pessoas escolhidas entre quem já acessou o sistema) | Administrador |
 | Nomear gerente(s) de uma pasta | Administrador |
-| Criar dashboard dentro de uma pasta | Administrador ou gerente daquela pasta |
+| Criar, renomear e remover dashboard dentro de uma pasta | Administrador ou gerente daquela pasta |
 | Gerenciar a estrutura de uma dashboard (guias, filtros, relacionamentos entre fontes, medidas, formato) | Administrador ou gerente da pasta |
 | Definir quem vê e quem edita cada guia | Administrador ou gerente da pasta |
 | Ver uma guia | Administrador, gerente da pasta, ou usuário liberado (visualização ou edição) naquela guia especificamente |
@@ -523,6 +535,16 @@ Ao lado do ícone de comentário, todo widget tem um ícone de leitura no cabeç
 - **Como foi calculado**: não passa pela IA. É o próprio `WidgetConfig` traduzido em texto — fonte, agregação, agrupamento, filtros (do widget e da guia) e recorte de datas, incluindo as descrições já escritas no dicionário de dados (3.7). Por não depender de nenhum modelo, é instantâneo, grátis, e não é uma explicação plausível do cálculo — é o cálculo.
 - **O que os dados dizem**: aqui sim é a IA, sob demanda (um clique, nunca automático ao abrir a tela — um gráfico não pode gerar custo só por estar na dashboard). Sobe pro modelo só o resultado já agregado que o próprio gráfico desenha (as dezenas/centenas de pontos, não a base). Usa o mesmo teto de gasto diário do assistente de montagem (3.7-quater), não um orçamento separado. A resposta fica em cache por alguns minutos — reabrir o mesmo gráfico sem mudar nada responde na hora, sem custo.
 - **Fixar a leitura**: em modo edição, a leitura gerada pode ser fixada no widget — passa a ficar salva com a dashboard (depende do "Salvar", como qualquer edição) e todo mundo que abre o widget lê o mesmo texto, sem gerar de novo. Se os dados mudarem depois de fixado, o texto não desaparece nem passa por atual: aparece um aviso de que a leitura pode estar desatualizada.
+
+### 3.15 Manual de uso e pedido de acesso às pastas
+
+- **Onde**: item **Manual de uso** no menu lateral, para qualquer usuário (rota `/manual`).
+- **Quando a pessoa cai nele sozinha**: no **primeiro acesso** — antes de qualquer dashboard — e sempre que ela **não tiver nenhuma dashboard liberada**. O primeiro acesso fica marcado em `data/users.json` (`manualPending`) até a página ser aberta; quem já usava o sistema antes desta função não é mandado para o manual.
+- **O manual**: um PDF, mostrado um slide por vez (pdf.js) — setas, miniaturas, teclado (← →; em tela cheia também PageUp/PageDown, espaço, Home/End; **F** liga a tela cheia, **Esc** sai), arrastar o dedo no celular e **tela cheia**. Só visualização: não há botão de baixar nem de imprimir.
+- **Trocar o material**: substituir `manual/manual-de-uso.pdf` por outro PDF com o mesmo nome e publicar. O número de slides é lido do próprio arquivo — não há lista para manter. `MANUAL_PATH` aponta para outro arquivo, se for preciso trocar sem rebuild. O PDF sai pela API (`GET /api/manual`), atrás do login, e cada abertura revalida o arquivo: o novo vale na próxima vez que alguém abrir a página.
+- **Pastas do sistema** — no topo da página, antes do manual, porque pedir acesso é o que precisa fazer primeiro quem cai ali sem nada liberado: lista **todas** as pastas, com o status de quem está vendo — **Liberada** (com atalho "Abrir" para a primeira dashboard), **Pedido enviado em…**, **Recusado em…** ou **Sem acesso**. De quem está de fora, a lista mostra só o nome da pasta: dashboards e guias continuam invisíveis até a liberação.
+- **Pedir acesso**: "Solicitar acesso" abre um campo de mensagem opcional (até 500 caracteres) para o administrador. Um pedido pendente por pasta; depois de recusado, dá para pedir de novo. A lista se atualiza sozinha a cada 30 s — uma pasta liberada aparece no menu lateral sem recarregar a página.
+- **Responder**: só administrador, no card de pedidos da aba Acessos (3.11). **Liberar** acrescenta o e-mail à lista de acesso da pasta (pasta aberta a todos já atende, sem mudança); as guias restritas da pasta continuam dependendo da liberação por guia (3.12). **Recusar** só fecha o pedido. Pedido, liberação e recusa entram no log de ações.
 
 ---
 

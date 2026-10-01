@@ -448,6 +448,31 @@ leitura, o modelo vê o resultado **já agregado** que o gráfico desenha.
 Nada aplicado sozinho é deliberado: **o modelo pode interpretar mal um pedido
 ambíguo**.
 
+### A conversa dura a sessão, uma por dashboard
+
+O painel não guarda a conversa: quem guarda é
+[aiChatStore.ts](src/features/builder/ai/aiChatStore.ts), uma por dashboard, no
+`sessionStorage` da aba. Fechar o painel, trocar de dashboard ou dar F5 não apaga
+nada; o turno roda no store, então fechar o painel no meio de uma resposta não a
+interrompe. **Logout ou fechar a aba apaga** — o `logout()` do `authStore` limpa
+a chave mesmo que o Builder nem tenha sido carregado naquela aba, e trocar de
+usuário na mesma aba também zera. O botão ↺ ("Nova conversa") é o jeito de zerar
+de propósito, e libera a conversa no servidor (`DELETE /api/ai/conversations/:id`).
+
+A **memória do modelo** continua no servidor, só em memória: some após 2 h sem uso,
+no teto de 200 conversas, ou quando a API reinicia (todo redeploy). Por isso a rota
+de mensagem confere a conversa **antes** de abrir o stream e responde **410**
+quando ela sumiu; o navegador então abre outra mandando o que já foi dito na tela
+(`history`, só texto — o que foi proposto e aprovado vira uma linha "[Propus…]") e
+reenvia o pedido. O servidor confere papel, alternância e tamanho
+(`resumeHistory`: 30 falas, 4.000 caracteres cada, 24.000 no total), porque é texto
+vindo do navegador e cada caractere é token cobrado. Resultado de ferramenta não
+volta: se precisar de um valor de novo, o modelo consulta.
+
+> A gravação no `sessionStorage` é adiada (400 ms, e na hora no `pagehide`):
+> durante a resposta o texto chega aos pedaços, e serializar todas as conversas a
+> cada pedaço seria trabalho jogado fora.
+
 O "Como foi calculado" de um widget **não passa pela IA** — sai do próprio
 `WidgetConfig` no navegador. Pagar o modelo para narrar algo que sabemos com
 exatidão só criaria uma explicação plausível onde havia uma correta. E a leitura
@@ -560,7 +585,7 @@ acesso à pasta **não é um atalho**: o servidor recusa a gravação dizendo
 mostra só membros daquela pasta — um gerente nunca precisa de visibilidade sobre
 gente de fora do próprio setor.
 
-Das **59 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
+Das **67 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
 por `requireAuth()`: as duas de login/logout e o `/api/health`. As checagens do
 React Router são **só UX** — o comentário no código diz isso com todas as
 letras. Esconder o link nunca foi controle de acesso.
@@ -582,6 +607,26 @@ letras. Esconder o link nunca foi controle de acesso.
 > o e-mail é do domínio permitido, e o bypass não pode ser a exceção que fura
 > essa garantia.
 
+### Primeiro acesso: Manual de uso e pedido de acesso
+
+Quem entra pela primeira vez cai na página **Manual de uso** (`/manual`), não na
+primeira dashboard: o registro novo em `data/users.json` nasce com
+`manualPending: true`, e a página avisa o servidor (`POST /api/manual/seen`)
+quando é aberta. Registro de antes do campo existir conta como já visto — quem
+já usava o sistema não é mandado para o manual. Quem **não tem nenhuma dashboard
+liberada** também cai lá, em todo acesso.
+
+No topo, a página lista **todas** as pastas, com o acesso de quem está vendo
+(`GET /api/access/folders` — só nome e status, nunca dashboards, guias ou a lista
+de acesso), e deixa pedir acesso a uma pasta com uma mensagem opcional; o manual
+vem embaixo. O pedido
+vai para `data/accessRequests.json`; um pendente por pasta (o segundo é 409).
+O administrador responde no card **Pedidos de acesso a pastas**, no topo da aba
+Acessos, e o número de pendentes aparece ao lado de "Acessos" no menu.
+**Liberar** põe o e-mail na lista de acesso da pasta (`grantFolderAccess`) — as
+guias restritas dela continuam dependendo da liberação por guia. **Recusar** só
+fecha o pedido; a pessoa vê "recusado" e pode pedir de novo.
+
 ### Um projeto Firebase por sistema
 
 `authentication-dashboardsia`, separado do de qualquer outro setor — mesmo sendo
@@ -596,6 +641,43 @@ Dois passos no console que **não aparecem no build** e são sempre esquecidos:
 2. **Authentication → Settings → Authorized domains** → adicionar o domínio onde
    o dashboard vai rodar. Só `localhost` vem liberado; sem isso o popup falha com
    `auth/unauthorized-domain` **no primeiro clique real, nunca antes**.
+
+---
+
+## Manual de uso
+
+O manual é **um PDF**: [manual/manual-de-uso.pdf](manual/manual-de-uso.pdf). Para
+atualizar o material, **substitua esse arquivo por outro com o mesmo nome** e
+publique — a página conta as páginas sozinha, e não existe lista de slides para
+manter. O `Dockerfile.api` copia a pasta `manual/`; `MANUAL_PATH` aponta para outro
+arquivo (ex.: um PDF no volume `data`, para trocar sem rebuild).
+
+Ele sai pela API (`GET /api/manual`, atrás do login), e não pelo nginx a partir
+de `public/`, porque tudo em `public/` fica alcançável sem autenticação. Vai com
+`Cache-Control: private, no-cache` e ETag: cada abertura revalida (304 quando nada
+mudou), então o arquivo trocado vale na próxima vez que alguém abrir a página.
+
+A página desenha um slide por vez com o **pdf.js** (`pdfjs-dist`, build
+*legacy*): setas, miniaturas, teclado (← →; em tela cheia também PageUp/PageDown,
+espaço, Home/End; F liga a tela cheia), arrastar o dedo no celular. Só
+visualização — não há botão de baixar nem de imprimir. A tela cheia usa a API
+nativa e, onde ela não existe ou não responde em 1,5 s, cobre a janela por CSS.
+
+> **O worker do pdf.js sai como `.js`, não `.mjs`.** O pacote o entrega como
+> `.mjs`, e o `mime.types` padrão do nginx não conhece a extensão: serviria como
+> `application/octet-stream`, e o navegador recusa worker de módulo sem MIME de
+> JavaScript — o manual abriria no `npm run dev` e não abriria em produção. O
+> `assetFileNames` do [vite.config.ts](vite.config.ts) renomeia.
+>
+> **`pdfjs-dist` está em `devDependencies`, de propósito.** O Vite o empacota no
+> build da imagem `web`; a imagem `api` roda `npm ci --omit=dev` e não precisa
+> dele — nem da dependência opcional dele, `@napi-rs/canvas`, um binário nativo de
+> ~37 MB (que por isso também fica fora do `node_modules/` versionado, ver
+> `.gitignore`).
+>
+> O pdf.js desenha em etapas agendadas por `requestAnimationFrame`: numa aba em
+> segundo plano o navegador pausa isso, e o slide só aparece quando a aba volta
+> a ficar visível.
 
 ---
 
@@ -694,12 +776,16 @@ fora, `/api/` responde 502 e volta sozinho.
 - Log `json-file` capado em 10m × 3 nos três serviços — este serviço registra uma
   linha por ida ao modelo, e sem isso o log enche o disco do host.
 
-> **O snapshot embutido no build fica alcançável sem autenticação.** O Vite copia
-> `public/` para `dist/`, o Dockerfile serve `/app/dist` inteiro pelo nginx com
-> `try_files $uri`, e `public/installData.data` — 374 KB de dado real da empresa,
-> versionado no repositório — vira `GET http://<host>:<WEB_PORT>/installData.data`
-> para quem alcançar a URL. Não é o snapshot vivo, que fica no volume em
-> `/snapshot`, mas é dado real congelado na data do commit.
+> **O snapshot versionado ficava alcançável sem autenticação — corrigido em
+> 01/10/2026.** O Vite copia `public/` para `dist/`, o Dockerfile serve
+> `/app/dist` inteiro pelo nginx com `try_files $uri`, e `public/installData.data`
+> — 374 KB de dado real da empresa, versionado no repositório — virava
+> `GET http://<host>:<WEB_PORT>/installData.data` para quem alcançasse a URL
+> (confirmado no staging: HTTP 200, sem login). Agora o `.dockerignore` o tira do
+> contexto de build; nenhuma imagem precisa dele, porque a API e o ETL usam o
+> snapshot vivo do volume `/snapshot`. **Imagem construída antes disso continua
+> servindo o arquivo até o próximo redeploy.** Tudo o que for colocado em
+> `public/` continua público.
 
 ---
 
@@ -714,7 +800,8 @@ arquivo inteiro — padrão que escala bem para o tamanho de uma ferramenta inte
 | `data/lakehouseSources.json` | catálogo de fontes do Data Hub, com token cifrado | as fontes; precisam ser recadastradas |
 | `data/sheetSources.json` | planilhas cadastradas + cache de 5 min | o cadastro e o cache |
 | `data/sessions.json` | sessões de login, com o token do Google cifrado | todo mundo loga de novo |
-| `data/users.json` | quem já entrou e o papel salvo | os papéis voltam ao bootstrap |
+| `data/users.json` | quem já entrou, o papel salvo e se ainda falta abrir o manual | os papéis voltam ao bootstrap |
+| `data/accessRequests.json` | pedidos de acesso a pastas e a resposta de cada um | a fila de pedidos (a decisão segue no log de auditoria) |
 | `data/audit-log.json` | as 5.000 ações mais recentes | o histórico de quem mudou o quê |
 | `data/fieldDictionary.json` | descrição e tipo sobrescrito por campo | a correção de tipo volta à inferência |
 | `data/widgetComments.json` | comentários nos widgets | as anotações |
@@ -741,11 +828,14 @@ aviso.
 ## Verificações
 
 ```bash
-npm run test:auth   # 21 casos — verificação do ID token do Firebase
-npm run test:ai     # 63 casos — adaptadores dos três provedores
+npm run test:auth     # 21 casos — verificação do ID token do Firebase
+npm run test:ai       # 73 casos — adaptadores dos três provedores e a retomada de conversa
+npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
 ```
 
-Nenhum dos dois toca na rede nem gasta dinheiro.
+Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa
+pasta temporária (users.json, auditoria, pedidos e workspace próprios) e usa
+e-mails fictícios.
 
 O **test:auth** é código de autenticação, e por isso não se contenta em provar que
 um token bom passa: 18 dos 21 casos provam que os **ruins param**, um a um —

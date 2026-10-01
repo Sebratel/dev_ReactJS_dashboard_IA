@@ -4,6 +4,64 @@
 
 ---
 
+## 01/10/2026 — Montar com IA: a conversa dura a sessão, uma por dashboard
+
+Relato: sempre que o usuário fechava o painel, a IA "reiniciava" — sumiam mensagens, propostas e o progresso. Pedido: para aquele usuário, naquela sessão, naquela dashboard, manter histórico e memória; resetar só ao fechar a aplicação ou sair; conversas diferentes por dashboard.
+
+**Causa**: a conversa morava no estado do componente `AiPanel`, que só existe com o painel aberto — fechar desmontava tudo, e a `DashboardBuilder` também é remontada a cada troca de dashboard. A memória do modelo no servidor sobrevivia (2 h), mas o navegador perdia o id dela e abria outra.
+
+- **`src/features/builder/ai/aiChatStore.ts`** (novo): zustand com `persist` no `sessionStorage`, uma conversa por pasta/dashboard — id da conversa no servidor, fontes escolhidas e os turnos com propostas e o "já adicionado". O **turno roda no store**: fechar o painel no meio de uma resposta não a interrompe. Gravação adiada (400 ms; na hora no `pagehide`), para não serializar tudo a cada pedaço de texto. Resposta cortada no meio (conexão, F5) fica marcada "Resposta interrompida".
+- **Reset**: logout (qualquer caminho — botão Sair, sessão vencida, nenhuma sessão ao abrir) limpa a chave no `authStore.logout()` (`src/store/sessionScopedStorage.ts`), mesmo que o Builder nem tenha sido carregado na aba; troca de usuário na mesma aba também zera. Fechar a aba apaga por ser `sessionStorage`.
+- **"Nova conversa"** (↺ no topo do painel, com confirmação): agora que fechar não zera, é o jeito de começar de novo e de trocar as fontes. Libera a conversa anterior no servidor (`DELETE /api/ai/conversations/:id`).
+- **Retomada quando o servidor esquece** (2 h sem uso, teto de 200, ou reinício da API — todo redeploy): a rota de mensagem confere a conversa antes do stream e responde **410**; o navegador abre outra com `history` — o que já foi dito na tela, só texto, com o que foi proposto/aprovado resumido em "[Propus…]" — e reenvia o pedido. `resumeHistory` (`server/aiAssistant.mjs`) garante começar no usuário, alternar e terminar no assistente (exigência dos provedores) e corta em 30 falas, 4.000 caracteres cada e 24.000 no total. A auditoria marca `resumed: true`.
+
+Verificado no navegador, numa cópia local com dados fictícios e uma IA falsa que responde quantos pedidos já viu e qual foi o primeiro: fechar e reabrir mantém conversa, cartão e "Adicionados à guia"; o 2º pedido vem com a memória do 1º; fechar no meio da resposta e reabrir mostra a resposta inteira; outra dashboard abre conversa própria; F5 restaura tudo; com a API reiniciada, o pedido seguinte recebe 410, é retomado sozinho e a IA continua lembrando do primeiro pedido; "Nova conversa" zera e libera no servidor; depois de Sair, o `sessionStorage` fica vazio e a conversa recomeça do zero; F5 no meio da resposta deixa o texto parcial com o aviso de interrompida. `npm run test:ai` 73/73 (4 checagens novas da retomada), `tsc` sem erros.
+
+## 01/10/2026 — Configurações da pasta: pessoas escolhidas entre quem já acessou, e renomear dashboard
+
+Pedido: no modal da pasta, em vez de escrever e-mail, selecionar entre os usuários que já acessaram; e poder alterar o nome das dashboards, que não tinha como.
+
+- **Acesso à pasta** (quando "Restrita") e **Gerentes** trocaram o campo "um e-mail por linha" por um seletor (`src/features/workspace/UserPicker.tsx`): busca por nome ou e-mail, sem acento e sem maiúscula, lista com caixa de marcar, etiquetas com os escolhidos e o selo "admin". A lista vem de `GET /api/access/users`, que é admin-only, como as duas seções. Um e-mail salvo de quem ainda não acessou (liberação antecipada) não some: aparece como etiqueta "ainda não acessou" e só sai se alguém tirar.
+- **Renomear dashboard**: lápis ao lado de cada uma (`DashboardRow.tsx`) — Enter salva, Esc cancela, nome vazio é recusado na hora. Usa a rota que já existia (`PUT /api/workspace/folders/:fid/dashboards/:did`, admin ou gerente da pasta); o menu lateral e o título do topo atualizam na hora.
+- O modal (318 linhas) foi dividido: as duas seções de pessoas foram para `FolderPeopleControls.tsx`, e os estilos compartilhados para `folderStyles.ts`.
+
+Verificado no navegador, numa cópia local com dados e e-mails fictícios: como admin, a busca "ANA" filtra para a Ana; marcar a Ana e tirar a etiqueta "ainda não acessou" grava exatamente os dois e-mails; marcar o Bruno como gerente grava; renomear grava e atualiza modal e menu; nome vazio mostra "Dê um nome à dashboard." sem gravar; Esc cancela sem fechar o modal. Como gerente (sem ser admin), o modal mostra só as dashboards, não busca a lista de usuários, e renomear funciona. As três ações entram no log. `tsc` sem erros.
+
+## 01/10/2026 — O snapshot com dado real era servido sem login pela imagem `web`
+
+Achado de passagem, ao decidir onde guardar o PDF do manual de uso. O README já registrava o risco como limite conhecido; conferido no staging, ele estava ativo: `HEAD https://dashia-staging.sebratel.net.br/installData.data` respondia **HTTP 200**, `application/octet-stream`, 374.475 bytes — exatamente o `public/installData.data` versionado (5.326 linhas de protocolos de atendimento, gravadas em 24/08/2026), sem login. Uma rota inexistente responde a página do app (HTML), então o 200 era o arquivo de verdade.
+
+**Causa**: a imagem `web` faz `COPY . .` e `npm run build`; o Vite copia `public/` para `dist/`, e o nginx serve `dist/` inteiro com `try_files $uri`. Versionar o snapshot foi decisão explícita (ver `.gitignore`), mas publicá-lo na web não fazia parte dela.
+
+- **`.dockerignore`**: `public/installData.data` fica fora do contexto de build. Nenhuma imagem precisa dele: a API e o ETL usam o snapshot vivo do volume `/snapshot`, e a SPA nunca busca esse arquivo.
+- README e DEPLOY-PORTAINER: o aviso deixa de ser "limite conhecido" e vira a regra — tudo em `public/` é público.
+
+**Só vale depois do redeploy**: a imagem atual continua servindo o arquivo até ser reconstruída. O que já foi baixado por quem alcançou a URL não volta — a avaliação disso é de quem responde pelo dado.
+
+## 01/10/2026 — Manual de uso: página com o manual em slides, primeiro acesso e pedido de acesso às pastas
+
+Pedido: o usuário novo, ou sem nenhuma pasta liberada, deve cair numa página "Manual de uso" com o manual (o PDF exportado da apresentação), poder só visualizar — passar slides, tela cheia —, ver as pastas existentes e pedir acesso ao administrador. Trocar o material tem de ser simples.
+
+**O manual é um arquivo só**: `manual/manual-de-uso.pdf`. Trocar o material é substituir esse arquivo (mesmo nome) e publicar; o número de slides é lido do próprio PDF. `MANUAL_PATH` aponta para outro arquivo, se for preciso trocar sem rebuild. Ele sai por `GET /api/manual`, atrás do login, e não do `public/` (ver a entrada acima), com `Cache-Control: private, no-cache` + ETag — cada abertura revalida, então o arquivo novo vale na próxima vez que alguém abrir a página.
+
+- **Leitor** (`src/features/manual/`): pdf.js (`pdfjs-dist` 5.6, build *legacy*), um slide por vez, desenhado na densidade real da tela e sem piscar ao trocar (desenha fora da tela e copia). Setas, miniaturas que só desenham quando aparecem na faixa, teclado (← →; em tela cheia também PageUp/PageDown, espaço, Home/End; F e Esc), arrastar o dedo no celular. Tela cheia nativa e, onde ela não existe ou não responde em 1,5 s, um modo que cobre a janela por CSS, renderizado num portal (dentro da página, o `transform` da animação de entrada prende o `position: fixed`, o mesmo motivo do `ModalPortal`). Sem botão de baixar nem de imprimir.
+- **Primeiro acesso**: o registro novo em `data/users.json` nasce com `manualPending: true`; `/api/auth/me` devolve o campo, a raiz `/` manda para `/manual`, e a página avisa `POST /api/manual/seen`. Registro de antes do campo conta como visto — quem já usava não é redirecionado. Sem nenhuma dashboard liberada, `/` também vai para o manual (antes era um aviso "peça acesso a um administrador").
+- **Pedido de acesso** (`server/accessRequests.mjs`, `data/accessRequests.json`): `GET /api/access/folders` lista todas as pastas com o status de quem pergunta — só nome e status, nunca dashboards, guias ou lista de acesso. `POST /api/access/requests` cria o pedido (mensagem opcional de até 500 caracteres; 409 se já há pendente ou se a pessoa já tem acesso). O admin responde no card novo do topo da aba Acessos (`POST /api/access/requests/:id/approve` e `/reject`, admin-only); **liberar** acrescenta o e-mail à pasta (`grantFolderAccess`), e guias restritas continuam dependendo da liberação por guia. O número de pendentes aparece ao lado de "Acessos" no menu. Pedido, liberação e recusa entram no log de ações.
+- **Ordem da página**: pastas e pedido de acesso em cima, manual embaixo (com atalho "Ir para o manual" no aviso de boas-vindas) — pedir acesso é o que precisa fazer primeiro quem cai ali sem nada liberado.
+- **Menu**: "Manual de uso" para todo mundo.
+
+Três armadilhas resolvidas no caminho:
+- **O worker do pdf.js sai como `.js`**: o pacote o entrega como `.mjs`, e o `mime.types` padrão do nginx não conhece a extensão (conferido no `conf/mime.types` do nginx) — serviria `application/octet-stream`, e o navegador recusa worker de módulo sem MIME de JavaScript. O manual abriria no dev e não abriria em produção. O `assetFileNames` do `vite.config.ts` renomeia.
+- **`pdfjs-dist` em `devDependencies`**: o Vite o empacota no build do `web`; a imagem `api` (`npm ci --omit=dev`) não o instala, nem a dependência opcional dele, `@napi-rs/canvas` — binário nativo de ~37 MB, que também fica fora do `node_modules/` versionado (`.gitignore`). Versão `~5.6.205`: a 5.7 já exige Node 22, e o build do `web` roda em `node:20-alpine`.
+- **`npm install --omit=optional` está proibido aqui**: o ensaio mostrou que ele removeria os binários do esbuild e do rollup, e o Vite deixaria de funcionar.
+
+Verificado:
+- `npm run test:access`: 32/32 (17 checagens novas — manual pendente, pedido pendente único, 409/404/400, liberar põe o e-mail na pasta, liberar de novo não duplica, recusado pode pedir de novo). `test:auth` 21/21, `test:ai` 69/69, `tsc` sem erros.
+- Ponta a ponta numa cópia local com dados e e-mails fictícios, no navegador: usuário novo, sem pasta, cai em `/manual` com boas-vindas; os 29 slides abrem, setas, miniaturas (a ativa centralizada), teclado e tela cheia funcionam; digitar na mensagem não troca o slide; o pedido aparece para o admin com o número no menu; liberar põe o e-mail na pasta, e o usuário passa a entrar direto na dashboard, com a pasta "Liberada · Abrir". Como Padrão, fila/liberar/recusar respondem 403. Sem o PDF, a página diz "O manual de uso ainda não foi publicado." e o "Tentar novamente" abre o arquivo quando ele volta. Tema escuro e largura de celular conferidos.
+- Build de produção (`vite build`) servido como estático: o chunk do manual carrega só nessa página (529 KB, 162 KB gzip) e o worker sai como `pdf.worker.min-*.js`.
+
+Limite: a barra lateral fixa do app ocupa metade de uma tela de celular — a página do manual se ajusta ao que sobra, mas o layout geral não é mobile.
+
 ## 30/09/2026 — Acessos: quem entra pela primeira vez é Padrão, e Configurações passa a ser só de administrador
 
 Dois relatos: usuário novo entrava direto como administrador; e um usuário com acesso Padrão continuava vendo a aba Configurações.

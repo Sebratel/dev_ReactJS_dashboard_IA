@@ -16,7 +16,7 @@ export async function loadSession(): Promise<AuthUser | null> {
   try {
     const res = await apiFetch('/api/auth/me')
     if (!res.ok) throw new ApiError(res.status, 'Sessão indisponível.')
-    const body = await res.json() as { user: AuthUser; isAdmin: boolean }
+    const body = await res.json() as { user: AuthUser; isAdmin: boolean; manualPending?: boolean }
     useAuthStore.getState().setSession(body)
     return body.user
   } catch {

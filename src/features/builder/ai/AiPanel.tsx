@@ -9,28 +9,19 @@
 // Autocontido de propósito: o DashboardBuilder só monta este componente e
 // recebe os widgets aprovados por callback, sem herdar estado nenhum da
 // conversa (o arquivo já tem 500+ linhas).
-import { useEffect, useRef, useState } from 'react'
-import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench, ChevronDown, Sigma, Pencil } from 'lucide-react'
+//
+// A conversa em si não mora aqui: fica em aiChatStore.ts, uma por dashboard,
+// durante a sessão. Fechar o painel não apaga nada — e uma resposta em
+// andamento continua chegando com ele fechado.
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Sparkles, X, Send, Loader2, AlertTriangle, Check, Trash2, Database, Wrench, ChevronDown, Sigma, Pencil, RotateCcw } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { ModalPortal } from '@/components/ui/ModalPortal'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getAllSources } from '../fieldCatalog'
 import type { MeasureDef, WidgetConfig } from '../types'
-import { fetchAiStatus, startAiConversation, streamAiTurn, ApiError, type AiStatus } from './aiApi'
-
-interface Turn {
-  role: 'user' | 'assistant'
-  text: string
-  // Proposta anexada a este turno. `applied` marca que já foi para a guia,
-  // pra não dar pra aprovar duas vezes o mesmo lote.
-  proposal?: { widgets: WidgetConfig[]; summary: string; applied?: boolean }
-  // Mesma ideia, pra uma proposta de MEDIDA (ver DashboardConfig.measures) —
-  // evento SSE/aprovação separados dos widgets, mas o mesmo padrão visual.
-  measureProposal?: { measures: MeasureDef[]; summary: string; applied?: boolean }
-  // Mesma ideia, pra uma ATUALIZAÇÃO de medida(s) já existentes (update_measures,
-  // server/aiAssistant.mjs) — mesmo id de sempre, edição no lugar em vez de
-  // uma medida nova; por isso fica num campo separado de `measureProposal`.
-  measureUpdateProposal?: { measures: MeasureDef[]; summary: string; applied?: boolean }
-}
+import { fetchAiStatus, ApiError } from './aiApi'
+import { useAiChatStore, chatKey, EMPTY_CHAT, type ProposalKind } from './aiChatStore'
 
 const TOOL_LABEL: Record<string, string> = {
   field_values: 'conferindo os valores reais do campo',
@@ -62,8 +53,10 @@ const SUGGESTIONS = [
   'Compare o volume por mês e destaque as variações relevantes.',
 ]
 
-export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, onApplyMeasures, onApplyMeasureUpdates, onClose }: {
+export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasures, onApply, onApplyMeasures, onApplyMeasureUpdates, onClose }: {
   folderId: string
+  // Cada dashboard tem a sua conversa (ver aiChatStore.ts).
+  dashboardId: string
   // Pergunta já digitada no convite da guia vazia (ver AiEmptyState): o painel
   // abre e manda sozinho, pra pessoa não precisar escrever duas vezes.
   initialPrompt?: string
@@ -78,30 +71,32 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
   onApplyMeasureUpdates: (measures: MeasureDef[]) => void
   onClose: () => void
 }) {
-  const [status, setStatus] = useState<AiStatus | null>(null)
+  const key = chatKey(folderId, dashboardId)
+  const chat = useAiChatStore((s) => s.chats[key]) ?? EMPTY_CHAT
+  const status = useAiChatStore((s) => s.status)
+  const { setStatus, setSources, send: sendTurn, markApplied, discard, reset } = useAiChatStore.getState()
+  const { conversationId, turns, busy, tool, error } = chat
   const [statusError, setStatusError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [conversationId, setConversationId] = useState<string | null>(null)
-  const [turns, setTurns] = useState<Turn[]>([])
   const [input, setInput] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [tool, setTool] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [confirmReset, setConfirmReset] = useState(false)
   // Aberto enquanto ninguém falou nada (é quando a escolha importa); recolhe
   // sozinho no 1º turno, quando a seleção trava e vira só referência.
-  const [sourcesOpen, setSourcesOpen] = useState(true)
+  const [sourcesOpen, setSourcesOpen] = useState(!conversationId)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const sources = getAllSources()
+  const selected = useMemo(() => new Set(chat.sourceKeys ?? []), [chat.sourceKeys])
 
-  // Pré-seleciona quando há poucas fontes: com uma ou duas cadastradas, exigir
-  // um clique antes de poder escrever é atrito puro. Com muitas, deixa a
-  // escolha — o catálogo de todas subiria no prompt e diluiria o contexto.
+  // Pré-seleciona quando há poucas fontes e ninguém escolheu ainda: com uma ou
+  // duas cadastradas, exigir um clique antes de poder escrever é atrito puro.
+  // Com muitas, deixa a escolha — o catálogo de todas subiria no prompt e
+  // diluiria o contexto.
   useEffect(() => {
-    if (sources.length > 0 && sources.length <= 3) {
-      setSelected(new Set(sources.map((s) => s.key)))
-    }
-  }, [sources.length])
+    if (conversationId || chat.sourceKeys !== null) return
+    if (sources.length > 0 && sources.length <= 3) setSources(key, sources.map((s) => s.key))
+  }, [sources.length, conversationId, chat.sourceKeys, key, setSources])
+
+  useEffect(() => { if (conversationId) setSourcesOpen(false) }, [conversationId])
 
   useEffect(() => {
     let alive = true
@@ -109,77 +104,24 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
       .then((s) => { if (alive) setStatus(s) })
       .catch((e) => { if (alive) setStatusError(e instanceof ApiError ? e.message : 'Não foi possível checar a IA.') })
     return () => { alive = false }
-  }, [])
+  }, [setStatus])
 
-  // Mantém a conversa rolada para o fim conforme o texto vai chegando.
+  // Mantém a conversa rolada para o fim conforme o texto vai chegando — e ao
+  // reabrir o painel, já no ponto em que a conversa parou.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [turns, tool])
 
-  const toggleSource = (key: string) => setSelected((prev) => {
-    const next = new Set(prev)
-    next.has(key) ? next.delete(key) : next.add(key)
-    return next
-  })
+  const toggleSource = (sourceKey: string) => {
+    const next = new Set(selected)
+    next.has(sourceKey) ? next.delete(sourceKey) : next.add(sourceKey)
+    setSources(key, Array.from(next))
+  }
 
-  const send = async (text: string) => {
+  const send = (text: string) => {
     if (!text.trim() || busy) return
-    setBusy(true); setError(null); setInput('')
-    try {
-      let id = conversationId
-      if (!id) {
-        const started = await startAiConversation(folderId, Array.from(selected))
-        id = started.conversationId
-        setConversationId(id)
-        setSourcesOpen(false)
-      }
-      setTurns((prev) => [...prev, { role: 'user', text }, { role: 'assistant', text: '' }])
-
-      for await (const ev of streamAiTurn(id, text, dashboardMeasures)) {
-        if (ev.type === 'text') {
-          setTurns((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            next[next.length - 1] = { ...last, text: last.text + ev.text }
-            return next
-          })
-        } else if (ev.type === 'tool') {
-          setTool(ev.name)
-        } else if (ev.type === 'widgets') {
-          setTool(null)
-          setTurns((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            next[next.length - 1] = { ...last, proposal: { widgets: ev.widgets, summary: ev.summary } }
-            return next
-          })
-        } else if (ev.type === 'measures') {
-          setTool(null)
-          setTurns((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            next[next.length - 1] = { ...last, measureProposal: { measures: ev.measures, summary: ev.summary } }
-            return next
-          })
-        } else if (ev.type === 'measureUpdates') {
-          setTool(null)
-          setTurns((prev) => {
-            const next = [...prev]
-            const last = next[next.length - 1]
-            next[next.length - 1] = { ...last, measureUpdateProposal: { measures: ev.measures, summary: ev.summary } }
-            return next
-          })
-        } else if (ev.type === 'done') {
-          setStatus(ev.usage)
-        } else if (ev.type === 'error') {
-          setError(ev.message)
-        }
-      }
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao falar com a IA.')
-    } finally {
-      setBusy(false); setTool(null)
-    }
+    setInput('')
+    void sendTurn({ key, folderId, text, dashboardMeasures })
   }
 
   const overBudget = !!status && status.budgetUsd > 0 && status.spentUsd >= status.budgetUsd
@@ -187,11 +129,13 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
   // Dispara a pergunta vinda do convite da guia vazia, uma única vez. O ref é
   // o que garante "uma vez": em desenvolvimento o React monta o componente
   // duas vezes, e sem isso o turno sairia duplicado — e cobrado duas vezes.
+  // Com conversa já aberta nesta dashboard, a pergunta entra como o próximo
+  // pedido dela.
   const autoSent = useRef(false)
   useEffect(() => {
     if (autoSent.current || !initialPrompt || selected.size === 0 || overBudget) return
     autoSent.current = true
-    void send(initialPrompt)
+    send(initialPrompt)
     // `send` é recriada a cada render; o guard acima é o que controla o efeito.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPrompt, selected.size, overBudget])
@@ -200,39 +144,34 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
     const proposal = turns[turnIndex]?.proposal
     if (!proposal || proposal.applied) return
     onApply(proposal.widgets)
-    setTurns((prev) => prev.map((t, i) => (
-      i === turnIndex && t.proposal ? { ...t, proposal: { ...t.proposal, applied: true } } : t
-    )))
-  }
-
-  const discardProposal = (turnIndex: number) => {
-    setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, proposal: undefined } : t)))
+    markApplied(key, turnIndex, 'proposal')
   }
 
   const applyMeasuresProposal = (turnIndex: number) => {
     const proposal = turns[turnIndex]?.measureProposal
     if (!proposal || proposal.applied) return
     onApplyMeasures(proposal.measures)
-    setTurns((prev) => prev.map((t, i) => (
-      i === turnIndex && t.measureProposal ? { ...t, measureProposal: { ...t.measureProposal, applied: true } } : t
-    )))
-  }
-
-  const discardMeasuresProposal = (turnIndex: number) => {
-    setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, measureProposal: undefined } : t)))
+    markApplied(key, turnIndex, 'measureProposal')
   }
 
   const applyMeasureUpdatesProposal = (turnIndex: number) => {
     const proposal = turns[turnIndex]?.measureUpdateProposal
     if (!proposal || proposal.applied) return
     onApplyMeasureUpdates(proposal.measures)
-    setTurns((prev) => prev.map((t, i) => (
-      i === turnIndex && t.measureUpdateProposal ? { ...t, measureUpdateProposal: { ...t.measureUpdateProposal, applied: true } } : t
-    )))
+    markApplied(key, turnIndex, 'measureUpdateProposal')
   }
 
-  const discardMeasureUpdatesProposal = (turnIndex: number) => {
-    setTurns((prev) => prev.map((t, i) => (i === turnIndex ? { ...t, measureUpdateProposal: undefined } : t)))
+  const discardKind = (kind: ProposalKind) => (turnIndex: number) => discard(key, turnIndex, kind)
+  const discardProposal = discardKind('proposal')
+  const discardMeasuresProposal = discardKind('measureProposal')
+  const discardMeasureUpdatesProposal = discardKind('measureUpdateProposal')
+
+  // "Nova conversa": o único jeito de zerar agora que fechar o painel não zera
+  // mais — e o caminho para trocar as fontes, que travam no 1º turno.
+  const startOver = () => {
+    setConfirmReset(false)
+    reset(key)
+    setSourcesOpen(true)
   }
 
   const canChat = !!conversationId || selected.size > 0
@@ -277,9 +216,21 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
               {!status.priced && <span className="ml-0.5 text-risk-medium" aria-label="sem preço cadastrado">*</span>}
             </span>
           )}
+          {(turns.length > 0 || conversationId) && (
+            <button
+              type="button"
+              onClick={() => setConfirmReset(true)}
+              aria-label="Nova conversa"
+              title="Nova conversa — apaga esta e começa do zero"
+              className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-app-surface hover:text-gray-200"
+            >
+              <RotateCcw size={13} />
+            </button>
+          )}
           <button
             onClick={onClose}
             aria-label="Fechar"
+            title="Fechar — a conversa continua guardada"
             className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-app-surface hover:text-gray-200"
           >
             <X size={14} />
@@ -369,7 +320,7 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
         )}
         <p className="mt-2 text-[10px] leading-relaxed text-gray-500">
           {conversationId
-            ? 'Para trocar as fontes, comece uma conversa nova.'
+            ? 'Para trocar as fontes, comece uma conversa nova (↺ no topo do painel).'
             : 'Só os nomes e os tipos dos campos vão para a IA — nunca as linhas de dados.'}
         </p>
         </div>
@@ -407,6 +358,9 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
             ) : (
               <>
                 {turn.text && <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-gray-200">{turn.text}</p>}
+                {turn.interrupted && (
+                  <p className="text-[10px] italic text-gray-500">Resposta interrompida — a conexão caiu ou a página foi recarregada enquanto ela chegava.</p>
+                )}
                 {turn.proposal && (
                   <div className="rounded-xl border border-brand-cyan/30 bg-brand-cyan/5 p-3">
                     <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-brand-cyan">
@@ -558,6 +512,15 @@ export function AiPanel({ folderId, initialPrompt, dashboardMeasures, onApply, o
         </button>
       </form>
     </aside>
+    {confirmReset && (
+      <ConfirmDialog
+        title="Nova conversa"
+        message="Apagar esta conversa e começar do zero? O que já foi adicionado à guia continua lá."
+        confirmLabel="Nova conversa"
+        onConfirm={startOver}
+        onCancel={() => setConfirmReset(false)}
+      />
+    )}
     </ModalPortal>
   )
 }

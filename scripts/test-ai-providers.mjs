@@ -353,6 +353,34 @@ console.log('\n── Configuração ──')
   ok(/^sk-an.*7890$/.test(pub.keyMasks.anthropic), 'a tela recebe a chave mascarada', pub.keyMasks.anthropic)
 }
 
+// Retomada: quando o servidor esqueceu a conversa, o navegador manda o que já
+// foi dito (server/aiAssistant.mjs › resumeHistory). Isso vira histórico de
+// provedor, então tem de começar no usuário, alternar e terminar no assistente
+// (o turno novo entra como usuário) — e respeitar os tetos, porque é texto
+// vindo do navegador e cada caractere é token cobrado.
+console.log('\n── Retomada de conversa ──')
+{
+  const { resumeHistory } = await import(mod('aiAssistant.mjs'))
+  const r = resumeHistory([
+    { role: 'assistant', text: 'resto sem pergunta' },
+    { role: 'user', text: 'primeiro' },
+    { role: 'user', text: 'segundo' },
+    { role: 'assistant', text: 'resposta' },
+    { role: 'user', text: 'pergunta sem resposta' },
+  ])
+  ok(r.length === 2 && r[0].role === 'user' && r[0].content === 'primeiro\n\nsegundo' && r[1].role === 'assistant' && r[1].content === 'resposta',
+    'começa no usuário, junta falas seguidas do mesmo papel e termina no assistente', JSON.stringify(r))
+  ok(resumeHistory('não é lista').length === 0 && resumeHistory([{ role: 'system', text: 'x' }, { role: 'tool', text: 'y' }, { role: 'user', text: '   ' }]).length === 0,
+    'ignora entrada que não é lista, papel estranho e texto vazio')
+  const longa = Array.from({ length: 80 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: 'x'.repeat(5000) }))
+  const cortada = resumeHistory(longa)
+  const total = cortada.reduce((n, m) => n + m.content.length, 0)
+  ok(cortada.length > 0 && cortada.every((m) => m.content.length <= 4000) && total <= 24000,
+    'respeita os tetos (4.000 por fala, 24.000 no total)', `${cortada.length} falas, ${total} caracteres`)
+  ok(cortada[0].role === 'user' && cortada[cortada.length - 1].role === 'assistant' && cortada.every((m, i) => i === 0 || m.role !== cortada[i - 1].role),
+    'mesmo cortada, alterna do jeito que os provedores exigem')
+}
+
 server.close()
 // Limpa a configuração de teste — só a que ESTE processo criou (se alguém
 // passou AI_CONFIG_PATH de fora, o arquivo é dele).

@@ -1,110 +1,21 @@
 // Configurações de UMA pasta — aberto pelo botão de engrenagem ao lado da
 // pasta no menu lateral (não é mais uma tela própria). Admin vê tudo (acesso,
 // gerentes, remover); quem só é gerente da pasta vê apenas a lista de
-// dashboards + criar nova (o resto é admin-only, ver server/workspace.mjs).
+// dashboards — criar, renomear, remover (o resto é admin-only, ver
+// server/workspace.mjs).
 import { useEffect, useState } from 'react'
-import { X, Trash2, Loader2, AlertTriangle, Globe, Lock, ShieldCheck, LayoutGrid, Plus } from 'lucide-react'
+import { X, Trash2, Loader2, AlertTriangle, LayoutGrid, Plus } from 'lucide-react'
 import { ModalPortal } from '@/components/ui/ModalPortal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
-import { fetchFolder, createFolder, createDashboard, deleteDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
+import { fetchUsers } from '@/features/access/accessApi'
+import { fetchFolder, createFolder, createDashboard, updateDashboard, deleteDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
 import type { Folder, WorkspaceTreeDashboard } from './types'
-
-const inputCls = 'rounded-lg border border-app-border bg-app-surface px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-brand-blue/50'
-const pillCls = (active: boolean) => cn(
-  'flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] font-medium',
-  active ? 'border-brand-blue bg-brand-blue/10 text-brand-blue' : 'border-app-border text-gray-400',
-)
-
-function parseEmailList(text: string): string[] {
-  return Array.from(new Set(text.split(/[,\n]/).map((s) => s.trim().toLowerCase()).filter(Boolean)))
-}
-
-function AccessControl({ folder, onSave }: { folder: Folder; onSave: (accessEmails: string[] | null) => Promise<void> }) {
-  const initialOpen = folder.accessEmails === null
-  const [open, setOpen] = useState(initialOpen)
-  const [text, setText] = useState((folder.accessEmails ?? []).join('\n'))
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const dirty = open !== initialOpen || (!open && text !== (folder.accessEmails ?? []).join('\n'))
-
-  const save = async () => {
-    setSaving(true); setError(null); setSaved(false)
-    try {
-      await onSave(open ? null : parseEmailList(text))
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao salvar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Acesso à pasta</span>
-      <div className="flex items-center gap-1.5">
-        <button type="button" onClick={() => setOpen(true)} className={pillCls(open)}><Globe size={11} /> Aberta a todos</button>
-        <button type="button" onClick={() => setOpen(false)} className={pillCls(!open)}><Lock size={11} /> Restrita</button>
-      </div>
-      {!open && (
-        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} placeholder="um e-mail por linha (ou separados por vírgula)" className={cn(inputCls, 'w-full resize-y font-mono')} />
-      )}
-      <div className="flex items-center gap-2">
-        {dirty && (
-          <button onClick={save} disabled={saving} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-blue text-white text-[11px] font-semibold hover:bg-brand-blueLight disabled:opacity-50">
-            {saving ? <Loader2 size={11} className="animate-spin" /> : null} Salvar
-          </button>
-        )}
-        {saved && <span className="text-[10px] text-emerald-400">Salvo ✓</span>}
-      </div>
-      {error && <p className="text-[11px] text-risk-critical">{error}</p>}
-    </div>
-  )
-}
-
-function ManagersControl({ folder, onSave }: { folder: Folder; onSave: (managers: string[]) => Promise<void> }) {
-  const initial = folder.managers.join('\n')
-  const [text, setText] = useState(initial)
-  const [saving, setSaving] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const dirty = text !== initial
-
-  const save = async () => {
-    setSaving(true); setError(null); setSaved(false)
-    try {
-      await onSave(parseEmailList(text))
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : 'Falha ao salvar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1"><ShieldCheck size={11} /> Gerentes desta pasta</span>
-      <p className="text-[10px] text-gray-500">Podem criar dashboards e liberar acesso de guias dentro desta pasta, sem precisar ser administrador. Precisam já ter acessado o sistema pelo menos uma vez.</p>
-      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="um e-mail por linha" className={cn(inputCls, 'w-full resize-y font-mono')} />
-      <div className="flex items-center gap-2">
-        {dirty && (
-          <button onClick={save} disabled={saving} className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-brand-blue text-white text-[11px] font-semibold hover:bg-brand-blueLight disabled:opacity-50">
-            {saving ? <Loader2 size={11} className="animate-spin" /> : null} Salvar
-          </button>
-        )}
-        {saved && <span className="text-[10px] text-emerald-400">Salvo ✓</span>}
-      </div>
-      {error && <p className="text-[11px] text-risk-critical">{error}</p>}
-    </div>
-  )
-}
+import { AccessControl, ManagersControl, type KnownUsers } from './FolderPeopleControls'
+import { DashboardRow } from './DashboardRow'
+import { inputCls } from './folderStyles'
 
 export function FolderSettingsModal({ folderId, onClose }: { folderId: string | null; onClose: () => void }) {
   const isAdmin = useAuthStore((s) => s.isAdmin)
@@ -122,6 +33,9 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deletingDashboardId, setDeletingDashboardId] = useState<string | null>(null)
   const [dashboardToDelete, setDashboardToDelete] = useState<WorkspaceTreeDashboard | null>(null)
+  // Quem já acessou o sistema — de onde saem as pessoas de "Acesso à pasta" e
+  // "Gerentes". A lista é admin-only, como as duas seções.
+  const [known, setKnown] = useState<KnownUsers>({ users: null, error: null })
 
   const treeFolder = currentId ? treeFolders?.find((f) => f.id === currentId) ?? null : null
 
@@ -133,6 +47,21 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
       .then((f) => { if (alive) { setFullFolder(f); setError(null) } })
       .catch((e) => { if (alive) setError(e instanceof ApiError ? e.message : 'Erro inesperado.') })
       .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [currentId, isAdmin])
+
+  useEffect(() => {
+    if (!currentId || !isAdmin) return
+    let alive = true
+    fetchUsers()
+      .then(({ users }) => {
+        if (!alive) return
+        const list = users
+          .map((u) => ({ email: u.email, name: u.name, role: u.role }))
+          .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+        setKnown({ users: list, error: null })
+      })
+      .catch((e) => { if (alive) setKnown({ users: null, error: e instanceof ApiError ? e.message : 'Não foi possível carregar os usuários.' }) })
     return () => { alive = false }
   }, [currentId, isAdmin])
 
@@ -183,6 +112,18 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
     } finally {
       setCreatingDashboard(false)
     }
+  }
+
+  // Erros sobem para a linha da dashboard, que os mostra junto do campo.
+  const renameDashboard = async (dashboard: WorkspaceTreeDashboard, name: string) => {
+    if (!currentId) return
+    const saved = await updateDashboard(currentId, dashboard.id, { name })
+    if (fullFolder) {
+      setFullFolder({ ...fullFolder, dashboards: fullFolder.dashboards.map((d) => (d.id === dashboard.id ? { ...d, name: saved.name } : d)) })
+    }
+    // Menu lateral e título do topo leem a árvore — e, para o gerente, é dela
+    // que esta lista vem.
+    await refreshWorkspace()
   }
 
   const confirmDeleteDashboard = async () => {
@@ -250,28 +191,23 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
 
                 {isAdmin && fullFolder && (
                   <>
-                    <AccessControl folder={fullFolder} onSave={saveAccess} />
-                    <ManagersControl folder={fullFolder} onSave={saveManagers} />
+                    <AccessControl folder={fullFolder} known={known} onSave={saveAccess} />
+                    <ManagersControl folder={fullFolder} known={known} onSave={saveManagers} />
                   </>
                 )}
 
                 <div className="space-y-1.5">
                   <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1"><LayoutGrid size={11} /> Dashboards</span>
                   {dashboards.length > 0 && (
-                    <ul className="space-y-0.5">
+                    <ul className="space-y-1">
                       {dashboards.map((d) => (
-                        <li key={d.id} className="flex items-center justify-between gap-2 text-[11px] text-gray-400 group">
-                          <span className="truncate">{d.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => setDashboardToDelete(d)}
-                            disabled={deletingDashboardId === d.id}
-                            title="Remover dashboard"
-                            className="shrink-0 text-gray-600 hover:text-risk-critical disabled:opacity-50"
-                          >
-                            {deletingDashboardId === d.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
-                          </button>
-                        </li>
+                        <DashboardRow
+                          key={d.id}
+                          dashboard={d}
+                          deleting={deletingDashboardId === d.id}
+                          onRename={(name) => renameDashboard(d, name)}
+                          onDelete={() => setDashboardToDelete(d)}
+                        />
                       ))}
                     </ul>
                   )}

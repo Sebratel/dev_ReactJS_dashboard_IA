@@ -1,13 +1,16 @@
 // Aba de gestão de acessos (só administradores, ver server/accessLog.mjs):
-// quem já acessou, quem está online agora, o log de ações realizadas na
-// plataforma, e o papel (admin/padrão) de cada um. Atualiza sozinha a cada 20s.
+// os pedidos de acesso a pastas, quem já acessou, quem está online agora, o
+// log de ações realizadas na plataforma, e o papel (admin/padrão) de cada um.
+// Atualiza sozinha a cada 20s.
 import { useEffect, useState } from 'react'
 import { Users, ScrollText, Loader2, AlertTriangle, RefreshCw } from 'lucide-react'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useAuthStore } from '@/store/authStore'
+import { useAccessRequestsStore } from '@/store/accessRequestsStore'
 import { cn } from '@/utils/cn'
 import { fetchUsers, fetchAuditLog, setUserRole, ApiError, type AccessUser, type AuditLogEntry, type UserRole } from './accessApi'
+import { AccessRequestsSection } from './AccessRequestsSection'
 
 const POLL_MS = 20_000
 
@@ -43,6 +46,9 @@ const ACTION_LABELS: Record<string, string> = {
   // O alvo registrado é "provedor · modelo" — nunca a credencial (ver a rota
   // PUT /api/ai/config em server/index.mjs).
   'ai.config.update': 'Alterou o provedor de IA',
+  'access.request.create': 'Pediu acesso a uma pasta',
+  'access.request.approve': 'Liberou um pedido de acesso',
+  'access.request.reject': 'Recusou um pedido de acesso',
 }
 
 function fmtDateTime(iso: string) {
@@ -173,6 +179,7 @@ function AuditLogSection({ entries }: { entries: AuditLogEntry[] }) {
 
 export default function AccessPage() {
   const currentEmail = useAuthStore((s) => s.user?.email ?? null)
+  const refreshPendingCount = useAccessRequestsStore((s) => s.refreshPendingCount)
   const [users, setUsers] = useState<AccessUser[] | null>(null)
   const [log, setLog] = useState<AuditLogEntry[] | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
@@ -241,6 +248,10 @@ export default function AccessPage() {
           <p>{roleError}</p>
         </div>
       )}
+      <AccessRequestsSection
+        reloadKey={reloadKey}
+        onDecided={() => { setReloadKey((k) => k + 1); void refreshPendingCount() }}
+      />
       <UsersSection
         users={users}
         currentEmail={currentEmail}

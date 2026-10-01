@@ -16,7 +16,7 @@
     "test:auth": "tsx scripts/test-auth.mjs",
     "//test:auth": "Teste de fumaca da verificacao do ID token do Firebase (server/firebaseToken.mjs): prova que token bom entra e que alg:none, HS256 com a chave publica, payload adulterado, aud/iss de outro projeto, expirado e kid desconhecido NAO entram. Nao usa rede.",
     "test:access": "tsx scripts/test-access.mjs",
-    "//test:access": "Papel de quem entra (server/accessLog.mjs): primeiro acesso e Padrao, mesmo estando em ADMIN_EMAILS, quando ja existe admin salvo; a lista so vale enquanto nao ha nenhum admin. Usa pasta temporaria e e-mails ficticios, nao toca em data/."
+    "//test:access": "Quem entra e o que pode pedir (server/accessLog.mjs, server/accessRequests.mjs, liberacao de pasta em server/workspace.mjs): primeiro acesso e Padrao mesmo estando em ADMIN_EMAILS quando ja existe admin salvo; primeiro acesso marcado ate abrir o manual; pedido de acesso com um pendente por pasta, decisao unica e liberacao que poe o e-mail na pasta. Usa pasta temporaria e e-mails ficticios, nao toca em data/."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
@@ -42,6 +42,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
+    "pdfjs-dist": "~5.6.205",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "typescript": "^5.5.2",

@@ -100,9 +100,28 @@ export function touchUser(email, name) {
     // Papel só é decidido uma vez, no primeiro acesso — Padrão, exceto no
     // bootstrap (ver initialRole) — e depois disso só muda pela aba Acessos.
     role: existing?.role ?? initialRole(users, key),
+    // Quem acaba de entrar pela primeira vez cai no "Manual de uso" antes de
+    // qualquer dashboard (ver DashboardRedirect em src/router/index.tsx).
+    // Registro antigo, de antes deste campo, conta como já visto.
+    manualPending: existing ? existing.manualPending === true : true,
     firstSeenAt: existing?.firstSeenAt || new Date(now).toISOString(),
     lastSeenAt: new Date(now).toISOString(),
   }
+  saveJson(USERS_PATH, users)
+}
+
+export function isManualPending(email) {
+  if (!email) return false
+  return loadJson(USERS_PATH, {})[String(email).toLowerCase()]?.manualPending === true
+}
+
+// A página do manual avisa que foi aberta: dali em diante o usuário volta a
+// entrar direto na primeira dashboard que pode ver.
+export function markManualSeen(email) {
+  const key = String(email).toLowerCase()
+  const users = loadJson(USERS_PATH, {})
+  if (!users[key] || users[key].manualPending !== true) return
+  users[key] = { ...users[key], manualPending: false }
   saveJson(USERS_PATH, users)
 }
 

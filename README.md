@@ -146,7 +146,7 @@ derrubavam o processo do ETL sem erro em lugar nenhum.
   no máximo 6 vão ao Data Hub ao mesmo tempo
   ([server/datahubQuery.mjs](server/datahubQuery.mjs)). Editar a fonte ou clicar
   em "Atualizar agora" descarta o cache dela.
-- **Exige o Data Hub com a consulta pública** (commit "API publica: consulta agregada pelo token", para a branch `staging` de `Sebratel/dev_DataHub_ReactJS`:
+- **Exige o Data Hub com a consulta pública** (commit `3cea3c6` "API publica: consulta agregada pelo token", na branch `staging` de `Sebratel/dev_DataHub_ReactJS`:
   rota `/query`, período em `groupBy`, contagem de linhas, `orNull`,
   `withTotal`). Sem ela, o cadastro avisa e a fonte pode ficar em cópia local.
 - O ETL não copia fonte direta: na vez dela, só confere que o Data Hub responde

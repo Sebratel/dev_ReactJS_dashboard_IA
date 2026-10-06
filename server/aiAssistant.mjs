@@ -421,10 +421,10 @@ async function runTool(name, input, ctx) {
         sourceRowsCache: new Map(), resolvedScalarCache: new Map(), visiting: new Set(),
       }
       try {
-        const result = resolveMeasure(target.id, mctx)
+        const result = await resolveMeasure(target.id, mctx)
         const resolvedRefs = {}
         if (target.kind === 'formula') {
-          for (const [alias, refId] of Object.entries(target.refs)) resolvedRefs[alias] = resolveMeasure(refId, mctx).value
+          for (const [alias, refId] of Object.entries(target.refs)) resolvedRefs[alias] = (await resolveMeasure(refId, mctx)).value
         }
         return { text: JSON.stringify({ value: result.value, resolvedRefs: Object.keys(resolvedRefs).length ? resolvedRefs : undefined }) }
       } catch (e) {

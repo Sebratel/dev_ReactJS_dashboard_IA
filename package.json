@@ -16,7 +16,9 @@
     "test:auth": "tsx scripts/test-auth.mjs",
     "//test:auth": "Teste de fumaca da verificacao do ID token do Firebase (server/firebaseToken.mjs): prova que token bom entra e que alg:none, HS256 com a chave publica, payload adulterado, aud/iss de outro projeto, expirado e kid desconhecido NAO entram. Nao usa rede.",
     "test:access": "tsx scripts/test-access.mjs",
-    "//test:access": "Quem entra e o que pode pedir (server/accessLog.mjs, server/accessRequests.mjs, liberacao de pasta em server/workspace.mjs): primeiro acesso e Padrao mesmo estando em ADMIN_EMAILS quando ja existe admin salvo; primeiro acesso marcado ate abrir o manual; pedido de acesso com um pendente por pasta, decisao unica e liberacao que poe o e-mail na pasta. Usa pasta temporaria e e-mails ficticios, nao toca em data/."
+    "//test:access": "Quem entra e o que pode pedir (server/accessLog.mjs, server/accessRequests.mjs, liberacao de pasta em server/workspace.mjs): primeiro acesso e Padrao mesmo estando em ADMIN_EMAILS quando ja existe admin salvo; primeiro acesso marcado ate abrir o manual; pedido de acesso com um pendente por pasta, decisao unica e liberacao que poe o e-mail na pasta. Usa pasta temporaria e e-mails ficticios, nao toca em data/.",
+    "test:direct": "tsx scripts/test-direct.mjs",
+    "//test:direct": "Leitura direta no Data Hub (server/directWidgetQuery.mjs): a mesma bateria de 42 widgets (barras, series por mes, legenda, matriz, tabela, KPI, medidas nomeadas, relacoes) rodada em copia local e em leitura direta tem de dar o MESMO resultado; nenhuma linha bruta e baixada na direta; o ETL nao copia fonte direta e uma copia grande demais vira erro na propria fonte sem congelar as outras. Data Hub falso em 127.0.0.1 e dados inventados, nao toca em data/ nem na rede."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

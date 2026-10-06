@@ -20,6 +20,15 @@
 // atual antes de sobrescrever), então ela não some do Builder entre uma
 // execução e outra.
 //
+// Fonte em LEITURA DIRETA (readMode 'direct') não é copiada: os painéis
+// consultam o Data Hub na hora (server/directWidgetQuery.mjs). Na vez dela, o
+// ciclo só confere que o Data Hub responde a consulta e anota o total de
+// linhas — é o que a tela de Configurações mostra. Fonte COPIADA grande demais
+// (COPY_MAX_BYTES, medido na 1ª página) vira erro NELA, com a saída sugerida,
+// e não entra no snapshot: antes, ela derrubava o ciclo inteiro na hora de
+// gravar, sem erro em lugar nenhum, e as fontes pequenas paravam de atualizar
+// junto — de novo a cada ciclo.
+//
 // ETL_FORCE_IDS (ver FORCED, abaixo) fura a agenda para as fontes listadas —
 // é o que dá sentido às ações manuais da tela.
 //
@@ -30,8 +39,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
 import {
-  listForEtl as listLakehouseForEtl, fetchDatasetRows, recordLakehouseRuns, sourceKey as lakehouseKey,
-  isDue, MAX_ROWS as MAX_LAKEHOUSE_ROWS,
+  listForEtl as listLakehouseForEtl, fetchDatasetRows, queryDataset, recordLakehouseRuns, sourceKey as lakehouseKey,
+  isDue, readModeOf, CopyTooLargeError, COPY_MAX_BYTES, MAX_ROWS as MAX_LAKEHOUSE_ROWS,
 } from '../server/lakehouseSources.mjs'
 import { decryptSecret } from '../server/secretBox.mjs'
 
@@ -108,6 +117,23 @@ async function main() {
       console.log(`[etl] ${key}: desativada — pulando`)
       continue
     }
+    if (readModeOf(src) === 'direct') {
+      // Não entra no snapshot (nem o que sobrou de quando era copiada).
+      if (!FORCED.has(src.id) && !isDue(src, now)) continue
+      try {
+        if (!src.tokenEnc) throw new Error('fonte sem token cadastrado')
+        const { total } = await queryDataset({
+          baseUrl: src.baseUrl, datasetSlug: src.datasetSlug, token: decryptSecret(src.tokenEnc),
+        }, { limit: 1 })
+        runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: total ?? null, error: null })
+        console.log(`[etl] ${key} (${src.datasetSlug}): leitura direta — ${total ?? '?'} linha(s) no Data Hub, nada copiado`)
+      } catch (e) {
+        // Sem lastRunAt: confere de novo no próximo ciclo (é uma consulta só).
+        runs.push({ id: src.id, error: e.message })
+        console.log(`[etl] ${key} (${src.datasetSlug}): leitura direta falhou (${e.message})`)
+      }
+      continue
+    }
     // "Manter o dado anterior" só vale se ele existe. Fora da agenda mas
     // AUSENTE do snapshot — o ciclo em que ela rodou não conseguiu gravar, ou
     // o volume do snapshot foi recriado — a fonte é buscada agora: senão ela
@@ -122,12 +148,21 @@ async function main() {
       if (!src.tokenEnc) throw new Error('fonte sem token cadastrado')
       const { rows, total, pages } = await fetchDatasetRows({
         baseUrl: src.baseUrl, datasetSlug: src.datasetSlug, token: decryptSecret(src.tokenEnc),
-      }, { maxRows: MAX_LAKEHOUSE_ROWS })
+      }, { maxRows: MAX_LAKEHOUSE_ROWS, maxBytes: COPY_MAX_BYTES })
       data[key] = rows
-      runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: rows.length, error: null })
+      runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: rows.length, rowTotal: total, error: null })
       const truncated = rows.length < total ? ` de ${total} (teto de ${MAX_LAKEHOUSE_ROWS})` : ''
       console.log(`[etl] ${key} (${src.datasetSlug}): ${rows.length} linhas${truncated} em ${pages} página(s)`)
     } catch (e) {
+      if (e instanceof CopyTooLargeError) {
+        // Não é falha passageira: a fonte segue a agenda dela (lastRunAt) em
+        // vez de ser rebaixada a cada ciclo. Fica no snapshot só o que ela já
+        // tinha, se tinha.
+        if (previous.data[key]) data[key] = previous.data[key]
+        runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), error: e.message })
+        console.log(`[etl] ${key} (${src.datasetSlug}): ${e.message}`)
+        continue
+      }
       // Falha transitória — mantém o último dado bom em vez de zerar, e NÃO
       // grava lastRunAt (tenta de novo no próximo ciclo). O erro fica
       // registrado pra aparecer na tela de Configurações.
@@ -137,7 +172,17 @@ async function main() {
     }
   }
   const snapshot = { meta: { generatedAt: new Date().toISOString() }, data }
-  const json = JSON.stringify(snapshot)
+  // Rede de proteção: com o teto por fonte isto não deveria estourar, mas se
+  // estourar (muitas fontes copiadas perto do teto), o motivo vai para as
+  // fontes do ciclo em vez de o processo morrer mudo.
+  let json
+  try {
+    json = JSON.stringify(snapshot)
+  } catch (e) {
+    const reason = `o snapshot ficou grande demais para gravar (${e.message}) — mude as fontes maiores para "Direto no Data Hub"`
+    if (runs.length) recordLakehouseRuns(runs.map((r) => ({ id: r.id, error: r.error ?? reason })))
+    throw new Error(reason, { cause: e })
+  }
   const gz = gzipSync(Buffer.from(json, 'utf8'))
   // A execução só é registrada DEPOIS que o snapshot foi gravado. Antes era o
   // contrário, e uma gravação que falhava (volume sem permissão de escrita)

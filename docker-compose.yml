@@ -104,6 +104,14 @@ services:
       # Postgres nem MariaDB. Todo dado corporativo entra pelo Data Hub.
       # Endereço padrão sugerido no cadastro de uma fonte do Data Hub.
       DHUB_BASE_URL: ${DHUB_BASE_URL:-https://data-hub.sebratel.net.br}
+      # Leitura direta (fontes em "Direto no Data Hub"): cada widget é uma
+      # consulta no Data Hub. Cache do resultado, consultas simultâneas e tempo
+      # limite — os padrões casam com o motor de lá (6 vagas, 30 s).
+      DHUB_QUERY_CACHE_SECONDS: ${DHUB_QUERY_CACHE_SECONDS:-60}
+      DHUB_QUERY_CONCURRENCY: ${DHUB_QUERY_CONCURRENCY:-6}
+      DHUB_QUERY_TIMEOUT_MS: ${DHUB_QUERY_TIMEOUT_MS:-45000}
+      # Teto de uma fonte em CÓPIA LOCAL (o ETL disparado pela tela roda aqui).
+      DHUB_COPY_MAX_MB: ${DHUB_COPY_MAX_MB:-100}
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
       # indisponível e o resto do app segue normal. Só o `api` precisa — o
       # navegador nunca vê a chave.
@@ -171,6 +179,10 @@ services:
       DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-10000}
       DHUB_MAX_ROWS: ${DHUB_MAX_ROWS:-500000}
       DHUB_TIMEOUT_MS: ${DHUB_TIMEOUT_MS:-120000}
+      # Teto de uma fonte em CÓPIA LOCAL, em MB de JSON — acima disso ela vira
+      # erro nela mesma (com a sugestão de leitura direta) em vez de derrubar o
+      # ciclo. A api carrega o snapshot inteiro: 100 MB já pesam ~300 MB lá.
+      DHUB_COPY_MAX_MB: ${DHUB_COPY_MAX_MB:-100}
       TZ: ${TZ:-America/Sao_Paulo}
       # Teto maior que o da api: é este processo que materializa os datasets,
       # montando o snapshot inteiro em memória antes de gravar.

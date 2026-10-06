@@ -25,9 +25,10 @@ import {
 } from './sheetSources.mjs'
 import {
   listLakehouseSources, getLakehouseSource, createLakehouseSource, updateLakehouseSource, deleteLakehouseSource,
-  setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, resolveCredentials,
-  sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
+  setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, testDirectQuery, resolveCredentials,
+  readModeOf, sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
 } from './lakehouseSources.mjs'
+import { forgetDirectSource } from './datahubQuery.mjs'
 import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn, conversationStatus, endConversation } from './aiAssistant.mjs'
 import { aiConfigPublic, saveAiConfig, apiKeyFor } from './aiConfig.mjs'
@@ -520,7 +521,8 @@ app.patch('/api/sheet-sources/:id/refresh', requireAuth(), async (req, res) => {
 //
 // O token nunca volta pro navegador em nenhuma destas rotas — a UI recebe só
 // `tokenHint`. Quem precisa do token em claro é o ETL, que decifra na hora de
-// buscar (ver scripts/fetch-install.mjs).
+// buscar (ver scripts/fetch-install.mjs), e a leitura direta, que decifra a
+// cada consulta (server/datahubQuery.mjs).
 app.get('/api/lakehouse-sources', requireAuth(), requireAdmin(), (_req, res) => {
   res.json({ sources: listLakehouseSources(), defaultBaseUrl: DHUB_DEFAULT_BASE_URL })
 })
@@ -529,6 +531,8 @@ app.get('/api/lakehouse-sources', requireAuth(), requireAdmin(), (_req, res) => 
 // devolve total de linhas + colunas detectadas, pra pessoa confirmar que é o
 // dataset certo antes de criar a fonte. Também serve pra revalidar uma fonte
 // existente: sem `token` no corpo, reusa o token já cadastrado em `id`.
+// `direct` diz se a leitura direta funciona com essas credenciais — um Data Hub
+// sem a consulta pública ainda deixa a fonte funcionar, mas só como cópia.
 app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (req, res) => {
   try {
     const b = req.body || {}
@@ -539,7 +543,8 @@ app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (re
       baseUrl = baseUrl || saved.baseUrl
       datasetSlug = datasetSlug || saved.datasetSlug
     }
-    res.json(await previewDataset({ baseUrl, datasetSlug, token }))
+    const preview = await previewDataset({ baseUrl, datasetSlug, token })
+    res.json({ ...preview, direct: await testDirectQuery({ baseUrl, datasetSlug, token }) })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -547,20 +552,26 @@ app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (re
 
 // Cria e já valida contra o Data Hub — se o token não abrir o dataset, nada é
 // salvo e o erro real de lá volta pra tela (mesmo espírito de POST
-// /api/sheet-sources). Em seguida dispara o ETL, pra fonte já aparecer no
-// Builder sem esperar o próximo ciclo.
+// /api/sheet-sources). Na leitura direta, valida também a consulta: sem ela a
+// fonte seria salva e nenhum widget dela abriria. Em seguida dispara o ETL —
+// que copia a fonte (cópia local) ou só anota o total dela (direta).
 app.post('/api/lakehouse-sources', requireAuth(), requireAdmin(), async (req, res) => {
   const b = req.body || {}
+  const readMode = b.readMode === 'copy' ? 'copy' : 'direct'
   try {
     await previewDataset({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
   } catch (e) {
     return res.status(400).json({ error: e.message })
   }
+  if (readMode === 'direct') {
+    const direct = await testDirectQuery({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
+    if (!direct.available) return res.status(400).json({ error: direct.error })
+  }
   try {
     const entry = createLakehouseSource({
-      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, enabled: b.enabled,
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, enabled: b.enabled, readMode,
     }, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.create', target: entry.id, meta: { label: entry.label, dataset: entry.datasetSlug } })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.create', target: entry.id, meta: { label: entry.label, dataset: entry.datasetSlug, readMode: entry.readMode } })
     triggerEtlRefresh(`fonte do Data Hub "${entry.datasetSlug}" cadastrada`)
     res.json({ ok: true, source: entry })
   } catch (e) {
@@ -574,22 +585,29 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), async (req,
   const existing = getLakehouseSource(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Fonte não encontrada.' })
   const b = req.body || {}
+  const readMode = b.readMode === 'copy' || b.readMode === 'direct' ? b.readMode : readModeOf(existing)
   try {
     // Valida a combinação que vai ficar salva (o que mudou + o que ficou),
     // pra uma edição errada não deixar a fonte quebrada até o próximo ETL.
-    await previewDataset({
+    const credentials = {
       baseUrl: b.baseUrl ?? existing.baseUrl,
       datasetSlug: b.datasetSlug ?? existing.datasetSlug,
       token: b.token || resolveCredentials(existing.id).token,
-    })
+    }
+    await previewDataset(credentials)
+    if (readMode === 'direct') {
+      const direct = await testDirectQuery(credentials)
+      if (!direct.available) return res.status(400).json({ error: direct.error })
+    }
   } catch (e) {
     return res.status(400).json({ error: e.message })
   }
   try {
     const saved = updateLakehouseSource(req.params.id, {
-      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token,
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, readMode,
     }, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug } })
+    forgetDirectSource(saved.id)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug, readMode: saved.readMode } })
     // Força: a edição pode ter trocado o dataset ou o token, e `lastRunAt`
     // continua o mesmo — sem forçar, a fonte seguiria servindo as linhas do
     // dataset ANTIGO até a agenda vencer.
@@ -603,6 +621,7 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), async (req,
 app.delete('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), (req, res) => {
   try {
     deleteLakehouseSource(req.params.id, req.user.email, isAdmin(req.user.email))
+    forgetDirectSource(req.params.id)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.delete', target: req.params.id })
     triggerEtlRefresh('fonte do Data Hub removida')
     res.json({ ok: true })
@@ -614,6 +633,7 @@ app.delete('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), (req, re
 app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), requireAdmin(), (req, res) => {
   try {
     const saved = setLakehouseEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
+    forgetDirectSource(saved.id)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.enabled', target: saved.id, meta: { enabled: saved.enabled } })
     // Força ao REATIVAR: enquanto desativada a fonte sai do snapshot por
     // inteiro, então não há "dado anterior" pra manter. Sem forçar, reativar
@@ -641,10 +661,13 @@ app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), requireAdmin(), (
 
 // Busca agora, sem esperar o ciclo. Dispara o ETL inteiro (é ele que escreve o
 // snapshot) — a resposta volta na hora e a atualização acontece em segundo
-// plano, igual ao que já acontece ao mexer no catálogo de queries.
+// plano, igual ao que já acontece ao mexer no catálogo de queries. Na leitura
+// direta não há o que copiar: o que muda é o cache da consulta, descartado
+// aqui para os painéis lerem o Data Hub de novo já na próxima abertura.
 app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), requireAdmin(), (req, res) => {
   const entry = getLakehouseSource(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Fonte não encontrada.' })
+  forgetDirectSource(entry.id)
   // Força: o sentido do botão é "busca agora". Sem isso, uma fonte agendada
   // dentro da janela dela era simplesmente pulada pelo ciclo, e a tela dizia
   // "busca iniciada" tendo iniciado nada.

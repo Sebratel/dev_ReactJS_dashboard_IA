@@ -10,6 +10,11 @@ import { apiFetch, ApiError } from '@/lib/apiClient'
 
 export { ApiError }
 
+// 'direct' = os painéis consultam o Data Hub na hora, nada é copiado (padrão
+// das fontes novas); 'copy' = a tabela inteira é copiada para o snapshot, como
+// era antes. Ver o cabeçalho de server/lakehouseSources.mjs.
+export type ReadMode = 'direct' | 'copy'
+
 export interface LakehouseSource {
   id: string
   label: string
@@ -18,10 +23,14 @@ export interface LakehouseSource {
   tokenHint: string | null
   hasToken: boolean
   enabled: boolean
+  readMode: ReadMode
   refreshMode: 'realtime' | 'scheduled'
   refreshMinutes: number
   lastRunAt: string | null
+  // Na cópia: linhas copiadas. Na leitura direta: linhas no Data Hub.
   rowCount: number | null
+  // Total que o Data Hub informou. Maior que rowCount = cópia cortada no teto.
+  rowTotal?: number | null
   lastError: string | null
   lastErrorAt: string | null
   folderIds: string[] | null
@@ -37,6 +46,9 @@ export interface LakehousePreview {
   total: number | null
   columns: string[]
   rows: Record<string, unknown>[]
+  // A leitura direta funciona com estas credenciais? (Data Hub com a consulta
+  // pública e token que alcança o conjunto por ela.)
+  direct?: { available: boolean; total: number | null; error: string | null; missingRoute?: boolean }
 }
 
 export interface LakehouseSourceInput {
@@ -44,6 +56,7 @@ export interface LakehouseSourceInput {
   baseUrl: string
   datasetSlug: string
   token?: string
+  readMode?: ReadMode
 }
 
 async function parse<T>(res: Response): Promise<T> {
@@ -106,6 +119,7 @@ export async function setLakehouseFolders(id: string, folderIds: string[] | null
 }
 
 // Dispara o ETL agora — responde na hora, a busca acontece em segundo plano.
+// Na leitura direta não há o que buscar: descarta o cache das consultas dela.
 export async function syncLakehouseSource(id: string): Promise<void> {
   await parse(await send(at(id, '/sync'), 'PATCH'))
 }
@@ -119,7 +133,9 @@ export const builderKey = (id: string) => `dhub:${id}`
 // dispara o ETL (triggerEtlRefresh, server/index.mjs), que é quem busca as
 // linhas no Data Hub e reescreve o snapshot de onde saem as colunas. Enquanto
 // esse ciclo não termina, a fonte já existe no catálogo e ainda não tem coluna
-// nenhuma — e uma tela que recarregasse na hora mostraria a lista velha.
+// nenhuma — e uma tela que recarregasse na hora mostraria a lista velha. (Na
+// leitura direta as colunas vêm do Data Hub na hora, e a espera acaba no 1º
+// giro.)
 //
 // Foi essa janela que fez "cadastrei a fonte e as colunas não vêm" parecer um
 // bug sem causa: o dado chegava segundos depois, mas nada na tela voltava a

@@ -109,11 +109,12 @@ o `tsc` do `npm run build` checa só o TypeScript do front. Ele precisa de `tsx`
 
 ## De onde vem o dado
 
-Por dois caminhos, e só dois:
+Por dois caminhos, e só dois — e o do Data Hub tem dois modos:
 
-| Fonte | Chave | Como é buscada | Teto |
+| Fonte | Chave | Como é lida | Teto |
 |---|---|---|---|
-| Dataset do **Data Hub** (lakehouse) | `dhub:<id>` | ETL em segundo plano, paginado | 500.000 linhas |
+| Dataset do **Data Hub**, leitura **direta** (padrão) | `dhub:<id>` | cada widget é uma consulta agregada no Data Hub, na hora | nenhum na tabela; 10.000 linhas por resposta |
+| Dataset do **Data Hub**, **cópia local** | `dhub:<id>` | ETL em segundo plano, paginado, para o snapshot | 500.000 linhas e 100 MB |
 | **Planilha do Google** | `sheet:<id>` | dentro da requisição, com o token de quem está logado | 20.000 linhas |
 
 **O app não fala com banco de dados.** Não tem driver, não tem credencial, não
@@ -122,11 +123,53 @@ Postgres do ERP e no MariaDB; manter os dois caminhos consumia duas plataformas
 grandes pela mesma informação, e o lakehouse existe justamente para ser o
 barramento. Dado novo no dashboard se resolve publicando o dataset no Data Hub.
 
+### Leitura direta: o Data Hub agrega, nada é copiado
+
+O Data Hub já é o lake (Parquet + DuckDB). Na leitura direta — o padrão de toda
+fonte cadastrada a partir de 01/10/2026 — o app não guarda linha nenhuma: cada
+widget vira um `QueryDef` enviado a `POST /api/public/v1/datasets/<slug>/query`
+([server/directWidgetQuery.mjs](server/directWidgetQuery.mjs)), o DuckDB de lá
+agrupa e agrega, e só o resultado volta. Um gráfico por mês de uma tabela de 1,8
+milhão de linhas atravessa a rede em poucos KB. Foi o que destravou tabela grande
+ou larga: na cópia, 287 mil linhas × 154 colunas eram ~1,5 GB de texto, que
+derrubavam o processo do ETL sem erro em lugar nenhum.
+
+- **A saída é a mesma do motor em memória** — as regras de rótulo, hierarquia de
+  datas, top N, legenda, matriz e tabela são as de
+  [server/widgetQuery.mjs](server/widgetQuery.mjs), reaproveitadas; o que muda é
+  quem agrega. `npm run test:direct` roda 42 widgets nos dois modos e compara.
+- **Relação com outra fonte funciona** como filtro (semi-join pelas chaves) e
+  como campo (eixo, legenda, medida, coluna): o Data Hub agrupa também pela chave
+  da relação e a junção acontece aqui — desde que caiba em 10 mil grupos.
+  Passou disso, o widget diz o que fazer em vez de mostrar número incompleto.
+- **Cache de 60 s** por consulta, a mesma consulta em andamento é compartilhada e
+  no máximo 6 vão ao Data Hub ao mesmo tempo
+  ([server/datahubQuery.mjs](server/datahubQuery.mjs)). Editar a fonte ou clicar
+  em "Atualizar agora" descarta o cache dela.
+- **Exige o Data Hub com a consulta pública** (commit "API publica: consulta agregada pelo token", para a branch `staging` de `Sebratel/dev_DataHub_ReactJS`:
+  rota `/query`, período em `groupBy`, contagem de linhas, `orNull`,
+  `withTotal`). Sem ela, o cadastro avisa e a fonte pode ficar em cópia local.
+- O ETL não copia fonte direta: na vez dela, só confere que o Data Hub responde
+  e anota o total de linhas, que é o que Configurações mostra.
+
+Diferenças para a cópia, todas a favor do que se espera de BI: média ignora
+campo vazio (a cópia o contava como zero); "Contagem de X" conta texto vazio
+como preenchido; contagem distinta sem campo conta linhas; na tabela paginada lá,
+o vazio vai para o fim e empate na coluna clicada é desfeito pelas demais.
+
+### Cópia local
+
 O ETL ([scripts/fetch-install.mjs](scripts/fetch-install.mjs)) lê o catálogo,
-decifra o token de cada fonte, pagina a API pública do Data Hub e grava **tudo
-num arquivo único gzip**, `public/installData.data` — o snapshot. A API carrega
-esse arquivo inteiro em memória e o recarrega sozinha quando o `mtime` muda, sem
-precisar de restart ([server/dataset.mjs](server/dataset.mjs)).
+decifra o token de cada fonte copiada, pagina a API pública do Data Hub e grava
+**tudo num arquivo único gzip**, `public/installData.data` — o snapshot. A API
+carrega esse arquivo inteiro em memória e o recarrega sozinha quando o `mtime`
+muda, sem precisar de restart ([server/dataset.mjs](server/dataset.mjs)).
+
+Uma fonte copiada que não cabe (`DHUB_COPY_MAX_MB`, padrão 100 MB de JSON,
+estimado pela 1ª página antes de baixar o resto) vira **erro na própria fonte**,
+com a sugestão de passar para a leitura direta, e segue a agenda dela. Antes,
+ela derrubava o ciclo inteiro na gravação: nada era registrado, as fontes
+pequenas paravam de atualizar junto, e tudo era baixado de novo a cada 2 minutos.
 
 ### O fim da paginação vem do `total`, nunca do tamanho da página
 
@@ -704,7 +747,7 @@ docker compose up -d --build
 | Login (runtime) | `FIREBASE_PROJECT_ID` (derivado do `VITE_` no compose) `ALLOWED_DOMAIN` `ADMIN_EMAILS` `SESSION_TTL_DAYS` | sim |
 | Cifra | `SECRETS_KEY` | não — gerada sozinha, mas **idêntica em `api` e `etl`** |
 | Publicação | `WEB_PORT` | **sim — o deploy para sem ela** |
-| Data Hub | `DHUB_BASE_URL` `DHUB_PAGE_SIZE` `DHUB_MAX_ROWS` `DHUB_TIMEOUT_MS` | não |
+| Data Hub | `DHUB_BASE_URL` `DHUB_PAGE_SIZE` `DHUB_MAX_ROWS` `DHUB_TIMEOUT_MS` `DHUB_COPY_MAX_MB` `DHUB_QUERY_CACHE_SECONDS` `DHUB_QUERY_CONCURRENCY` `DHUB_QUERY_TIMEOUT_MS` | não |
 | ETL | `ETL_BASE_INTERVAL_MINUTES` `ETL_RUN_ON_START` | não |
 
 **As `VITE_*` são gravadas dentro do bundle pelo Vite, em tempo de build.**
@@ -831,11 +874,25 @@ aviso.
 npm run test:auth     # 21 casos — verificação do ID token do Firebase
 npm run test:ai       # 73 casos — adaptadores dos três provedores e a retomada de conversa
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
+npm run test:direct   # 105 casos — leitura direta no Data Hub × cópia local, tráfego e ETL
 ```
 
 Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa
 pasta temporária (users.json, auditoria, pedidos e workspace próprios) e usa
 e-mails fictícios.
+
+O **test:direct** cadastra a MESMA tabela (2.400 linhas inventadas) duas vezes,
+uma em cópia local e outra em leitura direta, e exige que 42 widgets — barras,
+séries por mês e por hierarquia de datas, várias medidas, combo, legenda, KPI,
+medidas nomeadas e fórmula, tabela paginada, matriz com subtotais, dispersão,
+histograma, relação como filtro e como campo — deem o mesmo resultado nos dois.
+O Data Hub é um servidor falso em `127.0.0.1` que implementa a consulta pública
+com a semântica do compilador de lá e as conversões do DuckDB que mudam
+resultado (contagem como texto, nulos por último). Prova também que a leitura
+direta não baixa linha bruta, que o ETL não copia fonte direta e que uma cópia
+grande demais vira erro na própria fonte sem congelar as outras. Roda em UTC: no
+fuso local, o filtro de período da cópia escorrega 3 horas na virada do dia
+(defeito antigo da cópia; a direta compara a data como está escrita).
 
 O **test:auth** é código de autenticação, e por isso não se contenta em provar que
 um token bom passa: 18 dos 21 casos provam que os **ruins param**, um a um —

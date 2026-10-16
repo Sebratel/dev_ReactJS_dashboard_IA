@@ -40,8 +40,9 @@ import {
   getWorkspaceTreeForUser, getDashboardForUser, listFoldersFull, getFolderFull, listFolderCatalogForUser,
   createFolder, updateFolder, deleteFolder, setFolderAccess, grantFolderAccess, setFolderManagers, listFolderMembers,
   createDashboard, updateDashboard, deleteDashboard, saveDashboardFull, saveTabWidgets, setTabAccess,
-  findFoldersUsingQuery,
+  findFoldersUsingQuery, getTabRevsForUser, getTabForUser, TabConflictError,
 } from './workspace.mjs'
+import { acquireTabLock, releaseTabLock, blockingTabLock, listTabLocks, normalizeClientId } from './tabLocks.mjs'
 import {
   isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS,
   isManualPending, markManualSeen,
@@ -945,7 +946,57 @@ app.get('/api/workspace/tree', requireAuth(), (req, res) => {
 app.get('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), requireFolderAccess(), (req, res) => {
   const result = getDashboardForUser(req.params.fid, req.params.did, req.user.email)
   if (result.error) return res.status(result.error).json({ error: result.message })
-  res.json(result)
+  res.json({ ...result, locks: visibleTabLocks(req, result.dashboard.tabs) })
+})
+
+// ─── Bloqueio de edição por guia (server/tabLocks.mjs) ───────────────────
+// A janela se identifica com um `clientId` (gerado a cada carga da página).
+function editorOf(req) {
+  const raw = req.body?.clientId ?? req.query?.clientId
+  return { email: req.user.email, name: req.user.name, clientId: normalizeClientId(raw) }
+}
+
+// Só os bloqueios das guias que esta pessoa enxerga.
+function visibleTabLocks(req, tabs) {
+  const all = listTabLocks(req.params.fid, req.params.did, editorOf(req))
+  const visible = new Set(tabs.map((t) => t.id))
+  return Object.fromEntries(Object.entries(all).filter(([tid]) => visible.has(tid)))
+}
+
+// Quem está editando cada guia, mais a versão (`rev`) de cada uma. A tela
+// pergunta de tempos em tempos: mostra o cadeado nas guias bloqueadas e traz
+// a versão nova de uma guia que outra pessoa acabou de salvar.
+app.get('/api/workspace/folders/:fid/dashboards/:did/locks', requireAuth(), requireFolderAccess(), (req, res) => {
+  const revs = getTabRevsForUser(req.params.fid, req.params.did, req.user.email)
+  if (!revs) return res.status(404).json({ error: 'Dashboard não encontrada.' })
+  res.json({ locks: visibleTabLocks(req, Object.keys(revs).map((id) => ({ id }))), revs })
+})
+
+// Pega (ou renova, com `renew: true`) o bloqueio de uma guia. Só quem pode
+// editar a guia. 409 = outra pessoa está editando — o corpo diz quem. No
+// pedido novo (não na renovação), devolve a guia como está no servidor, pra
+// edição começar da versão atual.
+app.post('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/lock', requireAuth(), requireTabEdit(), (req, res) => {
+  const editor = editorOf(req)
+  if (!editor.clientId) return res.status(400).json({ error: 'Identificação da janela (clientId) ausente ou inválida.' })
+  const renew = req.body?.renew === true
+  const result = acquireTabLock(req.params.fid, req.params.did, req.params.tid, editor, { renew })
+  if (!result.ok) {
+    const who = result.lock.self ? 'você, em outra janela' : result.lock.name
+    return res.status(409).json({ error: `Esta guia está sendo editada por ${who}.`, lock: result.lock })
+  }
+  res.json({
+    lock: result.lock,
+    ...(renew ? {} : { tab: getTabForUser(req.params.fid, req.params.did, req.params.tid, req.user.email) }),
+  })
+})
+
+// Solta o bloqueio desta janela. Também chamado com `keepalive` quando a
+// página fecha — por isso o clientId vem na query, e a resposta é sempre 204.
+app.delete('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/lock', requireAuth(), requireFolderAccess(), (req, res) => {
+  const editor = editorOf(req)
+  if (editor.clientId) releaseTabLock(req.params.fid, req.params.did, req.params.tid, editor)
+  res.sendStatus(204)
 })
 
 // Lista completa (accessEmails/managers reais) — só pra tela de gestão de
@@ -1057,25 +1108,44 @@ app.delete('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), require
 
 // Salva a dashboard inteira (guias/filtros/canvas/widgets) — quem gerencia a
 // pasta mexe livremente na estrutura.
+// Grava guia por guia (ver saveDashboardFull): só as que esta tela mudou, e
+// nunca uma guia que outra pessoa está editando. Devolve a dashboard como
+// ficou no servidor — com as guias que outras pessoas salvaram nesse meio-tempo.
 app.put('/api/workspace/folders/:fid/dashboards/:did/full', requireAuth(), requireFolderManager(), (req, res) => {
   try {
     const b = req.body || {}
-    const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures)
+    const editor = editorOf(req)
+    const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures, {
+      changedTabIds: b.changedTabIds,
+      removedTabIds: b.removedTabIds,
+      lockedByOther: (tid) => blockingTabLock(req.params.fid, req.params.did, tid, editor),
+    })
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'dashboard.save', target: `${req.params.fid}/${dashboard.id}` })
-    res.json({ ok: true, dashboard })
+    const result = getDashboardForUser(req.params.fid, req.params.did, req.user.email)
+    res.json({ ok: true, ...result })
   } catch (e) {
+    if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
     res.status(400).json({ error: e.message })
   }
 })
 
 // Salva só os widgets de UMA guia — usado por um usuário padrão com edição
-// liberada ali (não pode mexer na estrutura da dashboard).
+// liberada ali (não pode mexer na estrutura da dashboard). Recusa (409) se
+// outra pessoa estiver editando a guia, ou se ela foi salva por outra pessoa
+// depois que esta tela a leu (`baseRev`).
 app.put('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/widgets', requireAuth(), requireTabEdit(), (req, res) => {
   try {
-    const tab = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, (req.body || {}).widgets, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'tab.widgets.save', target: `${req.params.fid}/${req.params.did}/${tab.id}` })
-    res.json({ ok: true, tab })
+    const b = req.body || {}
+    const lock = blockingTabLock(req.params.fid, req.params.did, req.params.tid, editorOf(req))
+    if (lock) {
+      const who = lock.self ? 'você, em outra janela' : lock.name
+      return res.status(409).json({ error: `Esta guia está sendo editada por ${who} — não dá para salvar agora.`, lock })
+    }
+    const saved = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, b.widgets, req.user.email, { baseRev: b.baseRev })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'tab.widgets.save', target: `${req.params.fid}/${req.params.did}/${saved.id}` })
+    res.json({ ok: true, tab: getTabForUser(req.params.fid, req.params.did, req.params.tid, req.user.email) ?? saved })
   } catch (e) {
+    if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
     res.status(400).json({ error: e.message })
   }
 })

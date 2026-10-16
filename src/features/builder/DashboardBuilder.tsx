@@ -3,7 +3,7 @@
 // filtros → widgets em grade drag & drop. Quem gerencia a pasta (admin ou
 // gerente) mexe na estrutura inteira (guias/filtros/formato); um usuário
 // padrão com edição liberada numa guia específica só mexe nos widgets dela.
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { GridLayout, useContainerWidth, type Layout } from 'react-grid-layout'
 // noOverlapCompactor = sem compactação automática (posição livre) + permite
 // sobrepor widgets deliberadamente ao arrastar um por cima do outro (por
@@ -23,7 +23,9 @@ import { fetchSources } from './builderApi'
 import {
   fetchDashboard, saveDashboardFull, saveTabWidgets, ApiError,
 } from '@/features/workspace/workspaceApi'
-import type { DashboardTab } from '@/features/workspace/types'
+import type { DashboardResponse, DashboardTab } from '@/features/workspace/types'
+import { useTabLocks, EDIT_CLIENT_ID } from './useTabLocks'
+import { TabLockBanner, TabLockChip, TabLockIcon } from './TabLockNotice'
 import { registerDynamicSources } from './fieldCatalog'
 import { WidgetRenderer } from './WidgetRenderer'
 import { FilterBar } from './FilterBar'
@@ -92,6 +94,33 @@ interface DashboardState {
   measures: MeasureDef[]
 }
 
+function toDashboardState(res: DashboardResponse): DashboardState {
+  return { name: res.dashboard.name, tabs: res.dashboard.tabs, measures: res.dashboard.measures ?? [] }
+}
+
+// Conteúdo de uma guia, pra saber se esta tela mudou alguma coisa nela. Fora
+// da comparação: `canEdit` (anotação de permissão), `rev` (versão no
+// servidor) e `access` (o acesso grava na hora, pela rota própria) — mesmo
+// critério do servidor (tabContent em server/workspace.mjs).
+function tabContent(tab: DashboardTab): string {
+  const { canEdit, rev, access, ...content } = tab
+  return JSON.stringify(content)
+}
+
+// Guia nova em branco — "Nova guia", ou "Nova guia 2", "Nova guia 3"… quando
+// o nome já existe. Nasce bloqueada (só admin/gerente veem), igual ao "Criar"
+// manual do TabManager.tsx; `canEdit: true` porque só quem gerencia a
+// dashboard chega aqui.
+function blankTab(existing: DashboardTab[]): DashboardTab {
+  const labels = new Set(existing.map((t) => t.label))
+  let label = 'Nova guia'
+  for (let n = 2; labels.has(label); n++) label = `Nova guia ${n}`
+  return {
+    id: `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, label, filters: [], widgets: [],
+    access: { mode: 'restricted', view: [], edit: [] }, canEdit: true,
+  }
+}
+
 export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; dashboardId: string }) {
   const [dashboard, setDashboard] = useState<DashboardState | null>(null)
   const [savedDashboard, setSavedDashboard] = useState<DashboardState | null>(null)
@@ -120,9 +149,10 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
 
   // Abre a conversa a partir do convite: entra em modo edição (é onde os
   // widgets aprovados viram rascunho) e recarrega o catálogo de fontes antes,
-  // porque é dele que o painel monta a lista de fontes.
+  // porque é dele que o painel monta a lista de fontes. Não sai da guia de
+  // boas-vindas aqui: a guia nova nasce quando o pedido é enviado (ver
+  // resolveAiTargetTab).
   const askAi = (prompt: string) => {
-    ensureNotOnWelcomeTab()
     refreshSources().then(() => {
       setEditMode(true)
       setAiInitialPrompt(prompt)
@@ -170,14 +200,15 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   useEffect(() => {
     let alive = true
     setLoading(true)
-    Promise.all([fetchDashboard(folderId, dashboardId), fetchSources(folderId)])
+    Promise.all([fetchDashboard(folderId, dashboardId, EDIT_CLIENT_ID), fetchSources(folderId)])
       .then(([res, sources]) => {
         if (!alive) return
         registerDynamicSources(sources)
-        const ds = { name: res.dashboard.name, tabs: res.dashboard.tabs, measures: res.dashboard.measures ?? [] }
+        const ds = toDashboardState(res)
         setDashboard(ds)
         setSavedDashboard(ds)
         setCanManageDashboard(res.folder.canManage)
+        if (res.locks) tabLocks.setLocks(res.locks)
         setError(null)
         setActiveTabId((prev) => prev && ds.tabs.some((t) => t.id === prev) ? prev : (ds.tabs[0]?.id ?? null))
       })
@@ -196,11 +227,105 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     () => THEME_PRESETS.find((t) => t.id === detectAppliedTheme(tab?.widgets ?? [])),
     [tab],
   )
-  // Pode editar os WIDGETS da guia atual: admin/gerente da pasta (mexe em
-  // qualquer guia) ou um usuário padrão com edição liberada especificamente
+  // PERMISSÃO de editar os WIDGETS da guia atual: admin/gerente da pasta (mexe
+  // em qualquer guia) ou um usuário padrão com edição liberada especificamente
   // nesta guia (`canEdit`, resolvido pelo servidor). Gerenciar a estrutura da
   // dashboard (guias/filtros/formato) exige `canManageDashboard`.
-  const canEditCurrentTab = canManageDashboard || !!tab?.canEdit
+  const mayEditCurrentTab = canManageDashboard || !!tab?.canEdit
+
+  // ─── Bloqueio de edição por guia (ver useTabLocks.ts) ───────────────────
+  // Guias como estão no servidor (a última versão lida ou salva), por id.
+  const savedTabs = useMemo(() => new Map((savedDashboard?.tabs ?? []).map((t) => [t.id, t])), [savedDashboard])
+  // Guias que esta tela mudou (inclui as novas, que ainda não existem no servidor).
+  const changedTabIds = useMemo(
+    () => (dashboard?.tabs ?? []).filter((t) => { const s = savedTabs.get(t.id); return !s || tabContent(s) !== tabContent(t) }).map((t) => t.id),
+    [dashboard, savedTabs],
+  )
+  // Segura a guia aberta enquanto está no modo edição, e toda guia que ficou
+  // com alteração não salva (até salvar ou descartar). Guia nova não entra: só
+  // existe nesta tela até ser salva, ninguém mais a alcança.
+  const lockWanted = useMemo(() => {
+    if (!editMode) return []
+    const ids = new Set(changedTabIds.filter((id) => savedTabs.has(id)))
+    if (tab && mayEditCurrentTab && savedTabs.has(tab.id)) ids.add(tab.id)
+    return [...ids]
+  }, [editMode, changedTabIds, savedTabs, tab, mayEditCurrentTab])
+
+  // Estado mais recente, pros callbacks do hook (chamados fora do render).
+  const latest = useRef({ dashboard, savedDashboard, editMode, changedTabIds, held: new Set<string>() as ReadonlySet<string> })
+
+  // Bloqueio novo: a edição começa da versão atual da guia no servidor —
+  // a não ser que esta tela já tenha mudado algo nela.
+  const adoptFreshTab = (fresh: DashboardTab) => {
+    const { dashboard: d, savedDashboard: s } = latest.current
+    const local = d?.tabs.find((t) => t.id === fresh.id)
+    const saved = s?.tabs.find((t) => t.id === fresh.id)
+    if (!local || !saved || tabContent(local) !== tabContent(saved)) return
+    if ((saved.rev ?? 0) === (fresh.rev ?? 0) && tabContent(saved) === tabContent(fresh)) return
+    const swap = (prev: DashboardState | null) => prev && { ...prev, tabs: prev.tabs.map((t) => (t.id === fresh.id ? fresh : t)) }
+    setDashboard(swap)
+    setSavedDashboard(swap)
+  }
+
+  // Traz o que outras pessoas salvaram. Fora do modo edição, a dashboard
+  // inteira; no modo edição, só o conteúdo das guias que esta tela não mexeu
+  // e não está segurando (a estrutura — ordem, guias novas — fica como está
+  // até salvar ou descartar).
+  const pullFromServer = async () => {
+    try {
+      const res = await fetchDashboard(folderId, dashboardId, EDIT_CLIENT_ID)
+      const fresh = toDashboardState(res)
+      const { dashboard: d, savedDashboard: s, editMode: editing, changedTabIds: changed, held } = latest.current
+      if (!d || !s) return
+      if (!editing) {
+        setDashboard(fresh)
+        setSavedDashboard(fresh)
+        setCanManageDashboard(res.folder.canManage)
+        if (res.locks) tabLocks.setLocks(res.locks)
+        setActiveTabId((prev) => (prev && fresh.tabs.some((t) => t.id === prev) ? prev : (fresh.tabs[0]?.id ?? null)))
+        return
+      }
+      const byId = new Map(fresh.tabs.map((t) => [t.id, t]))
+      const replace = new Set(s.tabs
+        .filter((t) => byId.has(t.id) && !changed.includes(t.id) && !held.has(t.id) && (byId.get(t.id)!.rev ?? 0) !== (t.rev ?? 0))
+        .map((t) => t.id))
+      if (replace.size === 0) return
+      const swap = (prev: DashboardState | null) => prev && { ...prev, tabs: prev.tabs.map((t) => (replace.has(t.id) ? byId.get(t.id)! : t)) }
+      setDashboard(swap)
+      setSavedDashboard(swap)
+    } catch { /* tenta de novo na próxima consulta */ }
+  }
+
+  // Versão de cada guia no servidor (a cada consulta do hook): diferente da
+  // que esta tela tem = alguém salvou — busca a versão nova.
+  const checkRevs = (revs: Record<string, number>) => {
+    const { savedDashboard: s, editMode: editing, changedTabIds: changed, held } = latest.current
+    if (!s) return
+    const stale = s.tabs.some((t) => revs[t.id] !== undefined && revs[t.id] !== (t.rev ?? 0)
+      && (!editing || (!changed.includes(t.id) && !held.has(t.id))))
+    const tabsChanged = s.tabs.length !== Object.keys(revs).length || s.tabs.some((t) => revs[t.id] === undefined)
+    if (stale || (!editing && tabsChanged)) void pullFromServer()
+  }
+
+  const tabLocks = useTabLocks({ folderId, dashboardId, wanted: lockWanted, onAcquired: adoptFreshTab, onRevs: checkRevs })
+  latest.current = { dashboard, savedDashboard, editMode, changedTabIds, held: tabLocks.held }
+
+  // Outra pessoa (ou esta mesma, em outra janela) editando a guia aberta.
+  const lockedBy = tabLocks.otherLock(tab?.id)
+  // Pode editar a guia atual AGORA: tem permissão e ninguém mais está nela.
+  // É o que decide o botão "Editar" e o convite da guia vazia.
+  const canEditCurrentTab = mayEditCurrentTab && !lockedBy
+  // No modo edição, só mexe de fato com o bloqueio confirmado (ou numa guia
+  // nova, que só existe nesta tela). Enquanto o pedido vai e volta, a guia
+  // fica só de leitura — é uma fração de segundo.
+  const tabEditable = editMode && canEditCurrentTab && !!tab && (!savedTabs.has(tab.id) || tabLocks.held.has(tab.id))
+  // Na guia de boas-vindas, "+ Widget" e "IA" nunca mexem nela (levam pra
+  // outra guia, ver ensureNotOnWelcomeTab/resolveAiTargetTab) — não dependem
+  // do bloqueio dela.
+  const canAddHere = tab?.isWelcome ? mayEditCurrentTab : tabEditable
+  // Convite da guia vazia (abre o modo edição sozinho): mesma ideia, fora do
+  // modo edição.
+  const canInviteHere = tab?.isWelcome ? mayEditCurrentTab : canEditCurrentTab
 
   // Dispara a medição real assim que há uma aba pra mostrar — nesse ponto o
   // <div ref={containerRef}> já foi commitado no DOM (ver comentário acima).
@@ -271,23 +396,40 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // nova (mesmo formato do "Criar" manual em TabManager.tsx: bloqueada por
   // padrão, `canEdit: true` porque só quem gerencia a dashboard alcança este
   // fluxo a partir da guia de boas-vindas — um usuário padrão não tem
-  // `canEdit` nela pra começo de conversa, ver canEditCurrentTab acima).
+  // `canEdit` nela pra começo de conversa, ver mayEditCurrentTab acima).
   // A guia de boas-vindas em si nunca é criada, editada ou removida por
-  // aqui — só o ponto de partida muda.
+  // aqui — só o ponto de partida muda. Uma guia que outra pessoa está
+  // editando não serve de destino: se todas estiverem, cria uma nova.
+  // A IA segue outra regra — sempre uma guia nova, ver resolveAiTargetTab.
   const ensureNotOnWelcomeTab = () => {
     if (!dashboard || !tab?.isWelcome) return
-    const existing = dashboard.tabs.find((t) => !t.isWelcome)
+    const existing = dashboard.tabs.find((t) => !t.isWelcome && !tabLocks.otherLock(t.id))
     if (existing) { setActiveTabId(existing.id); return }
-    const newTab: DashboardTab = {
-      id: `tab-${Date.now().toString(36)}`, label: 'Nova guia', filters: [], widgets: [],
-      access: { mode: 'restricted', view: [], edit: [] }, canEdit: true,
-    }
+    const newTab = blankTab(dashboard.tabs)
     setDashboard({ ...dashboard, tabs: [...dashboard.tabs, newTab] })
     setActiveTabId(newTab.id)
   }
 
+  // Em que guia caem os widgets de um pedido à IA — decidido no momento em
+  // que o pedido é ENVIADO (ver AiPanel), e guardado junto do pedido:
+  //   - feito na guia de boas-vindas: TODO pedido ganha uma guia nova, que já
+  //     fica aberta (a de boas-vindas é só apresentação, ver acima);
+  //   - feito numa guia qualquer: os widgets vão para aquela guia, mesmo que a
+  //     pessoa troque de guia antes de aprovar.
+  // Só quem gerencia a dashboard cria guia; sem isso, fica na guia atual.
+  const resolveAiTargetTab = (): string | null => {
+    if (!dashboard || !tab) return null
+    if (!tab.isWelcome || !canManageDashboard) return tab.id
+    const created = blankTab(dashboard.tabs)
+    setDashboard((d) => (d ? { ...d, tabs: [...d.tabs, created] } : d))
+    setActiveTabId(created.id)
+    return created.id
+  }
+
+  const tabLabel = (tabId: string | undefined) => dashboard?.tabs.find((t) => t.id === tabId)?.label ?? null
+
   const onLayoutChange = (layout: Layout) => {
-    if (!editMode || !canEditCurrentTab) return
+    if (!tabEditable) return
     updateTab((t) => ({
       ...t,
       widgets: t.widgets.map((w) => {
@@ -313,15 +455,41 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // Entram como rascunho, exatamente como um widget feito à mão: só o "Salvar"
   // da barra de edição persiste. Cada um acha o próprio espaço livre — e a
   // lista cresce a cada iteração, senão todos nasceriam na mesma posição.
-  const applyAiWidgets = (widgets: WidgetConfig[]) => {
-    updateTab((t) => {
+  //
+  // Vão para a guia em que o pedido foi feito (`tabId`, ver
+  // resolveAiTargetTab), que passa a ficar aberta. Sem ela (conversa de antes
+  // desta regra, ou a guia foi removida), vale a guia atual — e, se a atual
+  // for a de boas-vindas, uma guia nova. Devolve false quando não deu pra
+  // aplicar (guia bloqueada por outra pessoa), pro painel não marcar como
+  // adicionado.
+  const applyAiWidgets = (widgets: WidgetConfig[], tabId?: string): boolean => {
+    if (!dashboard) return false
+    let target = dashboard.tabs.find((t) => t.id === tabId) ?? (tab && !tab.isWelcome ? tab : null)
+    // Guia nova só pra quem gerencia a dashboard (um usuário padrão não cria guia).
+    const created = target || !canManageDashboard ? null : blankTab(dashboard.tabs)
+    if (created) target = created
+    if (!target) return false
+    const lock = tabLocks.otherLock(target.id)
+    if (lock) {
+      alert(`A guia "${target.label}" está sendo editada por ${lock.self ? 'você, em outra janela' : lock.name} agora — não dá para adicionar os widgets nela.`)
+      return false
+    }
+    const targetId = target.id
+    const place = (t: DashboardTab): DashboardTab => {
       let placed = t.widgets
       for (const w of widgets) {
         const { x, y } = findFreeSpot(placed, w.layout.w, w.layout.h)
         placed = [...placed, { ...w, layout: { ...w.layout, x, y } }]
       }
       return { ...t, widgets: placed }
+    }
+    setDashboard((d) => {
+      if (!d) return d
+      const tabs = created ? [...d.tabs, created] : d.tabs
+      return { ...d, tabs: tabs.map((t) => (t.id === targetId ? place(t) : t)) }
     })
+    setActiveTabId(targetId)
+    return true
   }
 
   // Medidas propostas pela IA e aprovadas pelo usuário (ver ai/AiPanel.tsx) —
@@ -428,16 +596,43 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     setThemeModalOpen(false)
   }
 
+  // Grava só o que esta tela mudou (ver saveDashboardFull no servidor) — as
+  // outras guias podem ter sido salvas por outras pessoas enquanto esta tela
+  // estava aberta, e essa versão mais nova é a que fica. Quem gerencia manda
+  // tudo de uma vez e recebe a dashboard como ficou no servidor. Um usuário
+  // padrão grava os widgets de cada guia que mudou (antes, só os da guia
+  // aberta — o que mudou em outra guia se perdia sem aviso).
   const handleSave = async () => {
-    if (!dashboard || !tab) return
+    if (!dashboard || !savedDashboard) return
     setSaving(true)
     try {
       if (canManageDashboard) {
-        await saveDashboardFull(folderId, dashboardId, dashboard.tabs, dashboard.measures)
+        const ids = new Set(dashboard.tabs.map((t) => t.id))
+        const res = await saveDashboardFull(folderId, dashboardId, {
+          tabs: dashboard.tabs,
+          changedTabIds,
+          removedTabIds: savedDashboard.tabs.filter((t) => !ids.has(t.id)).map((t) => t.id),
+          measures: JSON.stringify(dashboard.measures) !== JSON.stringify(savedDashboard.measures) ? dashboard.measures : undefined,
+          clientId: EDIT_CLIENT_ID,
+        })
+        const ds = toDashboardState(res)
+        setDashboard(ds)
+        setSavedDashboard(ds)
+        setCanManageDashboard(res.folder.canManage)
+        setActiveTabId((prev) => (prev && ds.tabs.some((t) => t.id === prev) ? prev : (ds.tabs[0]?.id ?? null)))
       } else {
-        await saveTabWidgets(folderId, dashboardId, tab.id, tab.widgets)
+        for (const id of changedTabIds) {
+          const local = dashboard.tabs.find((t) => t.id === id)
+          const saved = savedTabs.get(id)
+          if (!local || !saved) continue
+          const fresh = await saveTabWidgets(folderId, dashboardId, id, { widgets: local.widgets, baseRev: saved.rev ?? 0, clientId: EDIT_CLIENT_ID })
+          // Já conta como salva — se a guia seguinte falhar, esta não fica
+          // parecendo pendente.
+          const swap = (prev: DashboardState | null) => prev && { ...prev, tabs: prev.tabs.map((t) => (t.id === id ? fresh : t)) }
+          setDashboard(swap)
+          setSavedDashboard(swap)
+        }
       }
-      setSavedDashboard(dashboard)
       setEditMode(false)
     } catch (e) {
       alert(e instanceof ApiError ? e.message : 'Falha ao salvar a dashboard.')
@@ -505,25 +700,30 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           scroll horizontal. Separadas, cada uma tem a largura toda. */}
       <div className="flex items-center justify-between gap-3 border-b border-app-border">
         <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pb-1 -mb-px scrollbar-thin">
-          {dashboard.tabs.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setActiveTabId(t.id)}
-              className={cn(
-                'px-3.5 py-2.5 text-xs font-semibold whitespace-nowrap border-b-2 transition-colors',
-                activeTabId === t.id ? 'border-brand-blue text-brand-blue' : 'border-transparent text-gray-500 hover:text-gray-300',
-              )}
-            >
-              {t.label}
-            </button>
-          ))}
+          {dashboard.tabs.map((t) => {
+            // Cadeado pra todo mundo que vê a guia — inclusive quem só olha.
+            const tabLock = tabLocks.otherLock(t.id)
+            return (
+              <button
+                key={t.id}
+                onClick={() => setActiveTabId(t.id)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold whitespace-nowrap border-b-2 transition-colors',
+                  activeTabId === t.id ? 'border-brand-blue text-brand-blue' : 'border-transparent text-gray-500 hover:text-gray-300',
+                )}
+              >
+                {t.label}
+                {tabLock && <TabLockIcon lock={tabLock} />}
+              </button>
+            )
+          })}
         </div>
         <div className="flex items-center gap-1.5 shrink-0 pb-1">
-          {!editMode && canEditCurrentTab && (
+          {!editMode && mayEditCurrentTab && (lockedBy ? <TabLockChip lock={lockedBy} /> : (
             <button onClick={() => { refreshSources(); setEditMode(true) }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue transition-colors">
               <Pencil size={11} /> Editar dashboard
             </button>
-          )}
+          ))}
         </div>
       </div>
 
@@ -539,22 +739,24 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         <div className="sticky top-14 z-20 -mt-1 space-y-3 bg-app-bg/95 backdrop-blur-sm pb-3 pt-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <>
-              {canEditCurrentTab && (
+              {canAddHere && (
                 <>
                   <button onClick={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => setWidgetModal({ open: true, widget: null })) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Plus size={11} /> Widget</button>
                   {/* Mesma permissão do "+ Widget": quem pode adicionar widget
-                      nesta guia pode pedir pra IA montar. */}
-                  <button onClick={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => setAiPanelOpen(true)) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
+                      nesta guia pode pedir pra IA montar. Na guia de
+                      boas-vindas, cada pedido abre uma guia nova na hora do
+                      envio (resolveAiTargetTab) — por isso não sai dela aqui. */}
+                  <button onClick={() => { refreshSources().then(() => setAiPanelOpen(true)) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
                 </>
               )}
               {canManageDashboard && (
                 <>
-                  <button onClick={() => refreshSources().then(() => setFilterModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><FilterIcon size={11} /> Filtro</button>
-                  <button onClick={() => refreshSources().then(() => setRelationsModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Relacionar campos de fontes diferentes, pra um filtro de uma propagar pra outra"><Link2 size={11} /> Relacionamentos</button>
+                  <button onClick={() => refreshSources().then(() => setFilterModalOpen(true))} disabled={!tabEditable} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-40 disabled:pointer-events-none"><FilterIcon size={11} /> Filtro</button>
+                  <button onClick={() => refreshSources().then(() => setRelationsModalOpen(true))} disabled={!tabEditable} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-40 disabled:pointer-events-none" title="Relacionar campos de fontes diferentes, pra um filtro de uma propagar pra outra"><Link2 size={11} /> Relacionamentos</button>
                   <button onClick={() => refreshSources().then(() => setMeasuresModalOpen(true))} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Medidas nomeadas e reutilizáveis nesta dashboard (cálculos, comparativos)"><Sigma size={11} /> Medidas</button>
                   <button onClick={() => setTabManagerOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue"><Layers size={11} /> Abas</button>
-                  <button onClick={() => setCanvasModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Configurações de tela"><Monitor size={11} /> Formato</button>
-                  <button onClick={() => setThemeModalOpen(true)} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue" title="Temas prontos de cores"><Palette size={11} /> Temas</button>
+                  <button onClick={() => setCanvasModalOpen(true)} disabled={!tabEditable} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-40 disabled:pointer-events-none" title="Configurações de tela"><Monitor size={11} /> Formato</button>
+                  <button onClick={() => setThemeModalOpen(true)} disabled={!tabEditable} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-40 disabled:pointer-events-none" title="Temas prontos de cores"><Palette size={11} /> Temas</button>
                 </>
               )}
               <span className="w-px h-5 bg-app-border mx-0.5" />
@@ -570,11 +772,12 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               ? <>Modo edição — arraste os widgets para reposicionar, redimensione pelos cantos, e use os botões de lápis/copiar/lixeira em cada widget. As alterações valem para <strong>todos os usuários</strong> com acesso após salvar.</>
               : <>Modo edição — você pode criar e ajustar widgets nesta guia. As alterações valem para <strong>todos os usuários</strong> com acesso a esta guia após salvar.</>}
           </p>
-          {!canEditCurrentTab && (
+          {!mayEditCurrentTab && (
             <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
               Você não tem edição liberada nesta guia — peça ao gerente da pasta ou a um administrador.
             </p>
           )}
+          {mayEditCurrentTab && lockedBy && tab && <TabLockBanner lock={lockedBy} dirty={changedTabIds.includes(tab.id)} />}
         </div>
       )}
 
@@ -583,7 +786,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         filters={tab.filters}
         active={activeFilters[tab.id] ?? {}}
         onChange={(filterId, values) => setActiveFilters((prev) => ({ ...prev, [tab.id]: { ...(prev[tab.id] ?? {}), [filterId]: values } }))}
-        editMode={editMode && canManageDashboard}
+        editMode={tabEditable && canManageDashboard}
         onRemoveFilter={removeFilter}
         onUpdateFilter={updateFilter}
       />
@@ -610,7 +813,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               // `!aiPanelOpen`: com o painel aberto, o convite vira uma SEGUNDA
               // entrada para a mesma coisa — dois campos de texto e dois
               // conjuntos de sugestões na tela ao mesmo tempo.
-              canEditCurrentTab && !aiPanelOpen ? (
+              canInviteHere && !aiPanelOpen ? (
                 // Guia vazia convida a conversar, não a montar. Quem não pode
                 // editar continua vendo só o aviso — não há o que oferecer.
                 <AiEmptyState
@@ -618,8 +821,15 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                   onManual={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) }) }}
                 />
               ) : (
+                // Com o painel da IA aberto quem PODE editar também cai aqui —
+                // e é o normal agora: todo pedido feito na guia de boas-vindas
+                // abre uma guia nova, vazia, até aprovar a proposta.
                 <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
-                  Guia vazia — você não tem permissão para editar esta guia.
+                  {canInviteHere
+                    ? 'Guia vazia — os widgets que você aprovar na conversa com a IA aparecem aqui.'
+                    : lockedBy
+                      ? 'Guia vazia — outra pessoa está editando esta guia agora.'
+                      : 'Guia vazia — você não tem permissão para editar esta guia.'}
                 </div>
               )
             ) : (
@@ -627,8 +837,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                 width={width}
                 layout={gridLayout}
                 gridConfig={{ cols: GRID_COLS, rowHeight: ROW_HEIGHT, margin: [12, 12], containerPadding: [0, 0] }}
-                dragConfig={{ enabled: editMode && canEditCurrentTab, cancel: 'button, input, select, a, table' }}
-                resizeConfig={{ enabled: editMode && canEditCurrentTab }}
+                dragConfig={{ enabled: tabEditable, cancel: 'button, input, select, a, table' }}
+                resizeConfig={{ enabled: tabEditable }}
                 compactor={noOverlapCompactor}
                 onLayoutChange={onLayoutChange}
               >
@@ -636,7 +846,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                   <div
                     key={w.id}
                     className={cn(
-                      editMode && canEditCurrentTab && 'cursor-move',
+                      tabEditable && 'cursor-move',
                       'rounded-2xl transition-shadow',
                       widgetModal.open && previewWidget?.id === w.id && 'ring-2 ring-brand-blue ring-offset-2 ring-offset-app-bg',
                     )}
@@ -646,7 +856,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                       tabFilters={tabFilterValues}
                       relations={tab.relations ?? []}
                       dashboardMeasures={dashboard.measures}
-                      editMode={editMode && canEditCurrentTab}
+                      editMode={tabEditable}
                       refreshKey={refreshKey}
                       onEdit={() => refreshSources().then(() => setWidgetModal({ open: true, widget: w }))}
                       onRemove={() => removeWidget(w.id)}
@@ -664,7 +874,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               pelo contador de widgets, mas também não tem nenhum indicador —
               é justamente o primeiro contato de quem abre a dashboard. Aí o
               convite entra ABAIXO do conteúdo, em vez de substituí-lo. */}
-          {mounted && displayWidgets.length > 0 && canEditCurrentTab && !aiPanelOpen
+          {mounted && displayWidgets.length > 0 && canInviteHere && !aiPanelOpen
             && displayWidgets.every((w) => w.type === 'text') && (
             <div className="mt-4">
               <AiEmptyState
@@ -710,6 +920,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           folderId={folderId}
           dashboardId={dashboardId}
           tabs={dashboard.tabs}
+          locks={tabLocks.locks}
           onChange={(tabs) => {
             // TabManager só é aberto por quem gerencia a dashboard (admin ou
             // gerente da pasta) — essa pessoa sempre pode editar qualquer
@@ -738,6 +949,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           dashboardId={dashboardId}
           initialPrompt={aiInitialPrompt}
           dashboardMeasures={dashboard?.measures ?? []}
+          resolveTargetTab={resolveAiTargetTab}
+          tabLabel={tabLabel}
           onApply={applyAiWidgets}
           onApplyMeasures={applyAiMeasures}
           onApplyMeasureUpdates={applyAiMeasureUpdates}

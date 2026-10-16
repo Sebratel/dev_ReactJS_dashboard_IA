@@ -467,26 +467,131 @@ export function deleteDashboard(folderId, dashboardId) {
   return removed
 }
 
-// Salva a dashboard inteira (guias/filtros/canvas/widgets) — equivalente ao
-// antigo saveDashboardConfig, usado por quem gerencia a dashboard inteira.
-// `measures` (a "tabela de medidas" da dashboard, ver MeasureDef em
-// types.ts) é opcional pra manter compatibilidade com uma chamada antiga
-// que não a envie — só substitui quando vem como array de verdade (mesmo
-// truque de sempre: `[]` explícito apaga todas de propósito, `undefined`
-// preserva o que já estava salvo).
-export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measures) {
+// Duas pessoas tentando gravar a mesma guia — a rota responde 409 com a
+// mensagem (ver server/index.mjs). `lock` = quem está editando agora, quando
+// o motivo é o bloqueio de edição (server/tabLocks.mjs).
+export class TabConflictError extends Error {
+  constructor(message, lock = null) {
+    super(message)
+    this.name = 'TabConflictError'
+    this.status = 409
+    this.lock = lock
+  }
+}
+
+// Conteúdo de uma guia pra comparar duas versões dela. Fora da comparação:
+// `canEdit` (anotação de permissão de quem leu), `rev` (o contador em si) e
+// `access` (só muda pela rota própria, ver setTabAccess).
+function tabContent(tab) {
+  const { canEdit: _canEdit, rev: _rev, access: _access, ...content } = tab
+  return JSON.stringify(content)
+}
+
+// Cada gravação que muda o conteúdo de uma guia sobe o `rev` dela. É como uma
+// tela sabe que a cópia que ela tem ficou velha: quem salva manda o `rev` que
+// leu, e se outra pessoa gravou a guia nesse meio-tempo, os dois não batem.
+function nextRev(tab) {
+  return (Number(tab?.rev) || 0) + 1
+}
+
+// Salva a dashboard (guias/filtros/canvas/widgets) — usado por quem gerencia
+// a dashboard inteira. `measures` (a "tabela de medidas" da dashboard, ver
+// MeasureDef em types.ts) só substitui quando vem como array de verdade
+// (`[]` explícito apaga todas de propósito, `undefined` preserva o que já
+// estava salvo) — o Builder só manda quando mexeu nelas.
+//
+// Grava GUIA POR GUIA, não a lista inteira de uma vez. Antes, salvar
+// substituía todas as guias pela cópia que a tela tinha — e um gerente que
+// abriu a dashboard às 9h apagava, ao salvar às 10h, o que um supervisor
+// gravou na guia dele às 9h30. Agora (opts):
+//   - changedTabIds: as guias que esta tela mudou. Só elas são gravadas; as
+//     outras ficam com a versão do servidor, que pode ser mais nova;
+//   - removedTabIds: as guias que esta tela removeu. Uma guia que existe no
+//     servidor e não veio na lista (criada por outra pessoa depois que esta
+//     tela abriu) continua, no fim;
+//   - lockedByOther(tabId): bloqueio de edição de outra pessoa (ver
+//     server/tabLocks.mjs). Mudar ou remover uma guia bloqueada é recusado.
+// Uma guia mudada cujo `rev` não bate com o do servidor também é recusada:
+// alguém a gravou depois que esta tela leu.
+//
+// Sem `changedTabIds` (página de uma versão anterior, aberta durante a troca
+// de versão), compara o conteúdo pra descobrir o que mudou, e o que não veio
+// na lista conta como removido — o comportamento de antes, mais o bloqueio.
+export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measures, opts = {}) {
   if (!Array.isArray(tabs)) throw new Error('Config inválida: "tabs" (array) é obrigatório.')
   for (const tab of tabs) {
     if (!tab.id || !tab.label || !Array.isArray(tab.widgets)) {
       throw new Error(`Guia inválida: ${JSON.stringify(tab?.id ?? tab)}`)
     }
   }
+  const lockedByOther = opts.lockedByOther ?? (() => null)
   const ws = loadWorkspace()
   const folder = requireFolder(ws, folderId)
   const dashboard = requireDashboard(folder, dashboardId)
+  const serverById = new Map(dashboard.tabs.map((t) => [t.id, t]))
+  const clientIds = new Set(tabs.map((t) => t.id))
+
+  const incremental = Array.isArray(opts.changedTabIds)
+  const changed = new Set(incremental
+    ? opts.changedTabIds.map(String).filter((id) => clientIds.has(id))
+    : tabs.filter((t) => !serverById.has(t.id) || tabContent(serverById.get(t.id)) !== tabContent(t)).map((t) => t.id))
+  const removed = new Set((incremental
+    ? (Array.isArray(opts.removedTabIds) ? opts.removedTabIds.map(String) : [])
+    : dashboard.tabs.map((t) => t.id)
+  ).filter((id) => serverById.has(id) && !clientIds.has(id)))
+
+  for (const id of [...changed, ...removed]) {
+    const server = serverById.get(id)
+    if (!server) continue
+    const lock = lockedByOther(id)
+    if (lock) {
+      throw new TabConflictError(
+        lock.self
+          ? `A guia "${server.label}" está aberta para edição por você em outra janela. Salve ou descarte por lá antes.`
+          : `A guia "${server.label}" está sendo editada por ${lock.name} agora. Descarte o que mudou nela ou espere ${lock.name} terminar.`,
+        lock,
+      )
+    }
+  }
+  if (incremental) {
+    for (const t of tabs) {
+      const server = serverById.get(t.id)
+      if (server && changed.has(t.id) && (Number(t.rev) || 0) !== (Number(server.rev) || 0)) {
+        throw new TabConflictError(`A guia "${server.label}" foi salva por outra pessoa depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
+      }
+    }
+  }
+
+  const next = []
+  for (const t of tabs) {
+    const server = serverById.get(t.id)
+    if (!changed.has(t.id)) {
+      // Não mexida: fica a versão do servidor. Se ela nem existe mais, outra
+      // pessoa removeu a guia enquanto esta tela estava aberta — e continua
+      // removida.
+      if (server) next.push(server)
+      continue
+    }
+    const { canEdit: _canEdit, ...stored } = t
+    // Acesso e "boas-vindas" de uma guia que já existe são do servidor: o
+    // acesso só muda pela rota própria (setTabAccess), e boas-vindas não se
+    // cria nem se desfaz por aqui.
+    if (server) {
+      if (server.access === undefined) delete stored.access
+      else stored.access = server.access
+    }
+    if (server?.isWelcome) stored.isWelcome = true
+    else delete stored.isWelcome
+    stored.rev = nextRev(server)
+    next.push(stored)
+  }
+  for (const server of dashboard.tabs) {
+    if (!clientIds.has(server.id) && !removed.has(server.id)) next.push(server)
+  }
+
   const hadWelcome = dashboard.tabs.some((t) => t.isWelcome)
-  if (hadWelcome && !tabs.some((t) => t.isWelcome)) throw new Error('A guia de boas-vindas não pode ser removida.')
-  dashboard.tabs = tabs
+  if (hadWelcome && !next.some((t) => t.isWelcome)) throw new Error('A guia de boas-vindas não pode ser removida.')
+  dashboard.tabs = next
   if (Array.isArray(measures)) dashboard.measures = measures
   dashboard.updatedBy = actorEmail
   dashboard.updatedAt = nowIso()
@@ -496,18 +601,50 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
 
 // Salva só os widgets de UMA guia — usado por um usuário padrão com edição
 // liberada ali, que não deve poder mexer na estrutura da dashboard.
-export function saveTabWidgets(folderId, dashboardId, tabId, widgets, actorEmail) {
+// `baseRev` = o `rev` da guia quando a tela a leu (ver saveDashboardFull);
+// ausente (página de uma versão anterior), não confere.
+export function saveTabWidgets(folderId, dashboardId, tabId, widgets, actorEmail, { baseRev } = {}) {
   if (!Array.isArray(widgets)) throw new Error('Lista de widgets inválida.')
   const ws = loadWorkspace()
   const folder = requireFolder(ws, folderId)
   const dashboard = requireDashboard(folder, dashboardId)
   const tab = findTab(dashboard, tabId)
   if (!tab) throw new Error('Guia não encontrada.')
+  if (baseRev !== undefined && baseRev !== null && (Number(baseRev) || 0) !== (Number(tab.rev) || 0)) {
+    throw new TabConflictError(`A guia "${tab.label}" foi salva por outra pessoa depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
+  }
   tab.widgets = widgets
+  tab.rev = nextRev(tab)
   dashboard.updatedBy = actorEmail
   dashboard.updatedAt = nowIso()
   saveWorkspace(ws)
   return tab
+}
+
+// Versão (`rev`) de cada guia que `email` pode ver — o Builder confere de
+// tempos em tempos pra trazer a versão nova de uma guia que outra pessoa
+// salvou, sem precisar de F5.
+export function getTabRevsForUser(folderId, dashboardId, email) {
+  const ws = loadWorkspace()
+  const folder = findFolder(ws, folderId)
+  const dashboard = folder && findDashboard(folder, dashboardId)
+  if (!dashboard) return null
+  const revs = {}
+  for (const t of dashboard.tabs) {
+    if (canViewTab(folder, t, email)) revs[t.id] = Number(t.rev) || 0
+  }
+  return revs
+}
+
+// Guia pronta pra mandar pro navegador (com `canEdit`), ou null — usada ao
+// pegar o bloqueio, pra tela começar a editar a partir da versão atual.
+export function getTabForUser(folderId, dashboardId, tabId, email) {
+  const ws = loadWorkspace()
+  const folder = findFolder(ws, folderId)
+  const dashboard = folder && findDashboard(folder, dashboardId)
+  const tab = dashboard && findTab(dashboard, tabId)
+  if (!tab || !canViewTab(folder, tab, email)) return null
+  return { ...tab, canEdit: canEditTabWidgets(folder, tab, email) }
 }
 
 // Define quem vê/edita uma guia. Só aceita e-mails que já têm acesso à

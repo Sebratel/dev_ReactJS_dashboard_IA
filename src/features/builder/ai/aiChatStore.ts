@@ -20,6 +20,10 @@ import { endAiConversation, startAiConversation, streamAiTurn, ApiError, type Ai
 export interface ChatTurn {
   role: 'user' | 'assistant'
   text: string
+  // Guia em que o pedido foi feito — é pra ela que vão os widgets propostos
+  // na resposta (ver resolveAiTargetTab no DashboardBuilder). Ausente em
+  // conversas de antes desta regra.
+  tabId?: string
   // Proposta anexada a este turno. `applied` marca que já foi para a guia, pra
   // não dar pra aprovar duas vezes o mesmo lote.
   proposal?: { widgets: WidgetConfig[]; summary: string; applied?: boolean }
@@ -63,7 +67,7 @@ interface AiChatState {
   status: AiStatus | null
   setStatus: (status: AiStatus) => void
   setSources: (key: string, sourceKeys: string[]) => void
-  send: (args: { key: string; folderId: string; text: string; dashboardMeasures: MeasureDef[] }) => Promise<void>
+  send: (args: { key: string; folderId: string; text: string; dashboardMeasures: MeasureDef[]; tabId?: string }) => Promise<void>
   markApplied: (key: string, turnIndex: number, kind: ProposalKind) => void
   discard: (key: string, turnIndex: number, kind: ProposalKind) => void
   reset: (key: string) => void
@@ -213,7 +217,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
 
     setSources: (key, sourceKeys) => patchChat(key, { sourceKeys }),
 
-    send: async ({ key, folderId, text, dashboardMeasures }) => {
+    send: async ({ key, folderId, text, dashboardMeasures, tabId }) => {
       const chat = chatOf(key)
       if (!text.trim() || chat.busy) return
       const runId = String(++runSeq)
@@ -226,7 +230,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
           if (!patchRun(key, runId, { conversationId })) return
         }
         const added = patchRun(key, runId, (c) => ({
-          turns: [...c.turns, { role: 'user', text }, { role: 'assistant', text: '', streaming: true }],
+          turns: [...c.turns, { role: 'user', text, tabId }, { role: 'assistant', text: '', streaming: true, tabId }],
         }))
         if (!added) return
         try {

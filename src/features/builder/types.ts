@@ -425,6 +425,7 @@ export interface TabConfig {
   widgets: WidgetConfig[]
   access?: TabAccess           // ausente = tratado como 'open' (guias legadas/migradas)
   isWelcome?: boolean          // guia de boas-vindas auto-criada — não pode ser removida
+  rev?: number                 // versão da guia no servidor (sobe a cada gravação) — ver saveDashboardFull
 }
 
 export interface DashboardConfig {

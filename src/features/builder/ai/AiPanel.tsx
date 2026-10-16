@@ -53,7 +53,7 @@ const SUGGESTIONS = [
   'Compare o volume por mês e destaque as variações relevantes.',
 ]
 
-export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasures, onApply, onApplyMeasures, onApplyMeasureUpdates, onClose }: {
+export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasures, resolveTargetTab, tabLabel, onApply, onApplyMeasures, onApplyMeasureUpdates, onClose }: {
   folderId: string
   // Cada dashboard tem a sua conversa (ver aiChatStore.ts).
   dashboardId: string
@@ -64,7 +64,13 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   // a cada turno, pra IA saber o que já existe e poder referenciar por nome
   // numa fórmula nova (ver measuresText, server/aiAssistant.mjs).
   dashboardMeasures: MeasureDef[]
-  onApply: (widgets: WidgetConfig[]) => void
+  // Chamado a cada pedido enviado: em que guia os widgets da resposta vão
+  // cair. Na guia de boas-vindas, cria uma guia nova (ver DashboardBuilder).
+  resolveTargetTab: () => string | null
+  // Nome atual de uma guia, pro cartão da proposta dizer para onde ela vai.
+  tabLabel: (tabId: string | undefined) => string | null
+  // false = não aplicou (guia bloqueada por outra pessoa): não marca como adicionado.
+  onApply: (widgets: WidgetConfig[], tabId?: string) => boolean
   onApplyMeasures: (measures: MeasureDef[]) => void
   // Aprovar uma atualização (update_measures) faz UPSERT por id no rascunho
   // — diferente de onApplyMeasures, que sempre ACRESCENTA (medida nova).
@@ -121,7 +127,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   const send = (text: string) => {
     if (!text.trim() || busy) return
     setInput('')
-    void sendTurn({ key, folderId, text, dashboardMeasures })
+    void sendTurn({ key, folderId, text, dashboardMeasures, tabId: resolveTargetTab() ?? undefined })
   }
 
   const overBudget = !!status && status.budgetUsd > 0 && status.spentUsd >= status.budgetUsd
@@ -143,7 +149,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   const applyProposal = (turnIndex: number) => {
     const proposal = turns[turnIndex]?.proposal
     if (!proposal || proposal.applied) return
-    onApply(proposal.widgets)
+    if (!onApply(proposal.widgets, turns[turnIndex].tabId)) return
     markApplied(key, turnIndex, 'proposal')
   }
 
@@ -366,6 +372,9 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
                     <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-brand-cyan">
                       {turn.proposal.widgets.length} widget(s) propostos
                     </p>
+                    {tabLabel(turn.tabId) && (
+                      <p className="-mt-1 mb-2 text-[10px] text-gray-500">Para a guia <span className="font-semibold text-gray-300">{tabLabel(turn.tabId)}</span></p>
+                    )}
                     <ul className="mb-2.5 space-y-1">
                       {turn.proposal.widgets.map((w) => (
                         <li key={w.id} className="flex items-baseline gap-1.5 text-[11px] text-gray-200">
@@ -376,7 +385,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
                     </ul>
                     {turn.proposal.applied ? (
                       <p className="flex items-center gap-1.5 text-[10px] text-emerald-400">
-                        <Check size={11} /> Adicionados à guia — ainda precisa clicar em "Salvar".
+                        <Check size={11} /> Adicionados à guia{tabLabel(turn.tabId) ? ` "${tabLabel(turn.tabId)}"` : ''} — ainda precisa clicar em "Salvar".
                       </p>
                     ) : (
                       <div className="flex items-center gap-1.5">

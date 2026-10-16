@@ -112,6 +112,10 @@ services:
       DHUB_QUERY_TIMEOUT_MS: ${DHUB_QUERY_TIMEOUT_MS:-45000}
       # Teto de uma fonte em CÓPIA LOCAL (o ETL disparado pela tela roda aqui).
       DHUB_COPY_MAX_MB: ${DHUB_COPY_MAX_MB:-100}
+      # Bloqueio de edição por guia (server/tabLocks.mjs): prazo, em segundos,
+      # para o bloqueio de quem fechou a tela vencer sozinho. Fica em memória —
+      # a API roda numa instância só (a memória da IA já exige isso).
+      TAB_LOCK_TTL_SECONDS: ${TAB_LOCK_TTL_SECONDS:-120}
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
       # indisponível e o resto do app segue normal. Só o `api` precisa — o
       # navegador nunca vê a chave.

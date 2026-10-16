@@ -88,7 +88,8 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | `accessRequests.mjs` | Pedidos de acesso a pastas e a resposta de cada um, em `data/accessRequests.json` (3.15). |
 | `fieldDictionary.mjs` | Descrições e sobrescrita de tipo de dado por campo (3.7). |
 | `widgetComments.mjs` | Comentários por widget (3.13). |
-| `workspace.mjs` | A árvore Pasta → Dashboard → Guia, permissões e migrações de schema do `workspace.json`. |
+| `workspace.mjs` | A árvore Pasta → Dashboard → Guia, permissões, gravação guia por guia (com a versão `rev` de cada guia) e migrações de schema do `workspace.json`. |
+| `tabLocks.mjs` | Bloqueio de edição por guia, em memória: quem está editando cada guia agora (3.2). |
 | `aiAssistant.mjs` / `aiWidgetSchema.mjs` | A conversa com a IA (3.7-quater): orquestração de ferramentas + o contrato/validação do `WidgetConfig` que ela propõe. |
 | `aiInsight.mjs` | A leitura "O que os dados dizem" (3.14). |
 
@@ -105,7 +106,7 @@ Cada arquivo de `server/` tem uma responsabilidade:
 | Insight | `ai/insight` | 3.14. |
 | Dicionário | `field-dictionary` (GET/PUT) | Leitura livre, escrita admin-only (3.7). |
 | Comentários | `widget-comments` (listar/contar/criar/apagar) | 3.13. |
-| Workspace | `workspace/tree`, `workspace/folders[/:fid[/dashboards[/:did[/tabs/:tid...]]]]` | Camadas de permissão por rota — acesso à pasta, gerente da pasta, ou edição da guia (3.12). |
+| Workspace | `workspace/tree`, `workspace/folders[/:fid[/dashboards[/:did[/tabs/:tid...]]]]` | Camadas de permissão por rota — acesso à pasta, gerente da pasta, ou edição da guia (3.12). Inclui o bloqueio de edição: `dashboards/:did/locks` (quem edita o quê, e a versão de cada guia), `tabs/:tid/lock` (POST pega ou renova, 409 com quem está editando; DELETE solta). |
 | Acessos | `access/is-admin`, `access/users`, `access/users/:email/role`, `access/log`, `access/heartbeat` | Tudo admin-only, exceto `is-admin` e `heartbeat` (3.11). |
 | Pedidos de acesso | `access/folders`, `access/requests` (GET/POST), `access/requests/:id/approve`, `access/requests/:id/reject` | `folders` e criar pedido: qualquer logado; listar, liberar e recusar: admin-only (3.15). |
 | Manual | `manual` (o PDF), `manual/seen` | Com sessão; `seen` encerra o primeiro acesso (3.15). |
@@ -203,7 +204,9 @@ A guia de boas-vindas nunca acumula widget de verdade: criar um gráfico (manual
   - Sobrepor um widget em cima de outro é permitido deliberadamente (a grade não empurra os outros sozinha).
   - **Cartão (KPI) e Texto redimensionam bem menores** que os demais tipos — não têm eixo, legenda nem cabeçalho de tabela, então cabem num espaço bem mais compacto. Os outros tipos mantêm um piso maior, pra não virar algo ilegível.
   - A barra de ferramentas do modo edição (botões + aviso "Modo edição") fica **fixa no topo da tela** (como uma linha congelada de planilha) enquanto se rola a guia pra baixo — numa guia com muitos widgets, dá pra salvar/descartar ou adicionar mais um widget sem precisar rolar de volta ao topo.
-- **Salvar/Descartar**: as edições ficam num rascunho local até clicar em "Salvar" — só aí vão para o servidor e passam a valer pra todo mundo com acesso àquela guia/dashboard. "Descartar" volta ao último estado salvo.
+- **Salvar/Descartar**: as edições ficam num rascunho local até clicar em "Salvar" — só aí vão para o servidor e passam a valer pra todo mundo com acesso àquela guia/dashboard. "Descartar" volta ao último estado salvo. Salvar grava **só as guias que você mudou**: o que outra pessoa salvou em outra guia enquanto sua tela estava aberta continua lá.
+- **Uma guia, um editor por vez**: quem entra no modo edição numa guia a **bloqueia para os outros** — só aquela guia; as demais da mesma dashboard seguem livres (ex.: um gerente com uma guia por supervisor, cada um editando a sua ao mesmo tempo). Todo mundo que vê a dashboard enxerga um **cadeado** na aba bloqueada; quem poderia editá-la vê, no lugar de "Editar dashboard", o selo "*Fulano* editando" e, no modo edição, o aviso "Guia bloqueada para edição — *Fulano* está editando esta guia desde HH:MM", com a guia só para leitura. Quando ela fica livre, a tela pega o bloqueio sozinha. O bloqueio vale para a guia aberta no modo edição e para toda guia com alteração ainda não salva; sai ao salvar, descartar, trocar de guia sem ter mudado nada, ou fechar a tela. Quem fecha a aba do navegador, perde a rede ou deixa a tela parada por 20 minutos perde o bloqueio sozinho em até 2 minutos. A mesma pessoa em duas janelas também conta: a janela onde ela abriu a edição por último fica com a guia.
+- **A versão nova aparece sozinha**: quem está só olhando uma dashboard recebe, em até 15 s, a versão de uma guia que outra pessoa acabou de salvar — sem F5. O menu de pastas/dashboards também se confere sozinho (a cada 60 s e ao voltar para a aba do navegador): dashboard criada, renomeada ou removida por outra pessoa aparece sem recarregar.
 - **Pré-visualização em tempo real**: enquanto o painel de edição de um widget está aberto, o próprio widget na tela (atrás do painel) já mostra o resultado das mudanças (cor, tipo de gráfico, campo, formatação) — sem precisar salvar para ver o efeito. Só o botão "Salvar" persiste de verdade. Em telas grandes, a grade encolhe pra abrir espaço pro painel (em vez de ficar por baixo dele, escondida) — o mesmo vale pro painel da IA (3.7-quater); em telas estreitas não há espaço pra reservar, então o painel só sobrepõe.
 - **Indicador visual**: o widget que está sendo editado no momento ganha um contorno colorido na grade, para ficar claro qual card corresponde ao painel aberto.
 
@@ -447,6 +450,7 @@ No modo edição de uma guia existe um botão **"IA"**, ao lado de "+ Widget" (m
 
 - **Como se usa**: marque quais fontes a IA pode usar, escreva o pedido ("monte uma tela com os principais indicadores", "compare o volume por equipe nos últimos meses", "quais os 3 gargalos que os dados mostram?") e a resposta vai aparecendo enquanto ela pensa. Ao terminar, ela apresenta os widgets propostos com tipo e título.
 - **Convite em guia vazia**: além do botão "IA", qualquer guia sem nenhum widget (ou com só o widget de texto da guia de boas-vindas) mostra um convite com sugestões de pergunta prontas — clicar numa delas já abre o painel com a pergunta preenchida e enviada, sem precisar digitar do zero. O convite some enquanto o painel estiver aberto.
+- **Em que guia os widgets caem**: depende de onde o pedido foi feito, e é decidido na hora do envio. Pedido feito na **guia de boas-vindas** cria **uma guia nova a cada pedido** ("Nova guia", "Nova guia 2"…), que já fica aberta — a de boas-vindas nunca recebe widget. Pedido feito numa **guia específica** vai para aquela guia, mesmo que você troque de guia antes de aprovar (o cartão da proposta diz "Para a guia *X*", e aprovar abre essa guia). Se a guia de destino estiver sendo editada por outra pessoa, aprovar é recusado com o nome de quem está editando, e a proposta continua lá para aprovar depois.
 - **Nada é aplicado sozinho**: você clica em **"Adicionar à guia"** (ou "Descartar"). Aprovar coloca os widgets no rascunho da guia — e, como qualquer edição manual, **ainda depende do "Salvar"** da barra de edição. É deliberado: o modelo pode interpretar mal um pedido ambíguo.
 - **Depois de aprovado é um widget normal**: abre no editor de sempre, muda cor, tipo, campo, formatação. A IA dá o ponto de partida, não um objeto especial.
 - **O que a IA vê**: os **nomes** dos campos das fontes marcadas, o tipo de cada um (número/data/texto), a descrição escrita no dicionário de dados (3.7) e, para campos de texto, alguns valores de exemplo (até 6) já anexados ao catálogo — junto de um aviso quando o campo parece ser um identificador (muitos valores distintos, tipo nome ou número de protocolo), pra ela saber que não faz sentido usá-lo como dimensão. **As linhas de dados nunca são enviadas** — os exemplos vêm de uma amostra, não da base inteira. Quando precisa de um valor que não apareceu nos exemplos — por exemplo, confirmar se o status é "Concluído" ou "CONCLUIDO" antes de montar um filtro — ela ainda pode consultar os valores distintos daquele campo especificamente, e só aquilo sobe. Para escrever uma leitura de gráfico (3.14) ou um insight dentro da conversa, ela lê o resultado **já agregado** (as mesmas dezenas/centenas de números que o gráfico mostra), não o dataset.
@@ -530,6 +534,8 @@ Duas coisas importantes sobre como esses acessos se combinam:
 
 O seletor de e-mails usado pra liberar acesso de guia mostra só quem **já tem acesso à pasta** — nunca a lista de todos os usuários do sistema.
 
+Permissão diz **quem pode** editar; o bloqueio de edição (3.2) diz **quando**: mesmo um administrador não edita uma guia enquanto outra pessoa está editando ela — e não renomeia nem remove essa guia no "Abas" enquanto isso. O bloqueio é do servidor: tentar gravar uma guia bloqueada por outra pessoa, ou a partir de uma cópia desatualizada dela, é recusado.
+
 ### 3.13 Comentários em widgets
 
 Todo widget tem um ícone de balão de comentário no cabeçalho, visível tanto em modo visualização quanto em edição. Clicar mostra os comentários já deixados (autor, data, texto) e um campo pra escrever um novo. Qualquer usuário autenticado pode comentar — não precisa ter permissão de editar aquele widget, já que é uma anotação de leitura/colaboração ("esse pico em março foi por causa da campanha X"), não uma mudança na configuração do widget. Remover um comentário é restrito a quem escreveu ou a um administrador. Um número no ícone indica quantos comentários existem.
@@ -564,6 +570,7 @@ Ao lado do ícone de comentário, todo widget tem um ícone de leitura no cabeç
 6. **Nenhuma ação destrutiva é silenciosa**: remover widget, guia, pasta ou fonte de dados, e descartar alterações, sempre pedem confirmação antes.
 7. **Acesso à pasta é sempre o primeiro filtro**: mesmo que alguém tenha visualização/edição liberada numa guia, isso só faz efeito se a pessoa também tiver acesso à pasta onde a dashboard está — os dois controles são independentes, e o de pasta é sempre do administrador.
 8. **A guia de boas-vindas nunca pode ficar bloqueada nem ser removida** — é a única guia com acesso sempre aberto por padrão dentro de uma dashboard.
+9. **Uma guia tem um editor por vez, e salvar não apaga o trabalho de outra pessoa**: o bloqueio de edição é por guia, e salvar grava só as guias que a tela mudou (3.2).
 
 ---
 
@@ -584,6 +591,8 @@ Ao lado do ícone de comentário, todo widget tem um ícone de leitura no cabeç
 | Amostra para inferir o tipo de um campo | 300 linhas | Só afeta a detecção do tipo (número/data/texto), não os dados exibidos. |
 | Ciclo base do ETL | ~2 minutos | Frequência mínima prática de uma fonte "tempo real". |
 | Janela para considerar um usuário "online" | 90 segundos | Aba Acessos — heartbeat do navegador a cada 45s. |
+| Prazo do bloqueio de edição de uma guia | 2 minutos | `TAB_LOCK_TTL_SECONDS`: a tela renova a cada 30 s; tela fechada, sem rede ou parada há 20 minutos perde o bloqueio nesse prazo. |
+| Tempo para ver o cadeado ou a versão nova de uma guia | até 15 segundos | A tela pergunta ao servidor a cada 15 s. |
 | Ações guardadas no log de acessos | 5.000 mais recentes | As mais antigas são descartadas automaticamente. |
 
 ---

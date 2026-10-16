@@ -410,6 +410,32 @@ olhando, não da dashboard: os filtros ativos escolhidos na barra e a ordenaçã
 por clique no cabeçalho de Tabela/Matriz. Cada pessoa ordena do próprio jeito
 sem afetar ninguém — e sem precisar de permissão de edição.
 
+### Uma guia, um editor por vez
+
+Enquanto alguém está no modo edição de uma guia, ela fica **bloqueada para os
+outros** — e só ela: as outras guias da mesma dashboard continuam livres, que é
+o caso de um gerente com uma guia por supervisor, todos mexendo ao mesmo tempo.
+Quem abre uma guia bloqueada vê o cadeado na aba e o aviso "*Fulano* está
+editando esta guia", e não consegue editar até ela ficar livre; a tela pega o
+bloqueio sozinha quando isso acontece.
+
+O bloqueio vive **em memória** na API ([server/tabLocks.mjs](server/tabLocks.mjs))
+e é da **janela**, não só do e-mail: a tela renova a cada 30 s, e quem fecha a
+aba, perde a rede ou deixa a tela parada 20 minutos perde o bloqueio sozinho em
+até 2 minutos (`TAB_LOCK_TTL_SECONDS`). Não existe bloqueio esquecido para um
+administrador destravar. A API precisa rodar numa instância só — o que já era
+verdade por causa da memória da IA.
+
+O bloqueio é a parte visível; a garantia está no salvar. Antes, salvar
+substituía **todas** as guias pela cópia que a tela tinha aberto — um gerente
+que abriu a dashboard às 9h apagava, ao salvar às 10h, o que um supervisor
+gravou às 9h30. Agora o Builder manda só as guias que mudou
+(`changedTabIds`/`removedTabIds`), o servidor grava guia por guia e recusa
+(409, dizendo quem) mudar ou remover uma guia que outra pessoa está editando.
+Cada guia tem uma versão (`rev`): gravar uma guia a partir de uma cópia
+desatualizada também é recusado. E quem só está olhando recebe a versão nova de
+uma guia salva por outra pessoa em até 15 s, sem F5.
+
 ---
 
 ## Montagem com IA
@@ -628,7 +654,7 @@ acesso à pasta **não é um atalho**: o servidor recusa a gravação dizendo
 mostra só membros daquela pasta — um gerente nunca precisa de visibilidade sobre
 gente de fora do próprio setor.
 
-Das **67 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
+Das **70 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
 por `requireAuth()`: as duas de login/logout e o `/api/health`. As checagens do
 React Router são **só UX** — o comentário no código diz isso com todas as
 letras. Esconder o link nunca foi controle de acesso.
@@ -875,11 +901,14 @@ npm run test:auth     # 21 casos — verificação do ID token do Firebase
 npm run test:ai       # 73 casos — adaptadores dos três provedores e a retomada de conversa
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
 npm run test:direct   # 105 casos — leitura direta no Data Hub × cópia local, tráfego e ETL
+npm run test:locks    # 41 casos — bloqueio de edição por guia e gravação guia por guia
 ```
 
 Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa
 pasta temporária (users.json, auditoria, pedidos e workspace próprios) e usa
-e-mails fictícios.
+e-mails fictícios. O **test:locks** também: prova que duas pessoas editam guias
+diferentes ao mesmo tempo mas não a mesma, que o bloqueio vence sozinho, e que o
+que um supervisor salvou não some quando o gerente salva com a cópia antiga.
 
 O **test:direct** cadastra a MESMA tabela (2.400 linhas inventadas) duas vezes,
 uma em cópia local e outra em leitura direta, e exige que 42 widgets — barras,

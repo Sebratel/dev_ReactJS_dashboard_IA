@@ -9,6 +9,11 @@ import { useHeartbeat } from '@/hooks/useHeartbeat'
 import { fetchIsAdmin } from '@/features/access/accessApi'
 import { cn } from '@/utils/cn'
 
+// De quanto em quanto tempo o menu de pastas/dashboards confere o servidor:
+// dashboard criada, renomeada ou removida por outra pessoa, ou pasta liberada
+// para esta pessoa, aparece sem F5. Também confere ao voltar para a aba.
+const TREE_POLL_MS = 60_000
+
 // Diferente do HealthyScore, este app não pré-carrega um dataset grande no
 // cliente — cada aba busca seus próprios agregados sob demanda (ver
 // features/dashboard/tabs/useLazyMetric.ts), então não há gate de carregamento
@@ -26,6 +31,18 @@ export function MainLayout() {
   }, [setIsAdmin])
 
   useEffect(() => { refreshWorkspace() }, [refreshWorkspace])
+
+  useEffect(() => {
+    const check = () => { if (!document.hidden) void refreshWorkspace({ silent: true }) }
+    const id = setInterval(check, TREE_POLL_MS)
+    document.addEventListener('visibilitychange', check)
+    window.addEventListener('focus', check)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', check)
+      window.removeEventListener('focus', check)
+    }
+  }, [refreshWorkspace])
 
   return (
     <div className="min-h-screen bg-app-bg text-white">

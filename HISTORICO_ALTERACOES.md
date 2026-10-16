@@ -4,6 +4,15 @@
 
 ---
 
+## 16/10/2026 — Aviso de guia bloqueada mais visível
+
+Relato (com print do ambiente em uso): o selo ao lado das guias cortava o nome — "Fabricio Silveira Machado edit…" — e era o único lugar da tela com essa informação fora do modo edição.
+
+- **Selo** (`TabLockChip`, no lugar de "Editar dashboard"): agora só "Bloqueada para edição", que nunca corta.
+- **Aviso** (`TabLockBanner`): aparece também **fora do modo edição**, logo abaixo das guias, para quem poderia editar. Duas linhas — "**Nome inteiro** está editando esta guia" em destaque (quebra linha em vez de cortar) e, embaixo, "Guia bloqueada para edição desde HH:MM…" — com faixa lateral e ícone em laranja. Cadeado da aba um pouco maior.
+
+Verificado no navegador, numa cópia local com um nome fictício comprido: nome inteiro visível fora e dentro do modo edição, nos temas claro e escuro. `tsc` sem erros.
+
 ## 16/10/2026 — Bloqueio de edição por guia, salvar sem apagar o trabalho dos outros, e a IA na boas-vindas cria uma guia nova a cada pedido
 
 Relato do ambiente em uso (pasta "infraestrutura", várias pessoas): um usuário pede à IA uma página com dados e análises, salva, e ela some — para ele e para todo mundo; outro usuário só enxerga uma das duas dashboards da pasta, mesmo com acesso. As duas coisas batem com o achado abaixo (salvar com cópia antiga, que também desfazia acesso liberado por guia) e com o menu que só carregava ao abrir o app.

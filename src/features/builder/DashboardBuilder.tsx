@@ -727,6 +727,11 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         </div>
       </div>
 
+      {/* Fora do modo edição, o aviso de quem está editando aparece aqui, logo
+          abaixo das guias (no modo edição ele vai junto da barra de
+          ferramentas, mais abaixo). Só pra quem poderia editar a guia. */}
+      {!editMode && mayEditCurrentTab && lockedBy && <TabLockBanner lock={lockedBy} dirty={false} />}
+
       {/* Barra de ferramentas + avisos do modo edição, "congelados" no topo
           (estilo linha congelada do Excel) enquanto o usuário rola a guia pra
           baixo — sem isso, numa guia com muitos widgets, salvar/descartar ou

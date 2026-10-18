@@ -478,7 +478,7 @@ Até 10/09/2026 a IA era configurada **só por variável de ambiente** (`ANTHROP
 - **Endpoint (opcional)**: por provedor. Vazio usa o oficial; serve para gateway/proxy da empresa e para serviço compatível com a API do provedor.
 - **Gravação em rascunho**: as alterações ficam locais até você clicar em **Salvar** (com contagem do que mudou e **Descartar** ao lado). São campos que fazem sentido juntos — trocar de provedor implica trocar chave e modelo —, e salvar a cada tecla deixaria o servidor operando meia configuração.
 - **Nada vem do ambiente**: nenhuma variável de IA é lida. Houve uma fase de transição em que o `.env` valia como semente; ela foi removida a pedido, porque semente é uma segunda fonte de verdade para a mesma decisão — dois lugares onde procurar "qual modelo está rodando", e um deles mentindo assim que alguém salva pela tela. Consequência aceita: **instalação nova sobe com a IA não configurada**, e alguém cadastra o provedor na tela (é explícito e visível, ao contrário de uma chave herdada de um arquivo que ninguém lembra de ter preenchido). A troca de provedor entra no log de auditoria (aba Acessos) com provedor e modelo — nunca com a credencial.
-- **Não versionado**: `data/aiConfig.json` é a única exceção à decisão de versionar `data/` — a chave cifrada mais a `data/.secret-key` versionada, no mesmo repositório, equivalem a publicar a credencial em claro.
+- **Não versionado**: `data/aiConfig.json` fica fora do git, assim como `data/.secret-key`, `data/lakehouseSources.json` e `data/sessions.json` (desde 18/10/2026, achado FRN-01) — segredo cifrado e a chave que o decifra, no mesmo repositório, equivalem a publicar a credencial em claro.
 
 ### 3.8 Como os dados são atualizados
 

@@ -11,12 +11,14 @@ uma barra passava por um deploy. Aqui a tela é um documento editável, com
 permissão por pasta, dashboard e guia.
 
 > **Este repositório versiona `data/` e `public/installData.data`** — decisão
-> explícita registrada em [.gitignore](.gitignore), ciente de que põe segredo e
-> dado real da empresa no histórico. Isso inclui `data/.secret-key` (a chave
-> AES que decifra os tokens do Data Hub e as sessões de login),
-> `data/sessions.json` e o log de auditoria. As duas únicas exceções são
-> `data/aiConfig.json` — a chave de API cifrada mais a chave que a decifra no
-> mesmo repositório equivalem a publicar a credencial em claro — e o cache de
+> explícita registrada em [.gitignore](.gitignore), ciente de que põe dado real
+> da empresa no histórico. As exceções são os **segredos**: `data/.secret-key`
+> (a chave AES que decifra os tokens do Data Hub e as sessões de login),
+> `data/lakehouseSources.json` (o token cifrado do Data Hub),
+> `data/sessions.json` (o id da sessão é o próprio cookie de login) e
+> `data/aiConfig.json` — cifrado mais a chave que o decifra, no mesmo
+> repositório, equivale a publicar a credencial em claro. Saíram do git em
+> 18/10/2026 (achado FRN-01 do comitê). Também fica fora o cache de
 > certificados públicos do Google.
 >
 > `node_modules/` também é versionado, e isso tem consequência de projeto: cada

@@ -426,7 +426,7 @@ causa conhecida agora aparece ou é barrada:
 | permissão mudou com a página aberta (virou gerente, ganhou/perdeu edição) | a consulta de 15 s traz as permissões de agora (`editable`, `canManage`): fora do modo edição a tela se atualiza; no modo edição, avisa e atualiza ao sair |
 | saiu da dashboard (menu, F5, fechar a aba) com alteração não salva | pergunta antes ("Sair sem salvar?") |
 | o trabalho "sumiu" porque outra pessoa salvou depois | cada guia guarda quem gravou por último e quando; o modo edição mostra "Última gravação desta guia: *Fulano*, hoje às 14:32", e a recusa por cópia velha diz o nome |
-| e-mail na lista de acesso ou de gerentes diferente do login da pessoa | o seletor marca "nunca entrou" em destaque e explica: se a pessoa já usa o app, o e-mail está errado e ela fica sem o acesso |
+| e-mail na lista de acesso ou de gerentes diferente do login da pessoa | a lista "Pessoas da pasta" põe esse e-mail no topo, marcado "nunca entrou", e explica: se a pessoa já usa o app, o e-mail está errado e ela fica sem o acesso |
 
 ### A IA é a exceção: o que ela entrega já entra salvo
 

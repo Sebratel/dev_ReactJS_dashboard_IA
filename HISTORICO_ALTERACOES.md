@@ -4,6 +4,17 @@
 
 ---
 
+## 19/10/2026 — Acesso e gerentes da pasta numa lista só
+
+Pedido (com print): na engrenagem da pasta, "Acesso à pasta" e "Gerentes desta pasta" eram duas listas separadas — cada uma com etiquetas, busca, caixas e "Salvar" próprios, a mesma pessoa duas vezes. Virar uma listagem com as duas caixas.
+
+- **"Pessoas da pasta"** (`FolderPeople` em `FolderPeopleControls.tsx`): uma linha por pessoa, colunas **Acesso** e **Gerente**, um "Salvar" para as duas (`savePeople` no `FolderSettingsModal.tsx` chama só a rota da lista que mudou). Acima: Restrita / Aberta a todos, o resumo "N com acesso · M gerentes", busca e os filtros Todos / Com acesso / Gerentes.
+- **Acesso que já vem de outro lugar** aparece marcado e travado, com o motivo no título: pasta aberta, administrador, ou gerente (gerente sempre vê a pasta). Marcar alguém como gerente já trava o acesso dele como marcado.
+- **Ordem fixa ao abrir**: quem nunca entrou no sistema primeiro (em destaque, com o aviso de e-mail possivelmente errado), depois quem tem acesso ou gerência, depois o resto — sem a linha pular de lugar a cada clique. Quem nunca entrou não pode ser marcado gerente (o servidor já recusava).
+- O modal ficou um pouco mais largo (`max-w-lg`) pra tabela; o `UserPicker.tsx` saiu (sem uso).
+
+Verificado no navegador, numa cópia local com e-mails fictícios: pasta restrita com um e-mail que nunca entrou — ele no topo, em destaque, com o aviso; marcar o Bruno como gerente travou o acesso dele como marcado e mudou o resumo para "2 gerentes"; o filtro Gerentes mostrou só os dois; "Salvar" gravou os gerentes sem mexer no acesso; desmarcar o e-mail que nunca entrou e salvar o tirou do acesso e o aviso sumiu. `tsc` sem erros.
+
 ## 19/10/2026 — Nada some sem aviso: página antiga barrada, permissões ao vivo, "sair sem salvar" e quem gravou por último
 
 Relato (com print, no ambiente em uso — versão de 16/10): um usuário estava liberado na pasta e era gerente, mas "tudo o que ele fazia era apagado automaticamente"; no modo edição a guia dizia "Guia vazia — você não tem permissão para editar esta guia". Tirar o acesso dele e dar de novo resolveu. Outra pessoa via a dashboard, mas não uma 2ª dashboard que existia. Pedido: evitar, porque é um problema invisível.

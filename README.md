@@ -2,7 +2,8 @@
 
 Ferramenta interna onde a **própria área monta as telas**: escolhe a fonte, o
 tipo de gráfico, os campos, os filtros e a formatação — ou descreve em português
-o que precisa ver, e a IA propõe os widgets para aprovação. **React 18 + Vite +
+o que precisa ver, e a IA monta medidas e widgets que já entram salvos (com
+"Desfazer"). **React 18 + Vite +
 Recharts** no front, **Express rodado por tsx** no servidor, sem banco de dados.
 
 O assunto não é um relatório específico. É a **dependência de desenvolvedor**:
@@ -412,6 +413,38 @@ olhando, não da dashboard: os filtros ativos escolhidos na barra e a ordenaçã
 por clique no cabeçalho de Tabela/Matriz. Cada pessoa ordena do próprio jeito
 sem afetar ninguém — e sem precisar de permissão de edição.
 
+### Nada some sem aviso
+
+Os problemas mais caros deste app foram os **invisíveis**: o trabalho de alguém
+sumia, ou um gerente não conseguia editar, e nada na tela dizia por quê. Cada
+causa conhecida agora aparece ou é barrada:
+
+| Causa | O que acontece agora |
+|---|---|
+| aba do navegador aberta desde antes de um redeploy (código velho) | aviso flutuante "Saiu uma versão nova do app" ([useNewVersion.ts](src/hooks/useNewVersion.ts) compara o script principal do `index.html` com o carregado), e o servidor **recusa** o salvar de página antiga (409 `client_outdated`) em vez de adivinhar — era a página antiga que regravava a lista inteira de guias e apagava o trabalho dos outros |
+| arquivo de tela da versão antiga sumiu depois do redeploy | `vite:preloadError` recarrega a página uma vez, em vez de deixar a tela em branco |
+| permissão mudou com a página aberta (virou gerente, ganhou/perdeu edição) | a consulta de 15 s traz as permissões de agora (`editable`, `canManage`): fora do modo edição a tela se atualiza; no modo edição, avisa e atualiza ao sair |
+| saiu da dashboard (menu, F5, fechar a aba) com alteração não salva | pergunta antes ("Sair sem salvar?") |
+| o trabalho "sumiu" porque outra pessoa salvou depois | cada guia guarda quem gravou por último e quando; o modo edição mostra "Última gravação desta guia: *Fulano*, hoje às 14:32", e a recusa por cópia velha diz o nome |
+| e-mail na lista de acesso ou de gerentes diferente do login da pessoa | o seletor marca "nunca entrou" em destaque e explica: se a pessoa já usa o app, o e-mail está errado e ela fica sem o acesso |
+
+### A IA é a exceção: o que ela entrega já entra salvo
+
+Aprovar cartão por cartão e ainda clicar em "Salvar" fazia quem usava a IA achar
+que estava salvo — e perder. Agora, quando a resposta termina, o que ela
+entregou é gravado na hora ([useAiAutoSave.ts](src/features/builder/useAiAutoSave.ts)):
+primeiro as medidas, depois os widgets (que podem usá-las), na guia do pedido. A
+gravação leva **só** isso: o rascunho manual da pessoa continua rascunho. Cada
+resposta mostra onde entrou e tem **Desfazer**, que tira os widgets, as medidas
+novas, volta as medidas ajustadas e remove a guia que nasceu vazia por causa
+dela. Guia bloqueada por outra pessoa, ou medida que só o gerente pode alterar:
+o cartão diz por quê e oferece "Tentar de novo".
+
+As medidas são gravadas **uma a uma** (`PUT …/dashboards/:did/measures`),
+nunca a lista inteira — inclusive no "Salvar" manual, que manda só o que mudou.
+Quem só edita uma guia cria medida nova e remove uma sem uso; alterar uma medida
+que já existe é do gerente da pasta (ela vale pra dashboard inteira).
+
 ### Uma guia, um editor por vez
 
 Enquanto alguém está no modo edição de uma guia, ela fica **bloqueada para os
@@ -512,9 +545,9 @@ leitura, o modelo vê o resultado **já agregado** que o gráfico desenha.
 | Trava | O que impede |
 |---|---|
 | validação contra o catálogo real | campo ou fonte inexistente volta como erro e o modelo corrige na mesma conversa, em vez de gravar lixo |
-| posição x/y fora do schema | o cliente calcula com `findFreeSpot` ao aprovar — o modelo nunca sobrepõe o que já existe |
-| nada é gravado sozinho | a proposta vira rascunho só depois de "Adicionar à guia", e ainda depende do "Salvar" |
-| fontes da conversa | `field_values` só alcança as fontes que a pessoa selecionou; turno de conversa de outro e-mail é recusado |
+| posição x/y fora do schema | o cliente calcula com `findFreeSpot` ao salvar — o modelo nunca sobrepõe o que já existe |
+| entra salvo, mas só o que ela entregou | ao fim da resposta, o navegador grava as medidas (uma a uma) e depois os widgets, na guia do pedido — sem levar junto o rascunho da pessoa; cada resposta tem "Desfazer" |
+| fontes da conversa | só as fontes liberadas para a pasta, marcadas no painel — dá para pôr ou tirar no meio da conversa, e vale a partir da mensagem seguinte; `field_values` só alcança as marcadas; turno de conversa de outro e-mail é recusado |
 
 Nada aplicado sozinho é deliberado: **o modelo pode interpretar mal um pedido
 ambíguo**.
@@ -903,7 +936,7 @@ npm run test:auth     # 21 casos — verificação do ID token do Firebase
 npm run test:ai       # 73 casos — adaptadores dos três provedores e a retomada de conversa
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
 npm run test:direct   # 105 casos — leitura direta no Data Hub × cópia local, tráfego e ETL
-npm run test:locks    # 41 casos — bloqueio de edição por guia e gravação guia por guia
+npm run test:locks    # 63 casos — bloqueio por guia, gravação guia por guia, página antiga barrada, medidas uma a uma, duplicar dashboard
 ```
 
 Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa

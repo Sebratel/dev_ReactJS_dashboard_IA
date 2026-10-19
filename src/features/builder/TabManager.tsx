@@ -4,12 +4,13 @@
 // Uma guia que outra pessoa está editando (ver useTabLocks.ts) não pode ser
 // renomeada nem removida enquanto isso — o servidor recusaria ao salvar.
 import { useState } from 'react'
-import { X, Plus, Trash2, ArrowUp, ArrowDown, Lock, Globe, Sparkles, ShieldCheck } from 'lucide-react'
+import { X, Plus, Trash2, ArrowUp, ArrowDown, Lock, Globe, Sparkles, ShieldCheck, Copy } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { ModalPortal } from '@/components/ui/ModalPortal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { TabAccessModal } from './TabAccessModal'
 import { TabLockIcon, lockTitle } from './TabLockNotice'
+import { copyTab } from './dashboardState'
 import type { TabConfig } from './types'
 import type { TabLocks } from '@/features/workspace/types'
 
@@ -37,6 +38,12 @@ export function TabManager({ folderId, dashboardId, tabs, locks = {}, onChange, 
 
   const rename = (id: string, label: string) => onChange(tabs.map((t) => (t.id === id ? { ...t, label } : t)))
   const remove = (id: string) => onChange(tabs.filter((t) => t.id !== id))
+  // A cópia entra logo depois da original, no rascunho — vale com "Salvar".
+  const duplicate = (idx: number) => {
+    const next = [...tabs]
+    next.splice(idx + 1, 0, copyTab(tabs[idx], tabs))
+    onChange(next)
+  }
   const move = (idx: number, delta: number) => {
     const next = [...tabs]
     const target = idx + delta
@@ -73,6 +80,9 @@ export function TabManager({ folderId, dashboardId, tabs, locks = {}, onChange, 
               <button onClick={() => setAccessTab(t)} title="Gerenciar acesso desta guia" className="h-6 w-6 flex items-center justify-center rounded text-gray-500 hover:text-brand-blue disabled:opacity-30" disabled={t.isWelcome}>
                 <ShieldCheck size={12} />
               </button>
+              <button onClick={() => duplicate(i)} disabled={t.isWelcome} title={t.isWelcome ? 'A guia de boas-vindas não é duplicada' : 'Duplicar guia (widgets e filtros; a cópia nasce restrita)'} className="h-6 w-6 flex items-center justify-center rounded text-gray-500 hover:text-brand-blue disabled:opacity-30">
+                <Copy size={11} />
+              </button>
               <button onClick={() => move(i, -1)} disabled={i === 0} className="h-6 w-6 flex items-center justify-center rounded text-gray-500 hover:text-gray-200 disabled:opacity-30"><ArrowUp size={11} /></button>
               <button onClick={() => move(i, 1)} disabled={i === tabs.length - 1} className="h-6 w-6 flex items-center justify-center rounded text-gray-500 hover:text-gray-200 disabled:opacity-30"><ArrowDown size={11} /></button>
               <button
@@ -93,7 +103,7 @@ export function TabManager({ folderId, dashboardId, tabs, locks = {}, onChange, 
             </button>
           </div>
           <p className="text-[10px] text-gray-500 pt-1">
-            Guias novas nascem bloqueadas — use o ícone de escudo pra liberar visualização/edição por usuário.
+            Guias novas e cópias nascem bloqueadas — use o ícone de escudo pra liberar visualização/edição por usuário. Tudo aqui vale depois de "Salvar".
           </p>
         </div>
       </div>

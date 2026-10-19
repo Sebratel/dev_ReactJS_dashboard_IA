@@ -8,6 +8,9 @@
 //
 // Só é renderizado quando o painel lateral está FECHADO (ver DashboardBuilder):
 // os dois juntos seriam duas entradas para a mesma coisa.
+//
+// `variant="inline"`: só o campo, as sugestões e o "montar à mão", sem o card
+// e o título — é como ele entra na tela de boas-vindas (WelcomePanel.tsx).
 import { useEffect, useState } from 'react'
 import { Sparkles, ArrowRight, Plus, BarChart3, TrendingUp, LayoutGrid } from 'lucide-react'
 import { fetchAiStatus } from './aiApi'
@@ -21,9 +24,10 @@ const SUGGESTIONS = [
   { icon: BarChart3, text: 'Compare o volume por mês e destaque as variações relevantes.' },
 ]
 
-export function AiEmptyState({ onAsk, onManual }: {
+export function AiEmptyState({ onAsk, onManual, variant = 'card' }: {
   onAsk: (prompt: string) => void
   onManual: () => void
+  variant?: 'card' | 'inline'
 }) {
   const [text, setText] = useState('')
   // Checa o status por conta própria pra não engordar o DashboardBuilder com
@@ -38,6 +42,17 @@ export function AiEmptyState({ onAsk, onManual }: {
       .catch(() => { if (alive) setAiAvailable(false) })
     return () => { alive = false }
   }, [])
+
+  if (!aiAvailable && variant === 'inline') {
+    return (
+      <button
+        onClick={onManual}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-brand-blue px-3.5 py-2 text-xs font-semibold text-white transition-colors hover:bg-brand-blueLight"
+      >
+        <Plus size={13} /> Montar o primeiro gráfico
+      </button>
+    )
+  }
 
   if (!aiAvailable) {
     // Sem IA configurada no servidor, o convite seria uma promessa falsa.
@@ -54,20 +69,8 @@ export function AiEmptyState({ onAsk, onManual }: {
     )
   }
 
-  return (
-    <div className="rounded-2xl border border-app-border bg-app-card px-6 py-12 sm:px-10">
-      <div className="mx-auto max-w-2xl">
-        <div className="mb-7 text-center">
-          <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-brand-cyan/10 ring-1 ring-brand-cyan/25">
-            <Sparkles size={20} className="text-brand-cyan" />
-          </span>
-          <h2 className="text-lg font-semibold tracking-tight text-white">O que você quer ver nesta tela?</h2>
-          <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-relaxed text-gray-400">
-            Descreva em português. A IA monta os gráficos com os seus dados e apresenta para aprovação —
-            nada é aplicado sem a sua confirmação.
-          </p>
-        </div>
-
+  const form = (
+    <>
         <form
           onSubmit={(e) => { e.preventDefault(); if (text.trim()) onAsk(text.trim()) }}
           className="flex items-center gap-2 rounded-xl border border-app-border bg-app-surface px-3.5 py-2.5 shadow-sm transition-colors focus-within:border-brand-blue/60"
@@ -75,9 +78,9 @@ export function AiEmptyState({ onAsk, onManual }: {
           <input
             value={text}
             onChange={(e) => setText(e.target.value)}
-            autoFocus
+            autoFocus={variant === 'card'}
             placeholder="ex.: analise o churn e mostre onde estão as maiores perdas"
-            className="flex-1 bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
+            className="min-w-0 flex-1 bg-transparent text-sm text-gray-100 outline-none placeholder:text-gray-500"
           />
           <button
             type="submit"
@@ -104,6 +107,38 @@ export function AiEmptyState({ onAsk, onManual }: {
             </button>
           ))}
         </div>
+    </>
+  )
+
+  if (variant === 'inline') {
+    return (
+      <div>
+        {form}
+        <button
+          onClick={onManual}
+          className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-medium text-gray-500 transition-colors hover:text-gray-300"
+        >
+          <Plus size={11} /> Prefiro montar o gráfico manualmente
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-2xl border border-app-border bg-app-card px-6 py-12 sm:px-10">
+      <div className="mx-auto max-w-2xl">
+        <div className="mb-7 text-center">
+          <span className="mb-4 inline-flex h-11 w-11 items-center justify-center rounded-xl bg-brand-cyan/10 ring-1 ring-brand-cyan/25">
+            <Sparkles size={20} className="text-brand-cyan" />
+          </span>
+          <h2 className="text-lg font-semibold tracking-tight text-white">O que você quer ver nesta tela?</h2>
+          <p className="mx-auto mt-1.5 max-w-md text-[12px] leading-relaxed text-gray-400">
+            Descreva em português. A IA monta os gráficos com os seus dados e eles já entram salvos
+            nesta guia — se não gostar, é só desfazer.
+          </p>
+        </div>
+
+        {form}
 
         <div className="mt-7 flex items-center gap-3">
           <span className="h-px flex-1 bg-app-border" />

@@ -457,6 +457,36 @@ export function updateDashboard(folderId, dashboardId, patch, actorEmail) {
   return dashboard
 }
 
+// Cópia de uma dashboard inteira na MESMA pasta — guias (com o acesso de cada
+// uma, que vale pras mesmas pessoas da pasta), filtros, formato e medidas.
+// Guias e widgets ganham id novo: os comentários de um widget são pelo id
+// dele (ver widgetComments.mjs), e a cópia não herda a conversa do original.
+// As medidas mantêm o id — ele só vale dentro da dashboard, e é por ele que os
+// widgets copiados apontam pra elas (measureRef).
+export function duplicateDashboard(folderId, dashboardId, actorEmail, actorName) {
+  const ws = loadWorkspace()
+  const folder = requireFolder(ws, folderId)
+  const source = requireDashboard(folder, dashboardId)
+  const names = new Set(folder.dashboards.map((d) => d.name))
+  let name = `${source.name} (cópia)`
+  for (let n = 2; names.has(name); n++) name = `${source.name} (cópia ${n})`
+  const clone = (value) => JSON.parse(JSON.stringify(value))
+  const copy = {
+    id: genId('dash'), name, order: folder.dashboards.length,
+    createdBy: actorEmail, createdAt: nowIso(), updatedBy: null, updatedAt: null,
+    tabs: source.tabs.map((tab) => {
+      const { rev: _rev, canEdit: _canEdit, updatedBy: _by, updatedByName: _name, updatedAt: _at, ...content } = clone(tab)
+      const copied = { ...content, id: genId('tab'), widgets: (content.widgets ?? []).map((w) => ({ ...w, id: genId('w') })), rev: 1 }
+      stampTab(copied, { email: actorEmail, name: actorName })
+      return copied
+    }),
+    measures: clone(source.measures ?? []),
+  }
+  folder.dashboards.push(copy)
+  saveWorkspace(ws)
+  return copy
+}
+
 export function deleteDashboard(folderId, dashboardId) {
   const ws = loadWorkspace()
   const folder = requireFolder(ws, folderId)
@@ -479,12 +509,115 @@ export class TabConflictError extends Error {
   }
 }
 
+// Sem permissão para a mudança pedida — a rota responde 403 com a mensagem.
+export class WorkspaceAccessError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'WorkspaceAccessError'
+    this.status = 403
+  }
+}
+
+// ─── Medidas da dashboard (a "tabela de medidas", ver MeasureDef) ─────────
+// Medidas nomeadas que um widget usa (measureRef) — e as que uma fórmula usa.
+function widgetMeasureRefs(widget) {
+  return [widget.measure, ...(widget.measures ?? []), ...(widget.measuresLine ?? []), widget.measureX, widget.matrixValue]
+    .map((m) => m?.measureRef)
+    .filter(Boolean)
+}
+
+function referencedMeasureIds(dashboard) {
+  const ids = new Set()
+  for (const tab of dashboard.tabs) for (const w of tab.widgets ?? []) for (const id of widgetMeasureRefs(w)) ids.add(id)
+  for (const m of dashboard.measures ?? []) if (m.kind === 'formula') for (const id of Object.values(m.refs ?? {})) ids.add(id)
+  return ids
+}
+
+function isMeasureDef(m) {
+  return !!m && typeof m === 'object' && typeof m.id === 'string' && !!m.id && typeof m.name === 'string'
+    && (m.kind === 'simple' || m.kind === 'formula')
+}
+
+// Muda as medidas UMA A UMA, por id — nunca troca a lista inteira. Com a lista
+// inteira, quem salvava por último apagava a medida que outra pessoa tinha
+// criado nesse meio-tempo (e o widget dela ficava "Medida não encontrada").
+// Mantém a ordem: a medida alterada fica onde estava, a nova vai pro fim.
+function mergeMeasures(current, { upsert = [], remove = [] } = {}) {
+  const removed = new Set(remove.map(String))
+  const byId = new Map(current.filter((m) => !removed.has(m.id)).map((m) => [m.id, m]))
+  for (const m of upsert) byId.set(m.id, m)
+  return [...byId.values()]
+}
+
+// Grava mudanças nas medidas sem passar pelo salvar da dashboard inteira — é
+// o que a IA usa ao criar ou ajustar uma medida (ela entra salva na hora).
+// Quem gerencia a pasta muda qualquer medida. Quem só edita alguma guia desta
+// dashboard pode CRIAR medida nova e remover uma que nenhum widget usa (o
+// "Desfazer" do que a IA criou), mas não alterar uma que já existe — as
+// medidas valem pra dashboard inteira, inclusive pras guias dos outros.
+export function saveDashboardMeasures(folderId, dashboardId, { upsert, remove } = {}, actorEmail) {
+  const up = Array.isArray(upsert) ? upsert : []
+  const rm = Array.isArray(remove) ? remove.map(String) : []
+  for (const m of up) {
+    if (!isMeasureDef(m)) throw new Error(`Medida inválida: ${JSON.stringify(m?.id ?? m)}`)
+  }
+  const ws = loadWorkspace()
+  const folder = requireFolder(ws, folderId)
+  const dashboard = requireDashboard(folder, dashboardId)
+  const current = dashboard.measures ?? []
+  if (!canManageFolder(folder, actorEmail)) {
+    if (!dashboard.tabs.some((t) => canEditTabWidgets(folder, t, actorEmail))) {
+      throw new WorkspaceAccessError('Você não tem edição liberada em nenhuma guia desta dashboard.')
+    }
+    const existing = new Set(current.map((m) => m.id))
+    const changing = up.find((m) => existing.has(m.id))
+    if (changing) {
+      throw new WorkspaceAccessError(`Só o gerente da pasta ou um administrador altera uma medida que já existe ("${changing.name}").`)
+    }
+    const used = referencedMeasureIds(dashboard)
+    const inUse = rm.find((id) => used.has(id))
+    if (inUse) {
+      const name = current.find((m) => m.id === inUse)?.name ?? inUse
+      throw new WorkspaceAccessError(`A medida "${name}" está em uso — só o gerente da pasta ou um administrador remove.`)
+    }
+  }
+  dashboard.measures = mergeMeasures(current, { upsert: up, remove: rm })
+  dashboard.updatedBy = actorEmail
+  dashboard.updatedAt = nowIso()
+  saveWorkspace(ws)
+  return dashboard.measures
+}
+
+// Página aberta com uma versão antiga do app tentando salvar — a rota responde
+// 409 (`code: 'client_outdated'`) e a página pede pra recarregar. Era o buraco
+// invisível: uma aba do navegador aberta desde antes de um redeploy seguia
+// salvando do jeito antigo (a lista inteira de guias, a lista inteira de
+// medidas) e apagava, sem aviso nenhum, o que outras pessoas tinham gravado.
+export class OutdatedClientError extends Error {
+  constructor() {
+    super('Esta página está numa versão antiga do app e o que você mudou NÃO foi salvo. Recarregue a página (F5) e refaça a alteração.')
+    this.name = 'OutdatedClientError'
+    this.status = 409
+    this.code = 'client_outdated'
+  }
+}
+
 // Conteúdo de uma guia pra comparar duas versões dela. Fora da comparação:
-// `canEdit` (anotação de permissão de quem leu), `rev` (o contador em si) e
-// `access` (só muda pela rota própria, ver setTabAccess).
+// `canEdit` (anotação de permissão de quem leu), `rev` (o contador em si),
+// `access` (só muda pela rota própria, ver setTabAccess) e quem/quando gravou
+// por último (ver stampTab).
 function tabContent(tab) {
-  const { canEdit: _canEdit, rev: _rev, access: _access, ...content } = tab
+  const { canEdit: _canEdit, rev: _rev, access: _access, updatedBy: _by, updatedByName: _name, updatedAt: _at, ...content } = tab
   return JSON.stringify(content)
+}
+
+// Quem gravou a guia por último, e quando — a tela mostra no modo edição. É o
+// que torna visível um "meu trabalho sumiu": dá pra ver que outra pessoa salvou
+// a guia depois.
+function stampTab(tab, actor) {
+  tab.updatedBy = actor.email
+  tab.updatedByName = actor.name || actor.email
+  tab.updatedAt = nowIso()
 }
 
 // Cada gravação que muda o conteúdo de uma guia sobe o `rev` dela. É como uma
@@ -495,10 +628,11 @@ function nextRev(tab) {
 }
 
 // Salva a dashboard (guias/filtros/canvas/widgets) — usado por quem gerencia
-// a dashboard inteira. `measures` (a "tabela de medidas" da dashboard, ver
-// MeasureDef em types.ts) só substitui quando vem como array de verdade
-// (`[]` explícito apaga todas de propósito, `undefined` preserva o que já
-// estava salvo) — o Builder só manda quando mexeu nelas.
+// a dashboard inteira. As medidas (a "tabela de medidas", ver MeasureDef em
+// types.ts) vão em `opts.measureChanges` — { upsert, remove }, só as que esta
+// tela mudou, aplicadas uma a uma (mergeMeasures). `measures` (a lista
+// inteira, que substitui tudo) fica só pra página de uma versão anterior:
+// `[]` explícito apaga todas, `undefined` preserva o que já estava salvo.
 //
 // Grava GUIA POR GUIA, não a lista inteira de uma vez. Antes, salvar
 // substituía todas as guias pela cópia que a tela tinha — e um gerente que
@@ -514,10 +648,12 @@ function nextRev(tab) {
 // Uma guia mudada cujo `rev` não bate com o do servidor também é recusada:
 // alguém a gravou depois que esta tela leu.
 //
-// Sem `changedTabIds` (página de uma versão anterior, aberta durante a troca
-// de versão), compara o conteúdo pra descobrir o que mudou, e o que não veio
-// na lista conta como removido — o comportamento de antes, mais o bloqueio.
+// Sem `changedTabIds` — ou com a lista inteira de medidas em vez de
+// `measureChanges` —, quem chama é uma página de uma versão antiga do app:
+// recusado (OutdatedClientError), nunca mais "adivinhado".
+// `opts.actorName`: nome de quem salva, gravado em cada guia mudada.
 export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measures, opts = {}) {
+  if (!Array.isArray(opts.changedTabIds) || (Array.isArray(measures) && !opts.measureChanges)) throw new OutdatedClientError()
   if (!Array.isArray(tabs)) throw new Error('Config inválida: "tabs" (array) é obrigatório.')
   for (const tab of tabs) {
     if (!tab.id || !tab.label || !Array.isArray(tab.widgets)) {
@@ -531,14 +667,9 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
   const serverById = new Map(dashboard.tabs.map((t) => [t.id, t]))
   const clientIds = new Set(tabs.map((t) => t.id))
 
-  const incremental = Array.isArray(opts.changedTabIds)
-  const changed = new Set(incremental
-    ? opts.changedTabIds.map(String).filter((id) => clientIds.has(id))
-    : tabs.filter((t) => !serverById.has(t.id) || tabContent(serverById.get(t.id)) !== tabContent(t)).map((t) => t.id))
-  const removed = new Set((incremental
-    ? (Array.isArray(opts.removedTabIds) ? opts.removedTabIds.map(String) : [])
-    : dashboard.tabs.map((t) => t.id)
-  ).filter((id) => serverById.has(id) && !clientIds.has(id)))
+  const changed = new Set(opts.changedTabIds.map(String).filter((id) => clientIds.has(id)))
+  const removed = new Set((Array.isArray(opts.removedTabIds) ? opts.removedTabIds.map(String) : [])
+    .filter((id) => serverById.has(id) && !clientIds.has(id)))
 
   for (const id of [...changed, ...removed]) {
     const server = serverById.get(id)
@@ -553,12 +684,10 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
       )
     }
   }
-  if (incremental) {
-    for (const t of tabs) {
-      const server = serverById.get(t.id)
-      if (server && changed.has(t.id) && (Number(t.rev) || 0) !== (Number(server.rev) || 0)) {
-        throw new TabConflictError(`A guia "${server.label}" foi salva por outra pessoa depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
-      }
+  for (const t of tabs) {
+    const server = serverById.get(t.id)
+    if (server && changed.has(t.id) && (Number(t.rev) || 0) !== (Number(server.rev) || 0)) {
+      throw new TabConflictError(`A guia "${server.label}" foi salva por ${server.updatedByName || 'outra pessoa'} depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
     }
   }
 
@@ -583,6 +712,7 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
     if (server?.isWelcome) stored.isWelcome = true
     else delete stored.isWelcome
     stored.rev = nextRev(server)
+    stampTab(stored, { email: actorEmail, name: opts.actorName })
     next.push(stored)
   }
   for (const server of dashboard.tabs) {
@@ -592,7 +722,10 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
   const hadWelcome = dashboard.tabs.some((t) => t.isWelcome)
   if (hadWelcome && !next.some((t) => t.isWelcome)) throw new Error('A guia de boas-vindas não pode ser removida.')
   dashboard.tabs = next
-  if (Array.isArray(measures)) dashboard.measures = measures
+  if (opts.measureChanges) dashboard.measures = mergeMeasures(dashboard.measures ?? [], {
+    upsert: (Array.isArray(opts.measureChanges.upsert) ? opts.measureChanges.upsert : []).filter(isMeasureDef),
+    remove: Array.isArray(opts.measureChanges.remove) ? opts.measureChanges.remove : [],
+  })
   dashboard.updatedBy = actorEmail
   dashboard.updatedAt = nowIso()
   saveWorkspace(ws)
@@ -602,19 +735,21 @@ export function saveDashboardFull(folderId, dashboardId, tabs, actorEmail, measu
 // Salva só os widgets de UMA guia — usado por um usuário padrão com edição
 // liberada ali, que não deve poder mexer na estrutura da dashboard.
 // `baseRev` = o `rev` da guia quando a tela a leu (ver saveDashboardFull);
-// ausente (página de uma versão anterior), não confere.
-export function saveTabWidgets(folderId, dashboardId, tabId, widgets, actorEmail, { baseRev } = {}) {
+// ausente = página de uma versão antiga do app, recusada (OutdatedClientError).
+export function saveTabWidgets(folderId, dashboardId, tabId, widgets, actorEmail, { baseRev, actorName } = {}) {
   if (!Array.isArray(widgets)) throw new Error('Lista de widgets inválida.')
+  if (baseRev === undefined || baseRev === null) throw new OutdatedClientError()
   const ws = loadWorkspace()
   const folder = requireFolder(ws, folderId)
   const dashboard = requireDashboard(folder, dashboardId)
   const tab = findTab(dashboard, tabId)
   if (!tab) throw new Error('Guia não encontrada.')
-  if (baseRev !== undefined && baseRev !== null && (Number(baseRev) || 0) !== (Number(tab.rev) || 0)) {
-    throw new TabConflictError(`A guia "${tab.label}" foi salva por outra pessoa depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
+  if ((Number(baseRev) || 0) !== (Number(tab.rev) || 0)) {
+    throw new TabConflictError(`A guia "${tab.label}" foi salva por ${tab.updatedByName || 'outra pessoa'} depois que você abriu a dashboard. Descarte e abra de novo para editar a versão atual.`)
   }
   tab.widgets = widgets
   tab.rev = nextRev(tab)
+  stampTab(tab, { email: actorEmail, name: actorName })
   dashboard.updatedBy = actorEmail
   dashboard.updatedAt = nowIso()
   saveWorkspace(ws)
@@ -634,6 +769,27 @@ export function getTabRevsForUser(folderId, dashboardId, email) {
     if (canViewTab(folder, t, email)) revs[t.id] = Number(t.rev) || 0
   }
   return revs
+}
+
+// O que a tela confere a cada 15 s (junto dos bloqueios): a versão de cada
+// guia que `email` vê — e as PERMISSÕES dele agora. Permissão mudou (virou
+// gerente, ganhou ou perdeu edição numa guia, uma guia foi liberada), a tela
+// se atualiza sozinha; antes ficava com a permissão de quando abriu até um F5,
+// e o gerente recém-nomeado seguia sem poder editar — sem nada que dissesse
+// por quê.
+export function getDashboardPulse(folderId, dashboardId, email) {
+  const ws = loadWorkspace()
+  const folder = findFolder(ws, folderId)
+  const dashboard = folder && findDashboard(folder, dashboardId)
+  if (!dashboard) return null
+  const revs = {}
+  const editable = []
+  for (const t of dashboard.tabs) {
+    if (!canViewTab(folder, t, email)) continue
+    revs[t.id] = Number(t.rev) || 0
+    if (canEditTabWidgets(folder, t, email)) editable.push(t.id)
+  }
+  return { revs, editable, canManage: canManageFolder(folder, email) }
 }
 
 // Guia pronta pra mandar pro navegador (com `canEdit`), ou null — usada ao

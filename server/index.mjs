@@ -40,7 +40,8 @@ import {
   getWorkspaceTreeForUser, getDashboardForUser, listFoldersFull, getFolderFull, listFolderCatalogForUser,
   createFolder, updateFolder, deleteFolder, setFolderAccess, grantFolderAccess, setFolderManagers, listFolderMembers,
   createDashboard, updateDashboard, deleteDashboard, saveDashboardFull, saveTabWidgets, setTabAccess,
-  findFoldersUsingQuery, getTabRevsForUser, getTabForUser, TabConflictError,
+  findFoldersUsingQuery, getTabForUser, TabConflictError,
+  saveDashboardMeasures, WorkspaceAccessError, duplicateDashboard, OutdatedClientError, getDashboardPulse,
 } from './workspace.mjs'
 import { acquireTabLock, releaseTabLock, blockingTabLock, listTabLocks, normalizeClientId } from './tabLocks.mjs'
 import {
@@ -799,7 +800,7 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
 // Um turno da conversa, em streaming (SSE). Resposta longa e incremental: o
 // texto aparece digitando e os widgets chegam como um evento próprio.
 app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
-  const { text, dashboardMeasures } = req.body || {}
+  const { text, dashboardMeasures, sourceKeys } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
   // Antes do stream, com status próprio: dentro dele viraria só um evento de
   // erro. 410 é o que faz o navegador retomar a conversa com o que já foi dito.
@@ -837,6 +838,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
       conversationId: req.params.id, email: req.user.email, userText: String(text),
       accessToken: req.accessToken, emit,
       dashboardMeasures: Array.isArray(dashboardMeasures) ? dashboardMeasures : [],
+      sourceKeys: Array.isArray(sourceKeys) ? sourceKeys.map(String) : undefined,
     })
   } catch (e) {
     console.error(`[ai] turno falhou: ${e.message}`)
@@ -966,10 +968,12 @@ function visibleTabLocks(req, tabs) {
 // Quem está editando cada guia, mais a versão (`rev`) de cada uma. A tela
 // pergunta de tempos em tempos: mostra o cadeado nas guias bloqueadas e traz
 // a versão nova de uma guia que outra pessoa acabou de salvar.
+// E as permissões de quem pergunta, agora (ver getDashboardPulse) — mudou, a
+// tela se atualiza sem F5.
 app.get('/api/workspace/folders/:fid/dashboards/:did/locks', requireAuth(), requireFolderAccess(), (req, res) => {
-  const revs = getTabRevsForUser(req.params.fid, req.params.did, req.user.email)
-  if (!revs) return res.status(404).json({ error: 'Dashboard não encontrada.' })
-  res.json({ locks: visibleTabLocks(req, Object.keys(revs).map((id) => ({ id }))), revs })
+  const pulse = getDashboardPulse(req.params.fid, req.params.did, req.user.email)
+  if (!pulse) return res.status(404).json({ error: 'Dashboard não encontrada.' })
+  res.json({ locks: visibleTabLocks(req, Object.keys(pulse.revs).map((id) => ({ id }))), ...pulse })
 })
 
 // Pega (ou renova, com `renew: true`) o bloqueio de uma guia. Só quem pode
@@ -1086,6 +1090,17 @@ app.post('/api/workspace/folders/:fid/dashboards', requireAuth(), requireFolderM
   }
 })
 
+// Duplica uma dashboard na mesma pasta ("Nome (cópia)") — quem gerencia a pasta.
+app.post('/api/workspace/folders/:fid/dashboards/:did/duplicate', requireAuth(), requireFolderManager(), (req, res) => {
+  try {
+    const copy = duplicateDashboard(req.params.fid, req.params.did, req.user.email, req.user.name)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'workspace.dashboard.duplicate', target: `${req.params.fid}/${copy.id}`, meta: { from: req.params.did } })
+    res.json({ ok: true, dashboard: { id: copy.id, name: copy.name } })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 app.put('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), requireFolderManager(), (req, res) => {
   try {
     const dashboard = updateDashboard(req.params.fid, req.params.did, req.body || {}, req.user.email)
@@ -1118,12 +1133,15 @@ app.put('/api/workspace/folders/:fid/dashboards/:did/full', requireAuth(), requi
     const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures, {
       changedTabIds: b.changedTabIds,
       removedTabIds: b.removedTabIds,
+      measureChanges: b.measureChanges,
+      actorName: req.user.name,
       lockedByOther: (tid) => blockingTabLock(req.params.fid, req.params.did, tid, editor),
     })
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'dashboard.save', target: `${req.params.fid}/${dashboard.id}` })
     const result = getDashboardForUser(req.params.fid, req.params.did, req.user.email)
     res.json({ ok: true, ...result })
   } catch (e) {
+    if (e instanceof OutdatedClientError) return res.status(409).json({ error: e.message, code: e.code })
     if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
     res.status(400).json({ error: e.message })
   }
@@ -1141,11 +1159,31 @@ app.put('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/widgets', require
       const who = lock.self ? 'você, em outra janela' : lock.name
       return res.status(409).json({ error: `Esta guia está sendo editada por ${who} — não dá para salvar agora.`, lock })
     }
-    const saved = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, b.widgets, req.user.email, { baseRev: b.baseRev })
+    const saved = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, b.widgets, req.user.email, { baseRev: b.baseRev, actorName: req.user.name })
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'tab.widgets.save', target: `${req.params.fid}/${req.params.did}/${saved.id}` })
     res.json({ ok: true, tab: getTabForUser(req.params.fid, req.params.did, req.params.tid, req.user.email) ?? saved })
   } catch (e) {
+    if (e instanceof OutdatedClientError) return res.status(409).json({ error: e.message, code: e.code })
     if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Cria, ajusta ou remove medidas da dashboard UMA A UMA (ver
+// saveDashboardMeasures) — o que a IA usa pra uma medida já entrar salva.
+// Quem gerencia a pasta muda qualquer uma; quem edita alguma guia só cria
+// medida nova e remove uma que nenhum widget usa.
+app.put('/api/workspace/folders/:fid/dashboards/:did/measures', requireAuth(), requireFolderAccess(), (req, res) => {
+  try {
+    const b = req.body || {}
+    const measures = saveDashboardMeasures(req.params.fid, req.params.did, { upsert: b.upsert, remove: b.remove }, req.user.email)
+    appendAuditLog({
+      email: req.user.email, name: req.user.name, action: 'dashboard.measures.save', target: `${req.params.fid}/${req.params.did}`,
+      meta: { upsert: (b.upsert ?? []).map((m) => m?.id), remove: b.remove ?? [] },
+    })
+    res.json({ ok: true, measures })
+  } catch (e) {
+    if (e instanceof WorkspaceAccessError) return res.status(403).json({ error: e.message })
     res.status(400).json({ error: e.message })
   }
 })

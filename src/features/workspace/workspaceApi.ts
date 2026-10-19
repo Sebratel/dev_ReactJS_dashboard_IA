@@ -79,18 +79,25 @@ export async function updateDashboard(folderId: string, dashboardId: string, pat
   return body.dashboard
 }
 
+// Cópia da dashboard inteira na mesma pasta ("Nome (cópia)") — ver
+// duplicateDashboard em server/workspace.mjs.
+export async function duplicateDashboard(folderId: string, dashboardId: string): Promise<{ id: string; name: string }> {
+  const body = await parse<{ dashboard: { id: string; name: string } }>(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/duplicate`, { method: 'POST' }))
+  return body.dashboard
+}
+
 export async function deleteDashboard(folderId: string, dashboardId: string): Promise<void> {
   await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}`, { method: 'DELETE' }))
 }
 
 // Grava guia por guia (ver saveDashboardFull em server/workspace.mjs): só as
-// guias em `changedTabIds` são gravadas, e `measures` só quando vem. Devolve a
-// dashboard como ficou no servidor.
+// guias em `changedTabIds` são gravadas, e as medidas só pelo que mudou
+// (`measureChanges`, uma a uma). Devolve a dashboard como ficou no servidor.
 export async function saveDashboardFull(folderId: string, dashboardId: string, payload: {
   tabs: TabConfig[]
   changedTabIds: string[]
   removedTabIds: string[]
-  measures?: MeasureDef[]
+  measureChanges?: { upsert: MeasureDef[]; remove: string[] }
   clientId: string
 }): Promise<DashboardResponse> {
   return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/full`, jsonInit('PUT', payload)))
@@ -107,11 +114,26 @@ export async function saveTabWidgets(folderId: string, dashboardId: string, tabI
   return body.tab
 }
 
+// Cria, ajusta ou remove medidas uma a uma, sem salvar o resto da dashboard —
+// é como o que a IA entrega já fica salvo. Devolve as medidas do servidor.
+export async function saveDashboardMeasures(folderId: string, dashboardId: string, changes: { upsert: MeasureDef[]; remove: string[] }): Promise<MeasureDef[]> {
+  const body = await parse<{ measures: MeasureDef[] }>(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/measures`, jsonInit('PUT', changes)))
+  return body.measures
+}
+
 // ─── Bloqueio de edição por guia (server/tabLocks.mjs) ───────────────
 const lockPath = (folderId: string, dashboardId: string, tabId: string) =>
   `/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/tabs/${enc(tabId)}/lock`
 
-export async function fetchTabLocks(folderId: string, dashboardId: string, clientId: string): Promise<{ locks: TabLocks; revs: Record<string, number> }> {
+// Bloqueios + o "pulso" da dashboard: versão de cada guia e as permissões de
+// quem pergunta, agora (ver getDashboardPulse em server/workspace.mjs).
+export interface DashboardPulse {
+  revs: Record<string, number>
+  editable: string[]
+  canManage: boolean
+}
+
+export async function fetchTabLocks(folderId: string, dashboardId: string, clientId: string): Promise<{ locks: TabLocks } & DashboardPulse> {
   return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/locks?clientId=${enc(clientId)}`))
 }
 

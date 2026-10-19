@@ -4,6 +4,7 @@
 // gerente) mexe na estrutura inteira (guias/filtros/formato); um usuário
 // padrão com edição liberada numa guia específica só mexe nos widgets dela.
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useBlocker } from 'react-router-dom'
 import { GridLayout, useContainerWidth, type Layout } from 'react-grid-layout'
 // noOverlapCompactor = sem compactação automática (posição livre) + permite
 // sobrepor widgets deliberadamente ao arrastar um por cima do outro (por
@@ -21,10 +22,15 @@ import { cn } from '@/utils/cn'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { fetchSources } from './builderApi'
 import {
-  fetchDashboard, saveDashboardFull, saveTabWidgets, ApiError,
+  fetchDashboard, saveDashboardFull, saveTabWidgets, ApiError, type DashboardPulse,
 } from '@/features/workspace/workspaceApi'
-import type { DashboardResponse, DashboardTab } from '@/features/workspace/types'
+import type { DashboardTab } from '@/features/workspace/types'
 import { useTabLocks, EDIT_CLIENT_ID } from './useTabLocks'
+import { useAiAutoSave } from './useAiAutoSave'
+import { WelcomePanel } from './WelcomePanel'
+import { isStockWelcomeWidget } from './defaultConfig'
+import { useAuthStore } from '@/store/authStore'
+import { chatKey } from './ai/aiChatStore'
 import { TabLockBanner, TabLockChip, TabLockIcon } from './TabLockNotice'
 import { registerDynamicSources } from './fieldCatalog'
 import { WidgetRenderer } from './WidgetRenderer'
@@ -37,7 +43,10 @@ import { TabManager } from './TabManager'
 import { CanvasSettingsModal } from './CanvasSettingsModal'
 import { ThemePickerModal } from './ThemePickerModal'
 import { detectAppliedTheme, newWidgetThemeDefaults, themeTextFormats, THEME_PRESETS, type ThemePreset } from './themePresets'
-import type { ActiveFilters, FilterConfig, MeasureConfig, MeasureDef, WidgetConfig } from './types'
+import type { ActiveFilters, FilterConfig, MeasureConfig, WidgetConfig } from './types'
+import {
+  GRID_COLS, blankTab, diffMeasures, findFreeSpot, tabContent, toDashboardState, type DashboardState,
+} from './dashboardState'
 
 // Dobrado (26/08/2026): era 56px/12 colunas. O piso de redimensionar de
 // QUALQUER widget cai sempre em 1 unidade da grade (é assim que
@@ -56,7 +65,6 @@ import type { ActiveFilters, FilterConfig, MeasureConfig, MeasureDef, WidgetConf
 // 22 = (56 − 12) / 2 é o valor exato que cancela isso — conferido numa sonda
 // reproduzindo a mesma fórmula da lib pra w/h de 1 a 14 unidades.
 const ROW_HEIGHT = 22
-const GRID_COLS = 24
 
 // Tipos que mantêm o piso de redimensionar de sempre (2 unidades novas = 1
 // unidade antiga) — evita que um gráfico com eixos/legenda encolha a ponto
@@ -69,60 +77,21 @@ const MIN_SIZE_2X: WidgetConfig['type'][] = [
   'pie', 'scatter', 'funnel', 'table', 'matrix', 'histogram',
 ]
 
-// Acha o primeiro espaço livre (sem sobrepor nenhum widget existente) do
-// tamanho w×h, varrendo linha a linha, esquerda pra direita — usado pra
-// posicionar um widget recém-criado (ou duplicado) sem cair em cima de outro.
-// Se não achar nenhum buraco livre dentro da área já ocupada (grade cheia),
-// centraliza no meio do layout atual em vez de jogar lá embaixo escondido —
-// aparece por cima de algo (o compactor permite sobrepor de propósito), mas
-// bem visível, pro usuário arrastar pra onde quiser.
-function findFreeSpot(widgets: WidgetConfig[], w: number, h: number): { x: number; y: number } {
-  const occupied = widgets.map((wg) => wg.layout)
-  const maxY = occupied.reduce((m, o) => Math.max(m, o.y + o.h), 0)
-  for (let y = 0; y <= maxY; y++) {
-    for (let x = 0; x <= GRID_COLS - w; x++) {
-      const collides = occupied.some((o) => x < o.x + o.w && x + w > o.x && y < o.y + o.h && y + h > o.y)
-      if (!collides) return { x, y }
-    }
-  }
-  return { x: Math.max(0, Math.floor((GRID_COLS - w) / 2)), y: Math.max(0, Math.floor(maxY / 2)) }
-}
-
-interface DashboardState {
-  name: string
-  tabs: DashboardTab[]
-  measures: MeasureDef[]
-}
-
-function toDashboardState(res: DashboardResponse): DashboardState {
-  return { name: res.dashboard.name, tabs: res.dashboard.tabs, measures: res.dashboard.measures ?? [] }
-}
-
-// Conteúdo de uma guia, pra saber se esta tela mudou alguma coisa nela. Fora
-// da comparação: `canEdit` (anotação de permissão), `rev` (versão no
-// servidor) e `access` (o acesso grava na hora, pela rota própria) — mesmo
-// critério do servidor (tabContent em server/workspace.mjs).
-function tabContent(tab: DashboardTab): string {
-  const { canEdit, rev, access, ...content } = tab
-  return JSON.stringify(content)
-}
-
-// Guia nova em branco — "Nova guia", ou "Nova guia 2", "Nova guia 3"… quando
-// o nome já existe. Nasce bloqueada (só admin/gerente veem), igual ao "Criar"
-// manual do TabManager.tsx; `canEdit: true` porque só quem gerencia a
-// dashboard chega aqui.
-function blankTab(existing: DashboardTab[]): DashboardTab {
-  const labels = new Set(existing.map((t) => t.label))
-  let label = 'Nova guia'
-  for (let n = 2; labels.has(label); n++) label = `Nova guia ${n}`
-  return {
-    id: `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, label, filters: [], widgets: [],
-    access: { mode: 'restricted', view: [], edit: [] }, canEdit: true,
-  }
+// "hoje 14:32", "ontem 09:10" ou "16/10 18:07".
+function formatWhen(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const time = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+  const day = (x: Date) => x.toDateString()
+  const yesterday = new Date(Date.now() - 86_400_000)
+  if (day(d) === day(new Date())) return `hoje às ${time}`
+  if (day(d) === day(yesterday)) return `ontem às ${time}`
+  return `${d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} às ${time}`
 }
 
 export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; dashboardId: string }) {
   const [dashboard, setDashboard] = useState<DashboardState | null>(null)
+  const userName = useAuthStore((s) => s.user?.name ?? null)
   const [savedDashboard, setSavedDashboard] = useState<DashboardState | null>(null)
   const [canManageDashboard, setCanManageDashboard] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -168,7 +137,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // Diálogo de confirmação no estilo do app (substitui o confirm() nativo do
   // navegador) — null = fechado; setar preenche título/mensagem/ação e abre.
   const [confirmState, setConfirmState] = useState<{
-    title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void
+    title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void; onCancel?: () => void
   } | null>(null)
 
   // measureBeforeMount: sem isso, o hook usa um "chute" inicial de 1280px
@@ -252,7 +221,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   }, [editMode, changedTabIds, savedTabs, tab, mayEditCurrentTab])
 
   // Estado mais recente, pros callbacks do hook (chamados fora do render).
-  const latest = useRef({ dashboard, savedDashboard, editMode, changedTabIds, held: new Set<string>() as ReadonlySet<string> })
+  const latest = useRef({ dashboard, savedDashboard, editMode, changedTabIds, tab, canManageDashboard, held: new Set<string>() as ReadonlySet<string> })
 
   // Bloqueio novo: a edição começa da versão atual da guia no servidor —
   // a não ser que esta tela já tenha mudado algo nela.
@@ -296,19 +265,67 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     } catch { /* tenta de novo na próxima consulta */ }
   }
 
-  // Versão de cada guia no servidor (a cada consulta do hook): diferente da
-  // que esta tela tem = alguém salvou — busca a versão nova.
-  const checkRevs = (revs: Record<string, number>) => {
-    const { savedDashboard: s, editMode: editing, changedTabIds: changed, held } = latest.current
+  // A cada consulta do hook: a versão de cada guia no servidor (diferente da
+  // que esta tela tem = alguém salvou — busca a versão nova) e as permissões
+  // de agora. Permissão mudou (virou gerente, ganhou/perdeu edição numa guia,
+  // guia liberada): fora do modo edição a tela se atualiza na hora; no modo
+  // edição, avisa e atualiza quando ele acabar. Antes ficava com a permissão de
+  // quando abriu até um F5 — sem nada na tela que dissesse por quê.
+  const [permissionsChanged, setPermissionsChanged] = useState(false)
+  const checkPulse = ({ revs, editable, canManage }: DashboardPulse) => {
+    const { savedDashboard: s, editMode: editing, changedTabIds: changed, held, canManageDashboard: manages } = latest.current
     if (!s) return
     const stale = s.tabs.some((t) => revs[t.id] !== undefined && revs[t.id] !== (t.rev ?? 0)
       && (!editing || (!changed.includes(t.id) && !held.has(t.id))))
     const tabsChanged = s.tabs.length !== Object.keys(revs).length || s.tabs.some((t) => revs[t.id] === undefined)
-    if (stale || (!editing && tabsChanged)) void pullFromServer()
+    const canEditNow = new Set(editable)
+    const permsChanged = canManage !== manages || s.tabs.some((t) => !!t.canEdit !== canEditNow.has(t.id))
+    if (permsChanged && editing) setPermissionsChanged(true)
+    if (stale || (!editing && (tabsChanged || permsChanged))) void pullFromServer()
   }
+  // Saiu do modo edição com o aviso de permissão na tela: atualiza agora.
+  useEffect(() => {
+    if (editMode || !permissionsChanged) return
+    setPermissionsChanged(false)
+    void pullFromServer()
+    // pullFromServer lê o estado mais recente por `latest`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editMode, permissionsChanged])
 
-  const tabLocks = useTabLocks({ folderId, dashboardId, wanted: lockWanted, onAcquired: adoptFreshTab, onRevs: checkRevs })
-  latest.current = { dashboard, savedDashboard, editMode, changedTabIds, held: tabLocks.held }
+  const tabLocks = useTabLocks({ folderId, dashboardId, wanted: lockWanted, onAcquired: adoptFreshTab, onPulse: checkPulse })
+
+  // Sair com alteração não salva pedia nada: trocar de dashboard pelo menu,
+  // fechar a aba ou dar F5 jogava o rascunho fora em silêncio — um "salvei e
+  // sumiu" que ninguém via acontecer. Agora pergunta antes.
+  const unsaved = editMode && dirty
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => unsaved && currentLocation.pathname !== nextLocation.pathname)
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return
+    setConfirmState({
+      title: 'Sair sem salvar?',
+      message: 'Você tem alterações nesta dashboard que ainda não foram salvas. Se sair agora, elas se perdem.',
+      confirmLabel: 'Sair sem salvar',
+      danger: true,
+      onConfirm: () => { setConfirmState(null); blocker.proceed() },
+      onCancel: () => blocker.reset(),
+    })
+  }, [blocker])
+  useEffect(() => {
+    if (!unsaved) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [unsaved])
+  latest.current = { dashboard, savedDashboard, editMode, changedTabIds, tab, canManageDashboard, held: tabLocks.held }
+
+  // O que a IA entrega entra salvo sozinho (medidas, depois widgets) — e tem
+  // "Desfazer" no painel. Roda com o painel fechado também.
+  const aiSave = useAiAutoSave({
+    chatKey: chatKey(folderId, dashboardId), folderId, dashboardId, clientId: EDIT_CLIENT_ID,
+    canManage: canManageDashboard, ready: !!dashboard && !!savedDashboard,
+    snapshot: () => latest.current,
+    setDashboard, setSavedDashboard, setActiveTabId, otherLock: tabLocks.otherLock,
+  })
 
   // Outra pessoa (ou esta mesma, em outra janela) editando a guia aberta.
   const lockedBy = tabLocks.otherLock(tab?.id)
@@ -363,7 +380,9 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // entra como um item extra, num espaço livre, só enquanto o painel some
   // aberto — nunca escrito em `dashboard` até o usuário clicar em salvar.
   const displayWidgets = useMemo(() => {
-    const widgets = tab?.widgets ?? []
+    // Na guia de boas-vindas, o texto padrão dá lugar à tela própria
+    // (WelcomePanel) — ele continua salvo, só não é desenhado.
+    const widgets = (tab?.widgets ?? []).filter((w) => !(tab?.isWelcome && isStockWelcomeWidget(w)))
     if (!previewWidget) return widgets
     const idx = widgets.findIndex((w) => w.id === previewWidget.id)
     if (idx >= 0) return widgets.map((w, i) => (i === idx ? previewWidget : w))
@@ -449,67 +468,6 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
       return { ...t, widgets: [...t.widgets, { ...widget, layout: { ...widget.layout, x, y } }] }
     })
     closeWidgetModal()
-  }
-
-  // Widgets propostos pela IA e aprovados pelo usuário (ver ai/AiPanel.tsx).
-  // Entram como rascunho, exatamente como um widget feito à mão: só o "Salvar"
-  // da barra de edição persiste. Cada um acha o próprio espaço livre — e a
-  // lista cresce a cada iteração, senão todos nasceriam na mesma posição.
-  //
-  // Vão para a guia em que o pedido foi feito (`tabId`, ver
-  // resolveAiTargetTab), que passa a ficar aberta. Sem ela (conversa de antes
-  // desta regra, ou a guia foi removida), vale a guia atual — e, se a atual
-  // for a de boas-vindas, uma guia nova. Devolve false quando não deu pra
-  // aplicar (guia bloqueada por outra pessoa), pro painel não marcar como
-  // adicionado.
-  const applyAiWidgets = (widgets: WidgetConfig[], tabId?: string): boolean => {
-    if (!dashboard) return false
-    let target = dashboard.tabs.find((t) => t.id === tabId) ?? (tab && !tab.isWelcome ? tab : null)
-    // Guia nova só pra quem gerencia a dashboard (um usuário padrão não cria guia).
-    const created = target || !canManageDashboard ? null : blankTab(dashboard.tabs)
-    if (created) target = created
-    if (!target) return false
-    const lock = tabLocks.otherLock(target.id)
-    if (lock) {
-      alert(`A guia "${target.label}" está sendo editada por ${lock.self ? 'você, em outra janela' : lock.name} agora — não dá para adicionar os widgets nela.`)
-      return false
-    }
-    const targetId = target.id
-    const place = (t: DashboardTab): DashboardTab => {
-      let placed = t.widgets
-      for (const w of widgets) {
-        const { x, y } = findFreeSpot(placed, w.layout.w, w.layout.h)
-        placed = [...placed, { ...w, layout: { ...w.layout, x, y } }]
-      }
-      return { ...t, widgets: placed }
-    }
-    setDashboard((d) => {
-      if (!d) return d
-      const tabs = created ? [...d.tabs, created] : d.tabs
-      return { ...d, tabs: tabs.map((t) => (t.id === targetId ? place(t) : t)) }
-    })
-    setActiveTabId(targetId)
-    return true
-  }
-
-  // Medidas propostas pela IA e aprovadas pelo usuário (ver ai/AiPanel.tsx) —
-  // mesmo rascunho de sempre, só persiste de verdade com "Salvar". Ao
-  // contrário dos widgets (por guia), medidas são da DASHBOARD inteira —
-  // entram direto em dashboard.measures, não em t.widgets.
-  const applyAiMeasures = (measures: MeasureDef[]) => {
-    setDashboard((d) => (d ? { ...d, measures: [...d.measures, ...measures] } : d))
-  }
-
-  // Atualização de medida(s) JÁ existentes (update_measures) — UPSERT por id
-  // (substitui no lugar), diferente de applyAiMeasures acima (sempre
-  // acrescenta uma medida nova). Mesmo id de sempre, então qualquer widget
-  // que já usava a medida (measureRef) continua funcionando sem mudar nada.
-  const applyAiMeasureUpdates = (measures: MeasureDef[]) => {
-    setDashboard((d) => {
-      if (!d) return d
-      const byId = new Map(measures.map((m) => [m.id, m]))
-      return { ...d, measures: d.measures.map((m) => byId.get(m.id) ?? m) }
-    })
   }
 
   // Ajuste rápido de UM widget sem passar pelo painel de edição (hoje só usado
@@ -612,7 +570,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           tabs: dashboard.tabs,
           changedTabIds,
           removedTabIds: savedDashboard.tabs.filter((t) => !ids.has(t.id)).map((t) => t.id),
-          measures: JSON.stringify(dashboard.measures) !== JSON.stringify(savedDashboard.measures) ? dashboard.measures : undefined,
+          // Medidas pelo que mudou, uma a uma — nunca a lista inteira.
+          measureChanges: diffMeasures(dashboard.measures, savedDashboard.measures),
           clientId: EDIT_CLIENT_ID,
         })
         const ds = toDashboardState(res)
@@ -720,8 +679,10 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         </div>
         <div className="flex items-center gap-1.5 shrink-0 pb-1">
           {!editMode && mayEditCurrentTab && (lockedBy ? <TabLockChip lock={lockedBy} /> : (
-            <button onClick={() => { refreshSources(); setEditMode(true) }} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue transition-colors">
-              <Pencil size={11} /> Editar dashboard
+            // Ação principal de quem pode editar: botão cheio, na cor da marca
+            // (antes era contorno cinza e passava despercebido).
+            <button onClick={() => { refreshSources(); setEditMode(true) }} className="flex items-center gap-2 rounded-lg bg-brand-blue px-4 py-2 text-xs font-semibold text-white shadow-sm ring-1 ring-brand-blue/40 transition-colors hover:bg-brand-blueLight">
+              <Pencil size={13} /> Editar dashboard
             </button>
           ))}
         </div>
@@ -777,8 +738,18 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
               ? <>Modo edição — arraste os widgets para reposicionar, redimensione pelos cantos, e use os botões de lápis/copiar/lixeira em cada widget. As alterações valem para <strong>todos os usuários</strong> com acesso após salvar.</>
               : <>Modo edição — você pode criar e ajustar widgets nesta guia. As alterações valem para <strong>todos os usuários</strong> com acesso a esta guia após salvar.</>}
           </p>
+          {tab.updatedAt && (
+            <p className="text-[11px] text-gray-500">
+              Última gravação desta guia: <span className="font-semibold text-gray-300">{tab.updatedByName || tab.updatedBy}</span>, {formatWhen(tab.updatedAt)}.
+            </p>
+          )}
+          {permissionsChanged && (
+            <p className="text-[11px] text-gray-200 bg-risk-high/10 border border-risk-high/40 rounded-lg px-3 py-2">
+              <strong className="font-semibold">Suas permissões nesta dashboard mudaram</strong> enquanto você editava. Salve ou descarte — a tela se atualiza logo depois.
+            </p>
+          )}
           {!mayEditCurrentTab && (
-            <p className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-3 py-2">
+            <p className="text-[11px] text-gray-200 bg-risk-high/10 border border-risk-high/40 rounded-lg px-3 py-2">
               Você não tem edição liberada nesta guia — peça ao gerente da pasta ou a um administrador.
             </p>
           )}
@@ -795,6 +766,21 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
         onRemoveFilter={removeFilter}
         onUpdateFilter={updateFilter}
       />
+
+      {tab.isWelcome && (
+        <WelcomePanel
+          dashboardName={dashboard.name}
+          userName={userName}
+          tabs={dashboard.tabs.filter((t) => !t.isWelcome).map((t) => ({
+            id: t.id, label: t.label, widgetCount: t.widgets.length, lock: tabLocks.otherLock(t.id),
+          }))}
+          canEdit={mayEditCurrentTab}
+          showAsk={mayEditCurrentTab && !aiPanelOpen}
+          onAsk={askAi}
+          onManual={() => { ensureNotOnWelcomeTab(); refreshSources().then(() => { setEditMode(true); setWidgetModal({ open: true, widget: null }) }) }}
+          onOpenTab={setActiveTabId}
+        />
+      )}
 
       {/* Grade de widgets — sem canvas fixo: largura fluida (padrão atual).
           Com canvas fixo (Formato → Personalizar): tela de tamanho fixo em
@@ -813,7 +799,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
             justifyContent: tab.canvas.verticalAlign === 'middle' ? 'center' : tab.canvas.verticalAlign === 'bottom' ? 'flex-end' : 'flex-start',
           } : undefined}
         >
-          {mounted && (
+          {mounted && !(tab.isWelcome && displayWidgets.length === 0) && (
             displayWidgets.length === 0 ? (
               // `!aiPanelOpen`: com o painel aberto, o convite vira uma SEGUNDA
               // entrada para a mesma coisa — dois campos de texto e dois
@@ -831,7 +817,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                 // abre uma guia nova, vazia, até aprovar a proposta.
                 <div className="rounded-xl border border-dashed border-app-border px-5 py-16 text-center text-sm text-gray-500">
                   {canInviteHere
-                    ? 'Guia vazia — os widgets que você aprovar na conversa com a IA aparecem aqui.'
+                    ? 'Guia vazia — o que a IA montar na conversa entra aqui, já salvo.'
                     : lockedBy
                       ? 'Guia vazia — outra pessoa está editando esta guia agora.'
                       : 'Guia vazia — você não tem permissão para editar esta guia.'}
@@ -875,11 +861,11 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
             )
           )}
 
-          {/* Guia que só tem texto (a de boas-vindas é assim) não está "vazia"
-              pelo contador de widgets, mas também não tem nenhum indicador —
-              é justamente o primeiro contato de quem abre a dashboard. Aí o
-              convite entra ABAIXO do conteúdo, em vez de substituí-lo. */}
-          {mounted && displayWidgets.length > 0 && canInviteHere && !aiPanelOpen
+          {/* Guia que só tem texto não está "vazia" pelo contador de widgets,
+              mas também não tem nenhum indicador. Aí o convite entra ABAIXO do
+              conteúdo, em vez de substituí-lo. (A de boas-vindas tem a própria
+              tela, WelcomePanel.) */}
+          {mounted && !tab.isWelcome && displayWidgets.length > 0 && canInviteHere && !aiPanelOpen
             && displayWidgets.every((w) => w.type === 'text') && (
             <div className="mt-4">
               <AiEmptyState
@@ -956,9 +942,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           dashboardMeasures={dashboard?.measures ?? []}
           resolveTargetTab={resolveAiTargetTab}
           tabLabel={tabLabel}
-          onApply={applyAiWidgets}
-          onApplyMeasures={applyAiMeasures}
-          onApplyMeasureUpdates={applyAiMeasureUpdates}
+          onSaveTurn={aiSave.saveTurn}
+          onUndoTurn={aiSave.undoTurn}
           onClose={() => { setAiPanelOpen(false); setAiInitialPrompt(undefined) }}
         />
       )}
@@ -969,7 +954,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           confirmLabel={confirmState.confirmLabel}
           danger={confirmState.danger}
           onConfirm={confirmState.onConfirm}
-          onCancel={() => setConfirmState(null)}
+          onCancel={() => { confirmState.onCancel?.(); setConfirmState(null) }}
         />
       )}
     </div>

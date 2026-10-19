@@ -4,7 +4,7 @@
 // conhecidos (liberado antes do primeiro acesso dele) vira uma etiqueta "ainda
 // não acessou" — continua valendo até alguém tirá-lo.
 import { useMemo, useState } from 'react'
-import { X } from 'lucide-react'
+import { AlertTriangle, X } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { inputCls } from './folderStyles'
 
@@ -31,6 +31,13 @@ export function UserPicker({ users, selected, onChange, emptyText }: {
   const q = normalize(query.trim())
   const filtered = q ? users.filter((u) => normalize(u.name).includes(q) || u.email.includes(q)) : users
 
+  // E-mails escolhidos que nunca entraram no sistema. Pode ser liberação
+  // antecipada (a pessoa ainda vai entrar) — ou um e-mail diferente do login
+  // dela (digitado errado, outro domínio): aí ela fica SEM o acesso, e nada na
+  // tela dela diz por quê. Era o caso do gerente que não conseguia editar até
+  // alguém tirar e pôr o acesso de novo, escolhendo da lista.
+  const neverLogged = selected.filter((email) => !byEmail.has(email))
+
   const toggle = (email: string) => {
     onChange(selectedSet.has(email) ? selected.filter((e) => e !== email) : [...selected, email])
   }
@@ -44,11 +51,15 @@ export function UserPicker({ users, selected, onChange, emptyText }: {
             return (
               <span
                 key={email}
-                title={email}
-                className="inline-flex items-center gap-1 rounded-md border border-app-border bg-app-surface px-1.5 py-0.5 text-[10px] text-gray-200"
+                title={user ? email : `${email} — nunca entrou no sistema com este e-mail`}
+                className={cn(
+                  'inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] text-gray-200',
+                  user ? 'border-app-border bg-app-surface' : 'border-risk-high/50 bg-risk-high/10',
+                )}
               >
+                {!user && <AlertTriangle size={10} className="shrink-0 text-risk-high" />}
                 {user ? user.name : email}
-                {!user && <span className="text-gray-500">· ainda não acessou</span>}
+                {!user && <span className="text-risk-high">· nunca entrou</span>}
                 <button type="button" onClick={() => toggle(email)} aria-label={`Tirar ${user?.name ?? email}`} className="text-gray-500 hover:text-risk-critical">
                   <X size={10} />
                 </button>
@@ -58,6 +69,16 @@ export function UserPicker({ users, selected, onChange, emptyText }: {
         </div>
       ) : (
         <p className="text-[10px] text-gray-500">{emptyText}</p>
+      )}
+      {neverLogged.length > 0 && (
+        <p className="flex items-start gap-1.5 rounded-lg border border-risk-high/40 bg-risk-high/10 px-2.5 py-1.5 text-[10px] leading-snug text-gray-200">
+          <AlertTriangle size={11} className="mt-px shrink-0 text-risk-high" />
+          <span>
+            {neverLogged.length === 1 ? 'Um e-mail desta lista nunca entrou' : `${neverLogged.length} e-mails desta lista nunca entraram`} no sistema.
+            Se a pessoa ainda vai entrar pela primeira vez, tudo certo. Se ela <strong className="font-semibold">já usa o app</strong>, o e-mail
+            está diferente do login dela e ela fica sem este acesso — tire e escolha a pessoa na lista abaixo.
+          </span>
+        </p>
       )}
 
       <input

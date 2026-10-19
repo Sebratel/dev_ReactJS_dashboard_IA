@@ -6,10 +6,11 @@
 //   - renova a cada RENEW_MS enquanto a pessoa está mexendo na tela;
 //   - solta o que deixou de ser pedido, ao sair da página e ao fechar a aba;
 //   - pergunta a cada POLL_MS quem está editando cada guia (o cadeado que
-//     todo mundo vê) e a versão de cada uma (`revs`).
+//     todo mundo vê), a versão de cada uma (`revs`) e as permissões de quem
+//     está olhando (`editable`, `canManage`).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  acquireTabLock, fetchTabLocks, releaseTabLock, ApiError,
+  acquireTabLock, fetchTabLocks, releaseTabLock, ApiError, type DashboardPulse,
 } from '@/features/workspace/workspaceApi'
 import type { DashboardTab, TabLockInfo, TabLocks } from '@/features/workspace/types'
 
@@ -29,7 +30,7 @@ function newClientId(): string {
 }
 export const EDIT_CLIENT_ID = newClientId()
 
-export function useTabLocks({ folderId, dashboardId, wanted, onAcquired, onRevs }: {
+export function useTabLocks({ folderId, dashboardId, wanted, onAcquired, onPulse }: {
   folderId: string
   dashboardId: string
   // Guias (que já existem no servidor) que esta janela quer segurar agora.
@@ -37,7 +38,8 @@ export function useTabLocks({ folderId, dashboardId, wanted, onAcquired, onRevs 
   // Bloqueio novo: a guia como está no servidor, pra edição começar dela.
   onAcquired: (tab: DashboardTab) => void
   // Versão de cada guia, a cada consulta — pra trazer o que outra pessoa salvou.
-  onRevs: (revs: Record<string, number>) => void
+  // E as permissões de quem está olhando, agora — mudaram, a tela se atualiza.
+  onPulse: (pulse: DashboardPulse) => void
 }) {
   const [locks, setLocks] = useState<TabLocks>({})
   const [held, setHeld] = useState<ReadonlySet<string>>(new Set())
@@ -53,8 +55,8 @@ export function useTabLocks({ folderId, dashboardId, wanted, onAcquired, onRevs 
   wantedRef.current = wanted
   const lastActivity = useRef(Date.now())
   // Callbacks mais recentes, sem reiniciar os timers a cada render.
-  const callbacks = useRef({ onAcquired, onRevs })
-  callbacks.current = { onAcquired, onRevs }
+  const callbacks = useRef({ onAcquired, onPulse })
+  callbacks.current = { onAcquired, onPulse }
 
   const setHeldTab = useCallback((tabId: string, on: boolean) => {
     if (on === heldRef.current.has(tabId)) return
@@ -178,7 +180,7 @@ export function useTabLocks({ folderId, dashboardId, wanted, onAcquired, onRevs 
             if (!heldRef.current.has(tabId) && !res.locks[tabId]) void acquire(tabId, false)
           }
         }
-        callbacks.current.onRevs(res.revs)
+        callbacks.current.onPulse({ revs: res.revs, editable: res.editable ?? [], canManage: !!res.canManage })
       } catch { /* sem rede: mantém o último estado e tenta na próxima */ }
     }
     void poll()

@@ -24,9 +24,12 @@
 // catálogo REAL antes de chegar na tela. Campo inexistente volta como erro
 // pro modelo, que corrige na mesma conversa.
 //
-// COMO ISSO NÃO GRAVA NADA SOZINHO: o assistente só PROPÕE. Quem aplica na
-// guia é o usuário, clicando em aprovar — e daí em diante é um rascunho
-// normal do Builder, que ainda depende do "Salvar".
+// O QUE ELE GRAVA: o assistente só entrega widgets e medidas pelas
+// ferramentas (nunca escreve no workspace daqui). Quem grava é o navegador,
+// assim que o turno termina: primeiro as medidas, depois os widgets, cada um
+// salvo direto no servidor sem levar junto o rascunho da pessoa — e cada
+// entrega tem "Desfazer" no painel (ver useAiAutoSave.ts). Antes era preciso
+// aprovar cartão por cartão e ainda clicar em "Salvar".
 // ─────────────────────────────────────────────────────────────────────────
 import { randomUUID } from 'node:crypto'
 import { getSnapshot } from './dataset.mjs'
@@ -312,7 +315,7 @@ function buildTools() {
     {
       name: 'propose_widgets',
       description:
-        'Entrega os widgets para o usuário aprovar. Chame exatamente uma vez, no fim do seu raciocínio, com todos os widgets que você decidiu montar. Nada é gravado na dashboard por esta chamada: o usuário revê e decide.',
+        'Entrega os widgets montados. Chame exatamente uma vez, no fim do seu raciocínio, com todos os widgets que você decidiu montar. Eles entram na guia e são SALVOS na hora, sem o usuário precisar aprovar — ele pode desfazer. Por isso só entregue widgets testados e coerentes com o pedido.',
       input_schema: PROPOSE_TOOL_SCHEMA,
     },
     {
@@ -334,13 +337,13 @@ function buildTools() {
     {
       name: 'propose_measures',
       description:
-        'Entrega uma ou mais medidas nomeadas NOVAS para o usuário aprovar (ver instruções sobre quando usar isto em vez de measure/measures inline). Pode ser chamada mais de uma vez no mesmo turno se fizer sentido, mas o comum é uma vez só, com o lote inteiro (ex. "atual", "anterior" e "comparativo" juntos). SEMPRE cria uma medida NOVA — se o nome já existir nesta dashboard, ela é salva com um sufixo ("Nome (2)") em vez de editar a original. Se a intenção do pedido for mudar algo numa medida que JÁ existe (não criar uma parecida), use update_measures, nunca isto. Nada é gravado na dashboard por esta chamada: o usuário revê e decide. A resposta traz o id e o nome FINAL (já com sufixo, se houve colisão) de cada medida — use-o depois num measureRef, nunca invente um id.',
+        'Entrega uma ou mais medidas nomeadas NOVAS para o usuário aprovar (ver instruções sobre quando usar isto em vez de measure/measures inline). Pode ser chamada mais de uma vez no mesmo turno se fizer sentido, mas o comum é uma vez só, com o lote inteiro (ex. "atual", "anterior" e "comparativo" juntos). SEMPRE cria uma medida NOVA — se o nome já existir nesta dashboard, ela é salva com um sufixo ("Nome (2)") em vez de editar a original. Se a intenção do pedido for mudar algo numa medida que JÁ existe (não criar uma parecida), use update_measures, nunca isto. As medidas entram na tabela de medidas e são SALVAS na hora, antes dos widgets — o usuário pode desfazer. A resposta traz o id e o nome FINAL (já com sufixo, se houve colisão) de cada medida — use-o depois num measureRef, nunca invente um id.',
       input_schema: PROPOSE_MEASURES_TOOL_SCHEMA,
     },
     {
       name: 'update_measures',
       description:
-        'Aplica um ajuste (patch) numa ou mais medidas JÁ EXISTENTES nesta dashboard, encontradas por id (ver catálogo de medidas do prompt) — ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida pra incluir também Cancelado", "renomeia essa medida". Só os campos informados no patch mudam; o resto continua igual. Use isto sempre que o pedido descrever uma mudança em cima de algo que JÁ aparece no catálogo de medidas — chamar propose_measures nesse caso cria uma medida NOVA parecida ("Nome (2)") em vez de editar a original, o que quase nunca é a intenção. Nada é gravado sozinho: o usuário revê e aprova, como qualquer proposta.',
+        'Aplica um ajuste (patch) numa ou mais medidas JÁ EXISTENTES nesta dashboard, encontradas por id (ver catálogo de medidas do prompt) — ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida pra incluir também Cancelado", "renomeia essa medida". Só os campos informados no patch mudam; o resto continua igual. Use isto sempre que o pedido descrever uma mudança em cima de algo que JÁ aparece no catálogo de medidas — chamar propose_measures nesse caso cria uma medida NOVA parecida ("Nome (2)") em vez de editar a original, o que quase nunca é a intenção. A atualização é aplicada e SALVA na hora — o usuário pode desfazer.',
       input_schema: UPDATE_MEASURES_TOOL_SCHEMA,
     },
   ]
@@ -394,7 +397,7 @@ async function runTool(name, input, ctx) {
     // pelo texto da resposta — o front recebe JSON pronto pra renderizar.
     ctx.emit({ type: 'widgets', widgets, summary: String(input.summary ?? '') })
     ctx.proposed += 1
-    return { text: `${widgets.length} widget(s) enviados para aprovação do usuário. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
+    return { text: `${widgets.length} widget(s) entregues: entram na guia e são salvos automaticamente. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
   }
 
   if (name === 'preview_measure' || name === 'propose_measures') {
@@ -442,7 +445,7 @@ async function runTool(name, input, ctx) {
     ctx.dashboardMeasures = [...ctx.dashboardMeasures, ...normalized]
     ctx.proposed += 1
     const idList = normalized.map((m) => `"${m.name}" = ${m.id}`).join(', ')
-    return { text: `${normalized.length} medida(s) enviada(s) para aprovação do usuário. IDs pra usar em measureRef: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+    return { text: `${normalized.length} medida(s) entregue(s): entram na tabela de medidas e são salvas automaticamente. IDs pra usar em measureRef: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
   }
 
   if (name === 'update_measures') {
@@ -465,7 +468,7 @@ async function runTool(name, input, ctx) {
     ctx.dashboardMeasures = [...ctx.dashboardMeasures.filter((m) => !updatedIds.has(m.id)), ...updated]
     ctx.proposed += 1
     const idList = updated.map((m) => `"${m.name}" = ${m.id}`).join(', ')
-    return { text: `${updated.length} medida(s) atualizada(s), enviada(s) para aprovação do usuário: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+    return { text: `${updated.length} medida(s) atualizada(s), aplicadas e salvas automaticamente: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
   }
 
   return { isError: true, text: `Ferramenta desconhecida: ${name}` }
@@ -494,7 +497,11 @@ export async function startConversation({ email, folderId, sourceKeys, accessTok
 
 // Roda um turno da conversa, emitindo eventos conforme acontecem. `emit` é o
 // canal SSE pro navegador; a função só retorna quando o turno acabou.
-export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [] }) {
+// `sourceKeys`: as fontes marcadas no painel neste envio. A pessoa pode pôr ou
+// tirar fonte no meio da conversa — só valem as que a pasta libera
+// (listSourceDefs já filtra), e a troca entra no histórico como aviso, pro
+// modelo não seguir propondo com a fonte que saiu.
+export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [], sourceKeys }) {
   const conv = conversations.get(conversationId)
   if (!conv) throw new Error('Esta conversa expirou. Comece uma nova.')
   if (conv.email !== email) throw new Error('Esta conversa pertence a outro usuário.')
@@ -504,10 +511,29 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   // pelo ETL no meio da conversa, e é mais barato relê-lo do snapshot em
   // memória do que arriscar propor um campo que deixou de existir.
   const all = await listSourceDefs(conv.folderId, accessToken)
+  let sourcesNote = null
+  if (Array.isArray(sourceKeys) && sourceKeys.length > 0) {
+    const wanted = all.filter((s) => sourceKeys.includes(s.key)).map((s) => s.key)
+    if (wanted.length === 0) throw new Error('Nenhuma das fontes marcadas está liberada para esta pasta.')
+    const before = new Set(conv.sourceKeys)
+    if (wanted.length !== before.size || wanted.some((k) => !before.has(k))) {
+      const label = (k) => all.find((s) => s.key === k)?.label ?? k
+      const added = wanted.filter((k) => !before.has(k)).map(label)
+      const removed = conv.sourceKeys.filter((k) => !wanted.includes(k)).map(label)
+      conv.sourceKeys = wanted
+      sourcesNote = [
+        'As fontes desta conversa mudaram a pedido do usuário.',
+        added.length ? `Entraram: ${added.join(', ')}.` : '',
+        removed.length ? `Saíram: ${removed.join(', ')} — o que já foi montado com elas continua na dashboard, mas não proponha nada novo com essas fontes.` : '',
+        'O catálogo do sistema já mostra só as fontes atuais.',
+      ].filter(Boolean).join(' ')
+    }
+  }
   const sources = all.filter((s) => conv.sourceKeys.includes(s.key))
   if (sources.length === 0) throw new Error('As fontes desta conversa não estão mais disponíveis.')
 
   conv.lastUsedAt = Date.now()
+  if (sourcesNote) conv.messages.push({ role: 'system', content: sourcesNote })
   conv.messages.push({ role: 'user', content: userText })
 
   //  conta as propostas aceitas no turno — é o que decide se um

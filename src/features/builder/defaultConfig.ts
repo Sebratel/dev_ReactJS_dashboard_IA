@@ -2,7 +2,7 @@
 // nova nasce com uma guia de boas-vindas (sempre aberta pra quem acessa a
 // pasta) explicando o funcionamento do app — as demais guias nascem
 // bloqueadas até o gerente da pasta ou um admin liberar (ver DOCUMENTACAO.md).
-import type { TabConfig } from './types'
+import type { TabConfig, WidgetConfig } from './types'
 
 function genId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
@@ -172,6 +172,15 @@ export const CURRENT_WELCOME_TEXT = WELCOME_TEXT
 // DashboardBuilder.tsx), mesmo tamanho visual de sempre.
 export const LEGACY_WELCOME_HEIGHTS: number[] = [24]
 export const CURRENT_WELCOME_HEIGHT = 28
+
+// O widget de texto que o app põe na guia de boas-vindas (qualquer versão do
+// texto, ainda não editada por ninguém). Desde 19/10/2026 a guia de
+// boas-vindas é uma tela própria (WelcomePanel.tsx), e ESTE widget não é mais
+// desenhado — ele continua salvo, só deixa de aparecer. Um texto que um
+// gerente reescreveu à mão não bate aqui e continua aparecendo, abaixo da tela.
+export function isStockWelcomeWidget(widget: WidgetConfig): boolean {
+  return widget.type === 'text' && (widget.content === WELCOME_TEXT || LEGACY_WELCOME_TEXTS.includes(widget.content ?? ''))
+}
 
 export function createWelcomeTab(): TabConfig {
   return {

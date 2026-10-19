@@ -6,6 +6,8 @@ import { useAppStore } from '@/store/appStore'
 import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { useHeartbeat } from '@/hooks/useHeartbeat'
+import { useNewVersion } from '@/hooks/useNewVersion'
+import { NewVersionBanner } from './NewVersionBanner'
 import { fetchIsAdmin } from '@/features/access/accessApi'
 import { cn } from '@/utils/cn'
 
@@ -22,6 +24,7 @@ export function MainLayout() {
   const { sidebarCollapsed } = useAppStore()
   const setIsAdmin = useAuthStore((s) => s.setIsAdmin)
   const refreshWorkspace = useWorkspaceStore((s) => s.refresh)
+  const outdated = useNewVersion()
   useHeartbeat()
 
   useEffect(() => {
@@ -48,6 +51,7 @@ export function MainLayout() {
     <div className="min-h-screen bg-app-bg text-white">
       <Sidebar />
       <div className={cn('flex flex-col min-h-screen transition-all duration-300', sidebarCollapsed ? 'ml-16' : 'ml-56')}>
+        {outdated && <NewVersionBanner />}
         <TopBar />
         <main className="flex-1 p-6 animate-fade-in">
           <Outlet />

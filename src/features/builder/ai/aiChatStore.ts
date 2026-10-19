@@ -24,8 +24,15 @@ export interface ChatTurn {
   // na resposta (ver resolveAiTargetTab no DashboardBuilder). Ausente em
   // conversas de antes desta regra.
   tabId?: string
-  // Proposta anexada a este turno. `applied` marca que já foi para a guia, pra
-  // não dar pra aprovar duas vezes o mesmo lote.
+  // Resposta cujo resultado entra SALVO sozinho quando ela termina (medidas
+  // primeiro, depois widgets — ver useAiAutoSave.ts). Ausente em conversas de
+  // antes desta regra: essas mostram um botão pra salvar.
+  autoSave?: boolean
+  // O que aconteceu com o salvamento — e o que o "Desfazer" precisa desfazer.
+  auto?: AutoSaveResult
+  // O que a resposta entregou (somado, se veio em mais de uma chamada).
+  // `applied` só aparece em conversas de antes do salvar sozinho: era o
+  // "Adicionar à guia" que já tinha sido clicado.
   proposal?: { widgets: WidgetConfig[]; summary: string; applied?: boolean }
   // Mesma ideia, pra uma proposta de MEDIDA nova (propose_measures)...
   measureProposal?: { measures: MeasureDef[]; summary: string; applied?: boolean }
@@ -37,7 +44,17 @@ export interface ChatTurn {
   interrupted?: boolean
 }
 
-export type ProposalKind = 'proposal' | 'measureProposal' | 'measureUpdateProposal'
+export interface AutoSaveResult {
+  state: 'saving' | 'saved' | 'failed' | 'undoing' | 'undone'
+  tabId?: string            // guia em que os widgets entraram
+  createdTab?: boolean      // a guia nasceu com eles (o Desfazer a remove, se ficar vazia)
+  widgetIds?: string[]
+  measuresDone?: boolean    // medidas já gravadas (uma nova tentativa só refaz os widgets)
+  measureIds?: string[]     // medidas novas criadas
+  previousMeasures?: MeasureDef[] // como estavam as medidas que a IA ajustou
+  notes?: string[]          // o que ficou de fora, e por quê
+  error?: string
+}
 
 export interface DashboardChat {
   conversationId: string | null
@@ -68,8 +85,7 @@ interface AiChatState {
   setStatus: (status: AiStatus) => void
   setSources: (key: string, sourceKeys: string[]) => void
   send: (args: { key: string; folderId: string; text: string; dashboardMeasures: MeasureDef[]; tabId?: string }) => Promise<void>
-  markApplied: (key: string, turnIndex: number, kind: ProposalKind) => void
-  discard: (key: string, turnIndex: number, kind: ProposalKind) => void
+  setAuto: (key: string, turnIndex: number, auto: AutoSaveResult) => void
   reset: (key: string) => void
   clearAll: () => void
 }
@@ -83,17 +99,18 @@ export const chatKey = (folderId: string, dashboardId: string) => `${folderId}/$
 // ─── Retomada ────────────────────────────────────────────────────────────
 function proposalNotes(turn: ChatTurn): string[] {
   const notes: string[] = []
+  const savedNote = turn.auto?.state === 'saved' ? ' — salvo automaticamente' : turn.auto?.state === 'undone' ? ' — o usuário desfez' : ''
   if (turn.proposal) {
     const titles = turn.proposal.widgets.map((w) => w.title || w.type).join('; ')
-    notes.push(`[Propus ${turn.proposal.widgets.length} widget(s): ${titles}${turn.proposal.applied ? ' — o usuário adicionou à guia' : ''}]`)
+    notes.push(`[Propus ${turn.proposal.widgets.length} widget(s): ${titles}${turn.proposal.applied ? ' — o usuário adicionou à guia' : savedNote}]`)
   }
   if (turn.measureProposal) {
     const names = turn.measureProposal.measures.map((m) => m.name).join('; ')
-    notes.push(`[Propus a(s) medida(s): ${names}${turn.measureProposal.applied ? ' — o usuário adicionou à tabela de medidas' : ''}]`)
+    notes.push(`[Propus a(s) medida(s): ${names}${turn.measureProposal.applied ? ' — o usuário adicionou à tabela de medidas' : savedNote}]`)
   }
   if (turn.measureUpdateProposal) {
     const names = turn.measureUpdateProposal.measures.map((m) => m.name).join('; ')
-    notes.push(`[Propus atualizar a(s) medida(s): ${names}${turn.measureUpdateProposal.applied ? ' — o usuário aplicou' : ''}]`)
+    notes.push(`[Propus atualizar a(s) medida(s): ${names}${turn.measureUpdateProposal.applied ? ' — o usuário aplicou' : savedNote}]`)
   }
   if (turn.interrupted) notes.push('[resposta interrompida]')
   return notes
@@ -157,18 +174,6 @@ function replaceLast(turns: ChatTurn[], change: (turn: ChatTurn) => ChatTurn): C
   return turns.length ? [...turns.slice(0, -1), change(turns[turns.length - 1])] : turns
 }
 
-function markApplied(turn: ChatTurn, kind: ProposalKind): ChatTurn {
-  if (kind === 'proposal') return turn.proposal ? { ...turn, proposal: { ...turn.proposal, applied: true } } : turn
-  if (kind === 'measureProposal') return turn.measureProposal ? { ...turn, measureProposal: { ...turn.measureProposal, applied: true } } : turn
-  return turn.measureUpdateProposal ? { ...turn, measureUpdateProposal: { ...turn.measureUpdateProposal, applied: true } } : turn
-}
-
-function withoutProposal(turn: ChatTurn, kind: ProposalKind): ChatTurn {
-  const next = { ...turn }
-  delete next[kind]
-  return next
-}
-
 export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
   const chatOf = (key: string) => get().chats[key] ?? EMPTY_CHAT
 
@@ -194,12 +199,23 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
         patchRun(key, runId, (c) => ({ turns: replaceLast(c.turns, (t) => ({ ...t, text: t.text + ev.text })) }))
       } else if (ev.type === 'tool') {
         patchRun(key, runId, { tool: ev.name })
+      // Mais de uma entrega no MESMO turno se SOMA (antes a 2ª substituía a
+      // 1ª — e, com as medidas salvas sozinhas, o widget que usava uma medida
+      // do 1º lote ficaria apontando pra uma medida que nunca foi gravada).
       } else if (ev.type === 'widgets') {
-        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => ({ ...t, proposal: { widgets: ev.widgets, summary: ev.summary } })) }))
+        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => ({
+          ...t, proposal: { widgets: [...(t.proposal?.widgets ?? []), ...ev.widgets], summary: [t.proposal?.summary, ev.summary].filter(Boolean).join(' ') },
+        })) }))
       } else if (ev.type === 'measures') {
-        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => ({ ...t, measureProposal: { measures: ev.measures, summary: ev.summary } })) }))
+        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => ({
+          ...t, measureProposal: { measures: [...(t.measureProposal?.measures ?? []), ...ev.measures], summary: [t.measureProposal?.summary, ev.summary].filter(Boolean).join(' ') },
+        })) }))
       } else if (ev.type === 'measureUpdates') {
-        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => ({ ...t, measureUpdateProposal: { measures: ev.measures, summary: ev.summary } })) }))
+        patchRun(key, runId, (c) => ({ tool: null, turns: replaceLast(c.turns, (t) => {
+          const ids = new Set(ev.measures.map((m) => m.id))
+          const kept = (t.measureUpdateProposal?.measures ?? []).filter((m) => !ids.has(m.id))
+          return { ...t, measureUpdateProposal: { measures: [...kept, ...ev.measures], summary: [t.measureUpdateProposal?.summary, ev.summary].filter(Boolean).join(' ') } }
+        }) }))
       } else if (ev.type === 'done') {
         set({ status: ev.usage })
       } else if (ev.type === 'error') {
@@ -230,11 +246,11 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
           if (!patchRun(key, runId, { conversationId })) return
         }
         const added = patchRun(key, runId, (c) => ({
-          turns: [...c.turns, { role: 'user', text, tabId }, { role: 'assistant', text: '', streaming: true, tabId }],
+          turns: [...c.turns, { role: 'user', text, tabId }, { role: 'assistant', text: '', streaming: true, tabId, autoSave: true }],
         }))
         if (!added) return
         try {
-          await consumeTurn(key, runId, streamAiTurn(conversationId, text, dashboardMeasures))
+          await consumeTurn(key, runId, streamAiTurn(conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined))
         } catch (e) {
           if (!(e instanceof ApiError) || e.status !== 410) throw e
           // O servidor esqueceu a conversa: abre outra com o que já foi dito
@@ -242,7 +258,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
           const current = chatOf(key)
           const started = await startAiConversation(folderId, current.sourceKeys ?? [], historyForResume(current.turns.slice(0, -2)))
           if (!patchRun(key, runId, { conversationId: started.conversationId })) return
-          await consumeTurn(key, runId, streamAiTurn(started.conversationId, text, dashboardMeasures))
+          await consumeTurn(key, runId, streamAiTurn(started.conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined))
         }
       } catch (e) {
         patchRun(key, runId, (c) => ({
@@ -259,12 +275,8 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
       }
     },
 
-    markApplied: (key, turnIndex, kind) => patchChat(key, (c) => ({
-      turns: c.turns.map((t, i) => (i === turnIndex ? markApplied(t, kind) : t)),
-    })),
-
-    discard: (key, turnIndex, kind) => patchChat(key, (c) => ({
-      turns: c.turns.map((t, i) => (i === turnIndex ? withoutProposal(t, kind) : t)),
+    setAuto: (key, turnIndex, auto) => patchChat(key, (c) => ({
+      turns: c.turns.map((t, i) => (i === turnIndex ? { ...t, auto } : t)),
     })),
 
     reset: (key) => {

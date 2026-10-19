@@ -94,9 +94,11 @@ export async function fetchWidgetInsight(body: {
 
 // Gerador dos eventos de um turno. Quem consome faz `for await (const ev of
 // streamAiTurn(...))` e reage a cada tipo.
-export async function* streamAiTurn(conversationId: string, text: string, dashboardMeasures: MeasureDef[] = []): AsyncGenerator<AiEvent> {
+// `sourceKeys`: as fontes marcadas agora no painel — a pessoa pode pôr ou tirar
+// fonte no meio da conversa, e vale a partir desta mensagem.
+export async function* streamAiTurn(conversationId: string, text: string, dashboardMeasures: MeasureDef[] = [], sourceKeys?: string[]): AsyncGenerator<AiEvent> {
   const res = await apiFetch(`/api/ai/conversations/${encodeURIComponent(conversationId)}/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dashboardMeasures }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dashboardMeasures, sourceKeys }),
   })
   // Erro antes do stream começar (400/403/503) vem como JSON normal.
   if (!res.ok || !res.body) {

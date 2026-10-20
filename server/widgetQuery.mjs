@@ -57,6 +57,18 @@ export function defaultMeasureLabel(m, measuresById) {
   return m.field ? `${aggLabel} de ${m.field}` : aggLabel
 }
 
+// Troca a chave de agrupamento pelo rótulo de exibição (`labelOf`, ver
+// compositeDimensionFn). Quando os dois diferem — só numa Hierarquia de datas,
+// onde "2026-03" vira "Março" —, a chave crua fica em `key`: é dela que o
+// filtro por clique da tela tira o período (o rótulo bonito não volta a ser
+// data). Nos demais casos o ponto sai como sempre saiu, sem `key`.
+export function withDisplayLabels(points, labelOf) {
+  return points.map((p) => {
+    const label = labelOf(p.label)
+    return label === p.label ? { ...p, label } : { ...p, key: p.label, label }
+  })
+}
+
 export function sortAndLimitPoints(points, sort, isDateDim, limit) {
   if (sort === 'asc') {
     points.sort(isDateDim ? (a, b) => a.label.localeCompare(b.label) : (a, b) => a.value - b.value)
@@ -1225,10 +1237,10 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
     }
     const scatterLimit = Math.min(widget.limit ?? 15, MAX_POINTS)
     const points = Array.from(groups.entries())
-      .map(([label, g]) => ({ label: scatterLabelOf(label), value: yAgg.value(g.y), x: xAgg.value(g.x) }))
+      .map(([label, g]) => ({ label, value: yAgg.value(g.y), x: xAgg.value(g.x) }))
       .sort((a, b) => b.value - a.value)
       .slice(0, scatterLimit)
-    return { points }
+    return { points: withDisplayLabels(points, scatterLabelOf) }
   }
 
   // Histograma: divide os valores de UM campo numérico em faixas (bins) de
@@ -1324,7 +1336,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
     // chave cumulativa de sempre (ver compositeDimensionFn); só o texto
     // exibido muda numa Hierarquia de datas de verdade (sem efeito nos
     // demais casos, `labelOf` é a identidade).
-    points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+    points = withDisplayLabels(points, labelOf)
     return { points, seriesKeys: topLegendKeys.map((k) => ({ key: k, label: k })) }
   }
 
@@ -1363,7 +1375,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
   })
   points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
   // Ver comentário equivalente no bloco de legenda acima.
-  points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+  points = withDisplayLabels(points, labelOf)
   // Sempre gera o(s) seriesKey(s) do lado das colunas — mesmo com 1 medida só
   // (usa a chave 'value', que já é onde o valor mora no ponto) — senão o
   // rótulo/cor customizados na pílula do Eixo Y ficam sem efeito (só

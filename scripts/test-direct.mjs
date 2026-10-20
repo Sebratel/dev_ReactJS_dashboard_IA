@@ -11,6 +11,10 @@
 //   fonte, lida dos dois jeitos;
 // - na leitura direta nenhuma linha bruta é baixada (zero chamadas a /rows) e
 //   o que atravessa a rede é só o resultado agregado;
+// - o filtro por clique (src/features/builder/clickFilter.ts) dá, nos outros
+//   widgets, o mesmo número do item clicado — cidade, mês, hierarquia de
+//   datas, campo de outra fonte, célula de matriz, Ctrl+clique e medidas
+//   nomeadas —, nos dois modos;
 // - o ETL não copia fonte direta (só confere o total) e uma fonte copiada
 //   grande demais vira erro NA PRÓPRIA fonte, sem congelar as outras;
 // - um Data Hub ainda sem a consulta pública responde com uma mensagem que diz
@@ -485,6 +489,72 @@ check('com o total de linhas do Data Hub', defDireta?.rowCount === PROTOCOLOS.le
       && c.total === d.total)
   check('desempate determinístico (demais colunas em ordem crescente)',
     d.rows.every((row, i) => i === 0 || row.Prioridade !== d.rows[i - 1].Prioridade || chave(d.rows[i - 1]) <= chave(row)))
+}
+
+// ─── Filtro por clique ─────────────────────────────────────────────────────
+// O clique numa barra/célula vira filtro da guia (src/features/builder/
+// clickFilter.ts). Prova, nos dois modos, que o widget filtrado pelo clique dá
+// o MESMO número que o item clicado mostrava: por cidade, por mês, por
+// hierarquia de datas (via a chave crua do ponto), por campo de outra fonte
+// (a relação traz o filtro de volta), por célula de matriz, com Ctrl+clique e
+// com medidas nomeadas — simples e fórmula.
+console.log('\n── filtro por clique ──')
+{
+  const cf = await import(pathToFileURL(resolvePath(RAIZ, 'src', 'features', 'builder', 'clickFilter.ts')).href)
+  // Os itens clicados no widget 'origem', vistos pelo widget 'alvo'.
+  const filtrosDoClique = (itens) => cf.selectionToTabFilters({ origem: itens.map((conds) => ({ conds })) }, 'alvo', (f) => f.field)
+  const kpi = async (p, itens, measure = { agg: 'count' }) => (await wq.runWidgetQuery({
+    widget: W(p, { id: 'alvo', type: 'kpi', measure }),
+    tabFilters: filtrosDoClique(itens), relations: relacao(p), dashboardMeasures: medidas(p),
+  })).points[0].value
+  const perto = (a, b) => Math.abs(a - b) < 1e-9 * Math.max(1, Math.abs(b))
+  for (const [modo, p] of [['cópia', K.copia], ['direta', K.direta]]) {
+    const ctx = { source: p, relatedSources: [K.bases] }
+    const conds = (dims, ponto) => cf.condsOf(dims, ponto.key ?? ponto.label, ctx)
+
+    const porCidade = await wq.runWidgetQuery({ widget: W(p, { type: 'bar', dimensions: ['Cidade'], measures: [{ agg: 'count' }] }) })
+    const [c0, c1] = porCidade.points
+    const v0 = await kpi(p, [conds(['Cidade'], c0)])
+    check(`${modo}: clique numa cidade dá ao KPI a contagem da barra`, v0 === c0.value, `${v0} × ${c0.value}`)
+    const v01 = await kpi(p, [conds(['Cidade'], c0), conds(['Cidade'], c1)])
+    check(`${modo}: Ctrl+clique em duas cidades soma as duas`, v01 === c0.value + c1.value, `${v01} × ${c0.value + c1.value}`)
+
+    const porMes = await wq.runWidgetQuery({ widget: W(p, { type: 'bar', dimensions: ['month:Data abertura'], measures: [{ agg: 'count' }] }) })
+    const m = porMes.points[Math.floor(porMes.points.length / 2)]
+    const vm = await kpi(p, [conds(['month:Data abertura'], m)])
+    check(`${modo}: clique num mês (${m.label}) vira período e dá a contagem da barra`, vm === m.value, `${vm} × ${m.value}`)
+
+    const hierDims = ['year:Data abertura', 'month:Data abertura']
+    const porHier = await wq.runWidgetQuery({ widget: W(p, { type: 'bar', dimensions: hierDims, measures: [{ agg: 'count' }] }) })
+    const h = porHier.points[0]
+    check(`${modo}: hierarquia de datas devolve a chave crua junto do rótulo bonito`, !!h.key && h.key !== h.label && /^\d{4} \/ \d{4}-\d{2}$/.test(h.key), JSON.stringify(h))
+    const vh = await kpi(p, [conds(hierDims, h)])
+    check(`${modo}: clique na hierarquia (${h.label}) dá a contagem da barra`, vh === h.value, `${vh} × ${h.value}`)
+
+    const porRegiao = await wq.runWidgetQuery({ widget: W(p, { type: 'bar', dimensions: [REGIAO], measures: [{ agg: 'count' }] }), relations: relacao(p) })
+    const r = porRegiao.points[0]
+    const filtroR = filtrosDoClique([conds([REGIAO], r)])[0]
+    check(`${modo}: região (campo de Bases) vira filtro em Bases`, filtroR.filter.source === K.bases && filtroR.filter.field === 'Região', JSON.stringify(filtroR.filter))
+    const vr = await kpi(p, [conds([REGIAO], r)])
+    check(`${modo}: e a relação traz o clique de volta aos protocolos (${r.label})`, vr === r.value, `${vr} × ${r.value}`)
+
+    const matriz = (await wq.runWidgetQuery({ widget: W(p, { type: 'matrix', matrixRows: ['Cidade'], matrixColumns: ['Status'], matrixValue: { agg: 'count' } }) })).matrix
+    const linha = matriz.rows[0]
+    const coluna = matriz.columns[0]
+    const celula = [...cf.condsOf(['Cidade'], linha.key, ctx, wq.MATRIX_SEP), ...cf.condsOf(['Status'], coluna.key, ctx)]
+    const vc = await kpi(p, [celula])
+    check(`${modo}: célula da matriz (${linha.label} × ${coluna.label}) dá o valor da célula`, vc === linha.values[coluna.key], `${vc} × ${linha.values[coluna.key]}`)
+
+    const medidasPorCidade = await wq.runWidgetQuery({
+      widget: W(p, { type: 'bar', dimensions: ['Cidade'], measures: [{ agg: 'count', measureRef: 'm_conc' }, { agg: 'count', measureRef: 'm_tot' }] }),
+      dashboardMeasures: medidas(p),
+    })
+    const mc = medidasPorCidade.points.find((x) => x.label === c0.label)
+    const conc = await kpi(p, [conds(['Cidade'], c0)], { agg: 'count', measureRef: 'm_conc' })
+    check(`${modo}: medida nomeada com filtro próprio (Concluídos) respeita o clique`, conc === mc.s0, `${conc} × ${mc.s0}`)
+    const taxa = await kpi(p, [conds(['Cidade'], c0)], { agg: 'count', measureRef: 'm_taxa' })
+    check(`${modo}: medida-fórmula (taxa de conclusão) calcula sobre a cidade clicada`, perto(taxa, (mc.s0 / mc.s1) * 100), `${taxa} × ${(mc.s0 / mc.s1) * 100}`)
+  }
 }
 
 // ─── O que passa pela rede ─────────────────────────────────────────────────

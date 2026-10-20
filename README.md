@@ -360,6 +360,29 @@ Duas limitações declaradas:
 Relação apontando para fonte removida aparece em âmbar na lista. **Relação
 faltando não avisa nada** — o widget simplesmente não reage ao filtro.
 
+### Filtro por clique
+
+Clicar numa barra, fatia, rótulo do eixo, célula de tabela ou linha/coluna de
+matriz filtra a guia inteira por aquele valor — o filtro cruzado do Power BI, o
+mesmo da Agenda do Dia: o widget clicado não se filtra (acende o item e esmaece
+o resto), Ctrl+clique soma, clicar fora ou Esc limpa, e um balão no rodapé diz
+o que está filtrando. Só fora do modo edição.
+
+Na agenda, todo visual lê a mesma lista de linhas no navegador. Aqui cada widget
+é uma consulta, de fontes diferentes, com medidas nomeadas e relações — então o
+clique **vira filtro da guia**, o mesmo `{ filter, values }` dos filtros do topo
+([clickFilter.ts](src/features/builder/clickFilter.ts)). Com isso, relação
+(semi-join pela chave), medida nomeada (inclusive fórmula, com o aviso de
+"filtro parcial") e leitura direta já funcionam sem código novo no servidor. O
+servidor só passou a devolver a chave crua do ponto (`key`) quando o rótulo é
+outro — numa hierarquia de datas, "Março" não volta a ser data. Campo de outra
+fonte (`fonte.campo`) vira filtro naquela fonte, e a relação o traz de volta.
+
+O preço é o que um filtro de guia expressa: campo a campo, "está em" ou "entre
+datas". Ctrl+clique em duas células de matriz (Ana às 8h, Bruno às 9h) vira
+"Ana ou Bruno" e "8h ou 9h"; vários meses viram o período do primeiro ao
+último. Histograma e cartão não filtram.
+
 ### A grade tem 24 colunas porque o piso é 1 unidade
 
 O piso de redimensionar de qualquer widget cai sempre em uma unidade da grade.
@@ -944,8 +967,9 @@ aviso.
 npm run test:auth     # 21 casos — verificação do ID token do Firebase
 npm run test:ai       # 83 casos — adaptadores dos três provedores, a retomada de conversa e as preferências do pedido
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
-npm run test:direct   # 105 casos — leitura direta no Data Hub × cópia local, tráfego e ETL
+npm run test:direct   # 125 casos — leitura direta no Data Hub × cópia local, filtro por clique nos dois modos, tráfego e ETL
 npm run test:locks    # 63 casos — bloqueio por guia, gravação guia por guia, página antiga barrada, medidas uma a uma, duplicar dashboard
+npm run test:click    # 43 casos — lógica do filtro por clique: condições, Ctrl, quem se filtra, o que acende
 ```
 
 Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa
@@ -966,6 +990,13 @@ direta não baixa linha bruta, que o ETL não copia fonte direta e que uma cópi
 grande demais vira erro na própria fonte sem congelar as outras. Roda em UTC: no
 fuso local, o filtro de período da cópia escorrega 3 horas na virada do dia
 (defeito antigo da cópia; a direta compara a data como está escrita).
+
+No mesmo cenário, o **filtro por clique** é conferido nos dois modos: o widget
+filtrado pelo clique tem de dar o MESMO número que o item clicado mostrava —
+por cidade, por mês, por hierarquia de datas, por região (campo de Bases, que
+volta pela relação), por célula de matriz, com Ctrl+clique e com medidas
+nomeadas simples e fórmula. O **test:click** cobre a parte sem servidor:
+condições, seleção com e sem Ctrl, quem recebe o filtro e o que fica aceso.
 
 O **test:auth** é código de autenticação, e por isso não se contenta em provar que
 um token bom passa: 18 dos 21 casos provam que os **ruins param**, um a um —

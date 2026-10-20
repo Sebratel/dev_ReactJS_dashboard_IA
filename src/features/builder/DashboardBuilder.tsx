@@ -35,6 +35,9 @@ import { TabLockBanner, TabLockChip, TabLockIcon } from './TabLockNotice'
 import { registerDynamicSources } from './fieldCatalog'
 import { WidgetRenderer } from './WidgetRenderer'
 import { FilterBar } from './FilterBar'
+import { ClickFilterBar } from './ClickFilterBar'
+import { selectionToTabFilters } from './clickFilter'
+import { clickFieldLabel, useClearClickFilterOnOutside, useClickFilterStore } from './useClickFilter'
 import { WidgetEditorModal } from './WidgetEditorModal'
 import { FilterEditorModal } from './FilterEditorModal'
 import { RelationsEditorModal } from './RelationsEditorModal'
@@ -390,6 +393,23 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
     return [...widgets, { ...previewWidget, layout: { ...previewWidget.layout, x, y } }]
   }, [tab, previewWidget])
 
+  // Filtro por clique (ver clickFilter.ts): clicar num item de um widget
+  // filtra a guia. A seleção vira filtros da guia para cada widget — os de
+  // todos os OUTROS widgets, nunca o dele mesmo, que só acende o escolhido.
+  // Vale só fora do modo edição e some ao trocar de guia ou de dashboard.
+  const clickSelection = useClickFilterStore((s) => s.selection)
+  const clearClickFilter = useClickFilterStore((s) => s.clear)
+  const onPageClick = useClearClickFilterOnOutside()
+  useEffect(() => { clearClickFilter() }, [tab?.id, dashboardId, editMode, clearClickFilter])
+  const widgetTabFilters = useMemo(() => {
+    const out = new Map<string, { filter: FilterConfig; values: string[] }[]>()
+    if (!Object.keys(clickSelection).length) return out
+    for (const w of displayWidgets) {
+      out.set(w.id, [...tabFilterValues, ...selectionToTabFilters(clickSelection, w.id, (f) => clickFieldLabel(f.source, f.field))])
+    }
+    return out
+  }, [clickSelection, displayWidgets, tabFilterValues])
+
   const gridLayout: Layout = useMemo(
     () => displayWidgets.map((w) => ({
       i: w.id, ...w.layout,
@@ -650,7 +670,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   return (
     // Em telas estreitas o painel ocupa quase tudo e não há o que reservar,
     // por isso o recuo só vale a partir de lg.
-    <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', rightPanelPad)}>
+    // `onClick`: clicar fora de um item clicável limpa o filtro por clique.
+    <div className={cn('space-y-4 animate-slide-up transition-[padding] duration-200', rightPanelPad)} onClick={onPageClick}>
       {/* Abas e ferramentas em LINHAS SEPARADAS no modo edição.
           Juntas, elas disputavam a mesma largura: com o painel da IA aberto num
           notebook (1366px), as sete ferramentas comiam o espaço e sobrava uma
@@ -844,7 +865,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                   >
                     <WidgetRenderer
                       widget={w}
-                      tabFilters={tabFilterValues}
+                      tabFilters={widgetTabFilters.get(w.id) ?? tabFilterValues}
+                      clickable={!editMode}
                       relations={tab.relations ?? []}
                       dashboardMeasures={dashboard.measures}
                       editMode={tabEditable}
@@ -876,6 +898,9 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           )}
         </div>
       </div>
+
+      {/* O que o filtro por clique está filtrando, flutuando no rodapé. */}
+      {!editMode && <ClickFilterBar />}
 
       {/* Modais */}
       {widgetModal.open && (

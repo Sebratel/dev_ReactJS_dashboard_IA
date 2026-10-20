@@ -36,7 +36,7 @@ import { directQuery, directEntry } from './datahubQuery.mjs'
 import { getSnapshot } from './dataset.mjs'
 import {
   MAX_POINTS, MAX_FIELD_VALUES, MAX_LEGEND_SERIES, INFER_SAMPLE_SIZE, MATRIX_SEP, MATRIX_SINGLE_COL, BUCKET_RE,
-  dimensionKeyFn, compositeDimensionFn, sortAndLimitPoints, defaultMeasureLabel, resolveLevel2Measure,
+  dimensionKeyFn, compositeDimensionFn, sortAndLimitPoints, withDisplayLabels, defaultMeasureLabel, resolveLevel2Measure,
   resolveDateWindow, resolveMeasure, isPartialMeasureFilter, resolveIndirectFilter, renderMatrix,
   buildTableResult, histogramResult, inferSourceDef, getSourceDef, getRows, withSheetSources,
   collectWidgetSheetKeys, assertField, assertFieldOrLookup,
@@ -569,7 +569,7 @@ async function directSeries(ctx, widget, lookups, base, measuresIn, measuresById
     return point
   })
   points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
-  points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+  points = withDisplayLabels(points, labelOf)
   const seriesKeys = multi
     ? measuresIn.map((m, i) => ({ key: `s${i}`, label: m.label ?? defaultMeasureLabel(m, measuresById), color: m.color, role: 'bar', dataLabels: m.dataLabels }))
     : [{ key: 'value', label: measuresIn[0].label ?? defaultMeasureLabel(measuresIn[0], measuresById), color: measuresIn[0].color, role: 'bar', dataLabels: measuresIn[0].dataLabels }]
@@ -615,7 +615,7 @@ async function directLegend(ctx, widget, lookups, base, measuresIn, measuresById
     return point
   })
   points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
-  points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+  points = withDisplayLabels(points, labelOf)
   return { points, seriesKeys: topLegendKeys.map((k) => ({ key: k, label: k })) }
 }
 
@@ -628,10 +628,10 @@ async function directScatter(ctx, widget, lookups, base, measuresIn) {
   const limit = Math.min(widget.limit ?? 15, MAX_POINTS)
   const { groups } = await fetchGroups(ctx, { dims, measures: [x, y], ...base, order: { by: 'measure', index: 1, dir: 'desc' }, limit: limit + TOP_MARGIN })
   const points = groups
-    .map((g) => ({ label: labelOf(g.parts.join(' / ')), value: g.values[1], x: g.values[0] }))
+    .map((g) => ({ label: g.parts.join(' / '), value: g.values[1], x: g.values[0] }))
     .sort((a, b) => b.value - a.value)
     .slice(0, limit)
-  return { points }
+  return { points: withDisplayLabels(points, labelOf) }
 }
 
 // Cada valor distinto chega já contado; a conta das faixas e da curva é a de

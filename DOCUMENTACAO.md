@@ -241,6 +241,33 @@ Um filtro de **seleção múltipla** pode ser marcado como **dinâmico**: em vez
 - Reinicia sempre do primeiro valor da lista quando liga (sair do modo edição, reabrir a guia) — a seleção de um filtro nunca fica salva entre sessões, dinâmico ou não.
 - Funciona normalmente com filtro cruzado entre fontes (3.2-bis): pro motor de relacionamento, uma troca automática do filtro dinâmico é idêntica a uma troca manual.
 
+### 3.2-quater Filtro por clique — clicar num item filtra a guia inteira
+
+Igual ao "filtro cruzado" do Power BI e à Visão Geral da Agenda do Dia: **clicar num item de um widget filtra a guia inteira por ele**. Clicar na barra "Equipe Norte" faz os cartões, a tabela, a matriz e os outros gráficos mostrarem só a Equipe Norte; clicar no nome de uma pessoa na tabela filtra a guia por aquela pessoa.
+
+| Onde clicar | Filtra por |
+|---|---|
+| Barra, coluna ou ponto de linha/área (vale a coluna inteira da categoria, não só a barra) | a categoria |
+| Rótulo da categoria no eixo | a categoria |
+| Pedaço de uma barra empilhada com Legenda | a categoria **e** o valor da legenda |
+| Fatia da pizza, faixa do funil, ponto da dispersão | o item |
+| Célula da Tabela | o valor daquela coluna (o nome filtra pela pessoa, a cidade pela cidade) |
+| Rótulo da linha da Matriz | a linha (com os níveis acima dela, numa hierarquia) |
+| Rótulo da coluna da Matriz | a coluna |
+| Célula da Matriz | a linha **e** a coluna |
+| Total da linha da Matriz | a linha |
+
+- **Clicar em outro troca; clicar de novo no mesmo, clicar fora ou apertar Esc tira o filtro.** Clicar num filtro do topo, num botão, ordenar ou selecionar texto não conta como "fora".
+- **Ctrl+clique** (Cmd no Mac) soma itens: no mesmo widget eles se somam (duas equipes); entre widgets eles se combinam (uma equipe **numa** cidade).
+- **O widget onde se clicou não se filtra pelo próprio clique**: continua mostrando tudo, com o item escolhido aceso e o resto esmaecido (na linha e na área, uma linha tracejada marca a categoria). É o que deixa clicar em outro item. Mesma regra do Power BI.
+- **Um balão no rodapé** diz o que está filtrando ("Filtro por clique: Equipe: Equipe Norte") e tem o botão **Limpar**. Ele aparece por cima da tela, sem empurrar nada.
+- **Funciona com relacionamentos (3.2-bis) e medidas nomeadas (3.5-bis)**: o clique vira um filtro da guia como os do topo, então segue os mesmos caminhos. Clicar numa fatia de Clientes por plano filtra os widgets de Protocolos pela relação de cliente; um cartão com uma medida-fórmula (uma taxa, por exemplo) recalcula sobre o que foi clicado. Widget de fonte sem relação com a do clique simplesmente não reage, como acontece com os filtros do topo, e a medida-fórmula que cruza uma fonte não alcançada mostra o aviso de "filtro parcial".
+- **Datas**: clicar num mês (ou ano, trimestre, dia) filtra o **período** daquele mês. Vários meses com Ctrl viram o período do primeiro ao último.
+- **"Como foi calculado"** (3.14) mostra a linha "Filtro por clique" (ou "Filtro por clique (via relação)"), e a leitura da IA também lê o número já filtrado.
+- **Só fora do modo edição** — no modo edição o clique é de arrastar e redimensionar. Entrar no modo edição, trocar de guia ou de dashboard limpa o filtro por clique; ele também não fica salvo.
+- **Não filtram**: Cartão (KPI) e Texto (não têm item para clicar), Histograma (as faixas são de número, e filtro de guia não expressa faixa de número) e coluna de nível de data na Tabela (ela chega já formatada, "Março").
+- **Limites** (os mesmos de um filtro do topo, que filtra campo por campo): com Ctrl, duas células de matriz de linhas e colunas diferentes (Ana às 8h, Bruno às 9h) filtram por "Ana ou Bruno" e "8h ou 9h" — inclui Ana às 9h. E o filtro não encadeia relações (fato → dimensão → outro fato), como em 3.2-bis.
+
 ### 3.3 Construção de um widget — as três abas do editor
 
 Ao criar/editar um widget, o painel lateral tem três abas:
@@ -306,7 +333,7 @@ Clicar no cabeçalho de qualquer coluna da Tabela **ou da Matriz** ordena as lin
 - **Numérico ou alfabético, sozinho**: o app detecta o tipo real do valor da coluna — número ordena menor→maior/maior→menor, texto ordena a→z/z→a (acentuação em português). Não precisa escolher o tipo, nem configurar nada — é automático por coluna. Na Matriz o valor de cada célula é sempre um número agregado, então só a coluna de rótulo da linha (a árvore em si) ordena por texto.
 - **Célula vazia sempre por último**, nas duas direções — uma coluna com linhas em branco não empurra elas pro topo ao inverter pra decrescente.
 - **Coluna de Hierarquia de datas (3.4-ter)** ordena pela DATA de verdade (cronológica), não pelo texto do rótulo — "Agosto" não vem antes de "Janeiro" só porque "A" vem antes de "J" no alfabeto.
-- **Na Matriz, ordena os "irmãos" de cada nível da hierarquia, sem desmontar a árvore**: clicar em "Total" (ou em qualquer coluna) reordena as linhas de nível 1 entre si por aquele valor, E, **dentro de cada uma**, reordena os próprios filhos entre si pelo MESMO critério — o pai continua com seus filhos aninhados debaixo dele, só a ordem entre irmãos muda. Clicar no cabeçalho vazio da própria árvore (a coluna mais à esquerda) ordena por rótulo, igual à Tabela.
+- **Na Matriz, ordena os "irmãos" de cada nível da hierarquia, sem desmontar a árvore**: clicar em "Total" (ou em qualquer coluna) reordena as linhas de nível 1 entre si por aquele valor, E, **dentro de cada uma**, reordena os próprios filhos entre si pelo MESMO critério — o pai continua com seus filhos aninhados debaixo dele, só a ordem entre irmãos muda. Clicar no cabeçalho vazio da própria árvore (a coluna mais à esquerda) ordena por rótulo, igual à Tabela. **Fora do modo edição**, o rótulo de uma coluna da Matriz que vem de um campo ("No prazo", "2026") passa a ser o **filtro por clique** daquela coluna (3.2-quater); ordenar por ela fica na setinha ao lado do rótulo. "Total" e a coluna da árvore continuam ordenando pelo cabeçalho inteiro.
 - **Não é salvo com o widget** — é uma preferência de quem está OLHANDO a tela no momento, não uma configuração da dashboard; cada pessoa pode ordenar do próprio jeito, sem afetar o que os outros veem, e a ordenação volta ao padrão ao recarregar a página. Funciona em modo visualização e em modo edição, pra qualquer pessoa com acesso à guia — diferente de outras configurações da Tabela (largura de coluna, formatação condicional), que são estruturais e exigem "Salvar" pra valer pra todo mundo.
 - Na Tabela, reordena o conjunto **inteiro** de linhas distintas antes de paginar — não só as linhas da página atual — então navegar entre páginas com uma ordenação ativa continua consistente. A Matriz não pagina (ela já tem o próprio teto de linhas, ver seção 5), então isso não se aplica a ela.
 

@@ -1,8 +1,9 @@
 // Painel de montagem com IA — conversa lateral no modo edição da guia.
 //
-// Fluxo: escolher as fontes (o 1º passo, e dá pra mudar depois) → descrever o
-// que quer ver → a IA entrega medidas e widgets, que entram SALVOS sozinhos
-// quando a resposta termina (ver useAiAutoSave.ts). Cada resposta salva tem
+// Fluxo: 1. escolher as fontes (dá pra mudar depois) → 2. descrever o que quer
+// ver → 3. nível de personalização → 4. o que a IA deve entregar (os dois
+// últimos em AiRequestOptions.tsx) → a IA entrega medidas e widgets, que
+// entram SALVOS sozinhos quando a resposta termina (ver useAiAutoSave.ts). Cada resposta salva tem
 // "Desfazer" no cartão (AiTurnResult.tsx). Antes era preciso aprovar cartão
 // por cartão e ainda clicar em "Salvar".
 //
@@ -23,6 +24,7 @@ import { fetchAiStatus, ApiError } from './aiApi'
 import { useAiChatStore, chatKey, EMPTY_CHAT } from './aiChatStore'
 import { AiSourcePicker } from './AiSourcePicker'
 import { AiTurnResult } from './AiTurnResult'
+import { AiRequestOptionsPicker, optionsSummary } from './AiRequestOptions'
 
 const TOOL_LABEL: Record<string, string> = {
   field_values: 'conferindo os valores reais do campo',
@@ -67,12 +69,13 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   const key = chatKey(folderId, dashboardId)
   const chat = useAiChatStore((s) => s.chats[key]) ?? EMPTY_CHAT
   const status = useAiChatStore((s) => s.status)
-  const { setStatus, setSources, send: sendTurn, reset } = useAiChatStore.getState()
+  const { setStatus, setSources, setOptions, send: sendTurn, reset } = useAiChatStore.getState()
   const { conversationId, turns, busy, tool, error } = chat
   const [statusError, setStatusError] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [confirmReset, setConfirmReset] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const sources = getAllSources()
   const selected = useMemo(() => new Set(chat.sourceKeys ?? []), [chat.sourceKeys])
@@ -223,16 +226,18 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
           <div className="space-y-3 pt-1">
             <p className="text-[12px] font-semibold text-gray-100">2. Descreva o que você quer ver</p>
             <p className="text-[11px] leading-relaxed text-gray-400">
-              A IA usa os campos reais das fontes marcadas. As medidas e os widgets que ela montar
-              entram <strong className="font-semibold text-gray-200">já salvos</strong> na guia — e cada resposta tem "Desfazer".
+              Escreva no campo lá embaixo, ou comece por uma sugestão. A IA usa os campos reais das fontes
+              marcadas, e o que ela montar entra <strong className="font-semibold text-gray-200">já salvo</strong> na guia — com "Desfazer".
             </p>
             <div className="space-y-1.5">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">Sugestões</span>
+              {/* A sugestão vai pro campo, não sai direto: dá tempo de ajustar
+                  os passos 3 e 4 antes de enviar. */}
               {SUGGESTIONS.map((s) => (
                 <button
                   key={s}
-                  onClick={() => send(s)}
-                  disabled={!canChat || busy || overBudget}
+                  onClick={() => { setInput(s); inputRef.current?.focus() }}
+                  disabled={busy || overBudget}
                   className="group flex w-full items-center gap-2 rounded-lg border border-app-border/70 bg-app-surface/40 px-3 py-2.5 text-left text-[11px] leading-snug text-gray-300 transition-colors hover:border-brand-cyan/40 hover:bg-app-surface hover:text-gray-100 disabled:opacity-40 disabled:hover:border-app-border/70"
                 >
                   <span className="min-w-0 flex-1">{s}</span>
@@ -240,13 +245,19 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
                 </button>
               ))}
             </div>
+            <div className="border-t border-app-border pt-3">
+              <AiRequestOptionsPicker value={chat.options} onChange={(o) => setOptions(key, o)} compact={false} />
+            </div>
           </div>
         )}
 
         {turns.map((turn, i) => (
           <div key={i} className={cn('space-y-2', turn.role === 'user' && 'flex justify-end')}>
             {turn.role === 'user' ? (
-              <p className="max-w-[85%] rounded-xl rounded-br-sm bg-brand-blue/15 px-3 py-2 text-[11px] text-gray-100">{turn.text}</p>
+              <div className="flex max-w-[85%] flex-col items-end gap-0.5">
+                <p className="rounded-xl rounded-br-sm bg-brand-blue/15 px-3 py-2 text-[11px] text-gray-100">{turn.text}</p>
+                {turn.options && <span className="text-[9px] text-gray-500">{optionsSummary(turn.options)}</span>}
+              </div>
             ) : (
               <>
                 {turn.text && <p className="whitespace-pre-wrap text-[11px] leading-relaxed text-gray-200">{turn.text}</p>}
@@ -274,11 +285,16 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
         )}
       </div>
 
+      {turns.length > 0 && (
+        <AiRequestOptionsPicker value={chat.options} onChange={(o) => setOptions(key, o)} compact />
+      )}
+
       <form
         onSubmit={(e) => { e.preventDefault(); send(input) }}
-        className="flex shrink-0 items-end gap-2 border-t border-app-border px-4 py-3"
+        className={cn('flex shrink-0 items-end gap-2 px-4 py-3', turns.length === 0 && 'border-t border-app-border')}
       >
         <textarea
+          ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input) } }}

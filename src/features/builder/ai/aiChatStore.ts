@@ -15,7 +15,7 @@ import { persist, type PersistStorage, type StorageValue } from 'zustand/middlew
 import { useAuthStore } from '@/store/authStore'
 import { AI_CHATS_KEY } from '@/store/sessionScopedStorage'
 import type { MeasureDef, WidgetConfig } from '../types'
-import { endAiConversation, startAiConversation, streamAiTurn, ApiError, type AiEvent, type AiStatus, type ResumeMessage } from './aiApi'
+import { endAiConversation, startAiConversation, streamAiTurn, ApiError, DEFAULT_AI_OPTIONS, type AiEvent, type AiRequestOptions, type AiStatus, type ResumeMessage } from './aiApi'
 
 export interface ChatTurn {
   role: 'user' | 'assistant'
@@ -24,6 +24,9 @@ export interface ChatTurn {
   // na resposta (ver resolveAiTargetTab no DashboardBuilder). Ausente em
   // conversas de antes desta regra.
   tabId?: string
+  // Preferências com que o pedido foi feito (no turno da pessoa) — o painel
+  // mostra junto da mensagem.
+  options?: AiRequestOptions
   // Resposta cujo resultado entra SALVO sozinho quando ela termina (medidas
   // primeiro, depois widgets — ver useAiAutoSave.ts). Ausente em conversas de
   // antes desta regra: essas mostram um botão pra salvar.
@@ -58,8 +61,10 @@ export interface AutoSaveResult {
 
 export interface DashboardChat {
   conversationId: string | null
-  // null = ninguém escolheu ainda (o painel pré-seleciona quando há poucas fontes).
+  // null = ninguém escolheu ainda (o painel só pré-seleciona quando há UMA fonte).
   sourceKeys: string[] | null
+  // Personalização e o que entregar (passos 3 e 4) — valem pro próximo pedido.
+  options: AiRequestOptions
   turns: ChatTurn[]
   // Daqui pra baixo, transitório — não vai para o sessionStorage.
   busy: boolean
@@ -70,7 +75,7 @@ export interface DashboardChat {
   runId: string | null
 }
 
-type StoredChat = Pick<DashboardChat, 'conversationId' | 'sourceKeys' | 'turns'>
+type StoredChat = Pick<DashboardChat, 'conversationId' | 'sourceKeys' | 'turns'> & { options?: AiRequestOptions }
 
 interface PersistedState {
   ownerEmail: string | null
@@ -84,6 +89,7 @@ interface AiChatState {
   status: AiStatus | null
   setStatus: (status: AiStatus) => void
   setSources: (key: string, sourceKeys: string[]) => void
+  setOptions: (key: string, options: AiRequestOptions) => void
   send: (args: { key: string; folderId: string; text: string; dashboardMeasures: MeasureDef[]; tabId?: string }) => Promise<void>
   setAuto: (key: string, turnIndex: number, auto: AutoSaveResult) => void
   reset: (key: string) => void
@@ -91,7 +97,7 @@ interface AiChatState {
 }
 
 export const EMPTY_CHAT: DashboardChat = {
-  conversationId: null, sourceKeys: null, turns: [], busy: false, tool: null, error: null, runId: null,
+  conversationId: null, sourceKeys: null, options: DEFAULT_AI_OPTIONS, turns: [], busy: false, tool: null, error: null, runId: null,
 }
 
 export const chatKey = (folderId: string, dashboardId: string) => `${folderId}/${dashboardId}`
@@ -233,6 +239,8 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
 
     setSources: (key, sourceKeys) => patchChat(key, { sourceKeys }),
 
+    setOptions: (key, options) => patchChat(key, { options }),
+
     send: async ({ key, folderId, text, dashboardMeasures, tabId }) => {
       const chat = chatOf(key)
       if (!text.trim() || chat.busy) return
@@ -246,11 +254,11 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
           if (!patchRun(key, runId, { conversationId })) return
         }
         const added = patchRun(key, runId, (c) => ({
-          turns: [...c.turns, { role: 'user', text, tabId }, { role: 'assistant', text: '', streaming: true, tabId, autoSave: true }],
+          turns: [...c.turns, { role: 'user', text, tabId, options: c.options }, { role: 'assistant', text: '', streaming: true, tabId, autoSave: true }],
         }))
         if (!added) return
         try {
-          await consumeTurn(key, runId, streamAiTurn(conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined))
+          await consumeTurn(key, runId, streamAiTurn(conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined, chatOf(key).options))
         } catch (e) {
           if (!(e instanceof ApiError) || e.status !== 410) throw e
           // O servidor esqueceu a conversa: abre outra com o que já foi dito
@@ -258,7 +266,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
           const current = chatOf(key)
           const started = await startAiConversation(folderId, current.sourceKeys ?? [], historyForResume(current.turns.slice(0, -2)))
           if (!patchRun(key, runId, { conversationId: started.conversationId })) return
-          await consumeTurn(key, runId, streamAiTurn(started.conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined))
+          await consumeTurn(key, runId, streamAiTurn(started.conversationId, text, dashboardMeasures, chatOf(key).sourceKeys ?? undefined, chatOf(key).options))
         }
       } catch (e) {
         patchRun(key, runId, (c) => ({
@@ -297,7 +305,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
   storage: sessionStore,
   partialize: (s): PersistedState => ({
     ownerEmail: s.ownerEmail,
-    chats: Object.fromEntries(Object.entries(s.chats).map(([key, c]) => [key, { conversationId: c.conversationId, sourceKeys: c.sourceKeys, turns: c.turns }])),
+    chats: Object.fromEntries(Object.entries(s.chats).map(([key, c]) => [key, { conversationId: c.conversationId, sourceKeys: c.sourceKeys, options: c.options, turns: c.turns }])),
   }),
   merge: (persisted, current) => {
     const stored = (persisted ?? {}) as Partial<PersistedState>
@@ -307,6 +315,7 @@ export const useAiChatStore = create<AiChatState>()(persist((set, get) => {
         ...EMPTY_CHAT,
         conversationId: c.conversationId ?? null,
         sourceKeys: c.sourceKeys ?? null,
+        options: c.options ?? DEFAULT_AI_OPTIONS,
         // Resposta que estava chegando quando a página recarregou: o resto
         // dela ficou no servidor, mas não chega mais aqui.
         turns: (c.turns ?? []).map((t) => (t.streaming ? { ...t, streaming: false, interrupted: true } : t)),

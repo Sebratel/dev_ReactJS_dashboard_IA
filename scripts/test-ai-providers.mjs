@@ -381,6 +381,36 @@ console.log('\n── Retomada de conversa ──')
     'mesmo cortada, alterna do jeito que os provedores exigem')
 }
 
+// ─── Preferências do pedido (passos 3 e 4 do painel) ──────────────────
+// server/aiRequestOptions.mjs: o que vira bloco do prompt e o que as
+// ferramentas cobram (tipos de widget permitidos — medidas nunca entram na
+// escolha: a IA cria as que a análise pedir, em qualquer entrega).
+{
+  console.log('\n── Preferências do pedido ──')
+  const o = await import(mod('aiRequestOptions.mjs'))
+  const padrao = o.normalizeRequestOptions(undefined)
+  ok(padrao.personalization === 'medium' && padrao.deliver === null, 'sem nada: personalização Média e entrega Padrão')
+  ok(o.normalizeRequestOptions({ personalization: 'turbo', deliver: ['x', 'tables', 'tables'] }).personalization === 'medium'
+    && JSON.stringify(o.normalizeRequestOptions({ deliver: ['x', 'tables', 'tables'] }).deliver) === '["tables"]',
+  'nível inválido cai no padrão; entrega ignora o que não existe e repetição')
+  ok(o.normalizeRequestOptions({ deliver: [] }).deliver === null, 'entrega vazia vira Padrão')
+  ok(o.allowedWidgetTypes(padrao) === null, 'Padrão: qualquer tipo de widget')
+  const tabelasCards = o.normalizeRequestOptions({ deliver: ['tables', 'cards'] })
+  const tipos = o.allowedWidgetTypes(tabelasCards)
+  ok(tipos.has('table') && tipos.has('matrix') && tipos.has('kpi') && !tipos.has('bar') && !tipos.has('text'), 'Tabelas + Cards: table, matrix e kpi — nada de gráfico nem texto')
+  const graficos = o.allowedWidgetTypes(o.normalizeRequestOptions({ deliver: ['charts'] }))
+  ok(['bar', 'line', 'pie', 'comboBarLine', 'histogram'].every((t) => graficos.has(t)) && !graficos.has('kpi') && !graficos.has('table'), 'Gráficos: os tipos de gráfico, sem card nem tabela')
+  ok(o.normalizeRequestOptions({ deliver: ['measures'] }).deliver === null
+    && JSON.stringify(o.normalizeRequestOptions({ deliver: ['measures', 'charts'] }).deliver) === '["charts"]',
+  '"medidas" não é opção de entrega: sozinha vira Padrão, junto de outra é ignorada')
+  ok(/MÍNIMA/.test(o.requestOptionsText({ personalization: 'minimal', deliver: null })) && /ALTA/.test(o.requestOptionsText({ personalization: 'high', deliver: null })),
+    'texto do prompt traz o nível escolhido')
+  ok(/SOMENTE Tabelas, Cards/.test(o.requestOptionsText(tabelasCards)) && /table, matrix, kpi/.test(o.requestOptionsText(tabelasCards)),
+    'texto do prompt lista os tipos permitidos')
+  ok(/Medidas nomeadas: continuam/.test(o.requestOptionsText(tabelasCards)) && !/NÃO crie|serão recusadas/.test(o.requestOptionsText(tabelasCards)),
+    'com a entrega restrita, o texto do prompt mantém as medidas liberadas')
+}
+
 server.close()
 // Limpa a configuração de teste — só a que ESTE processo criou (se alguém
 // passou AI_CONFIG_PATH de fora, o arquivo é dele).

@@ -800,7 +800,7 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
 // Um turno da conversa, em streaming (SSE). Resposta longa e incremental: o
 // texto aparece digitando e os widgets chegam como um evento próprio.
 app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
-  const { text, dashboardMeasures, sourceKeys } = req.body || {}
+  const { text, dashboardMeasures, sourceKeys, options } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
   // Antes do stream, com status próprio: dentro dele viraria só um evento de
   // erro. 410 é o que faz o navegador retomar a conversa com o que já foi dito.
@@ -839,6 +839,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
       accessToken: req.accessToken, emit,
       dashboardMeasures: Array.isArray(dashboardMeasures) ? dashboardMeasures : [],
       sourceKeys: Array.isArray(sourceKeys) ? sourceKeys.map(String) : undefined,
+      options,
     })
   } catch (e) {
     console.error(`[ai] turno falhou: ${e.message}`)

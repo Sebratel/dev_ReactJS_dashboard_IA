@@ -36,6 +36,7 @@ import { getSnapshot } from './dataset.mjs'
 import { isSheetSource } from './sheetSources.mjs'
 import { listSourceDefs, runWidgetQuery, runFieldValues, resolveMeasure, withSheetSources } from './widgetQuery.mjs'
 import { WIDGET_SCHEMA, PROPOSE_TOOL_SCHEMA, validateWidget, normalizeWidget } from './aiWidgetSchema.mjs'
+import { normalizeRequestOptions, allowedWidgetTypes, requestOptionsText, deliverLabel } from './aiRequestOptions.mjs'
 import {
   PROPOSE_MEASURES_TOOL_SCHEMA, validateMeasureBatch, normalizeMeasureBatch,
   UPDATE_MEASURES_TOOL_SCHEMA, validateMeasureUpdates, normalizeMeasureUpdates,
@@ -233,7 +234,7 @@ Comunicação: seja direto e breve. Uma ou duas frases dizendo o que montou e po
 Escopo: entregue o que foi pedido, no tamanho que foi pedido. Se o pedido for ambíguo, resolva como um colega experiente resolveria e siga; só pergunte quando leituras diferentes levariam a dashboards materialmente diferentes. Não acrescente widgets que ninguém pediu.
 
 Aparência: o schema te dá acesso a TUDO que o editor manual permite ajustar na aba Formato — cor, paleta de série, fundo do card (e opacidade), opacidade das colunas/linhas/fatias, cor dos ícones, linhas de grade, sombra/brilho/piscar estáticos, formatação de texto completa (título, subtítulo, eixo X, eixo Y, legenda, linhas/colunas da matriz — fonte, negrito/itálico/sublinhado, cor, opacidade, fundo), rótulos de dado (geral e por série), formatação de tabela, tamanho do card (w/h) e meta/alertas (conditionalRules).
-Regra única para TODOS esses campos: por padrão, NÃO preencha nenhum — omita, e os widgets nascem com a aparência padrão do app/tema da guia. Isso é o comportamento certo quando ninguém pediu nada sobre visual, e widgets "no mesmo padrão" não é um defeito nesse caso.
+Regra única para TODOS esses campos (vale no nível de personalização MÍNIMO; os níveis MÉDIO e ALTO, escolhidos pela pessoa no painel, vêm no bloco "Preferências DESTE pedido" e mandam no lugar desta regra): por padrão, NÃO preencha nenhum — omita, e os widgets nascem com a aparência padrão do app/tema da guia. Isso é o comportamento certo quando ninguém pediu nada sobre visual, e widgets "no mesmo padrão" não é um defeito nesse caso.
 Só preencha quando a pessoa pedir, no mesmo turno ou num turno anterior da conversa, algo sobre cor, visual, design, tamanho, formatação ou variedade/diversidade entre os widgets (ex.: "cores diferentes", "cada gráfico com um estilo", "deixa mais bonito", "títulos maiores", "tamanhos variados", "alerta quando passar de X"). Quando pedirem, use o quanto do toolkit fizer sentido pro pedido — não se limite a só cor se a pessoa pediu "personalizar" de forma ampla:
 - Varie de verdade entre os widgets propostos — não repita a mesma cor/tamanho/formatação em todos; isso derrota o pedido.
 - Em gráfico com várias categorias/série (pizza, funil, dispersão, barra sem legenda), prefira \`palette\` (3+ cores bem distintas entre si, não um degradê) a um \`color\` só.
@@ -383,6 +384,15 @@ async function runTool(name, input, ctx) {
   if (name === 'propose_widgets') {
     const list = Array.isArray(input.widgets) ? input.widgets : []
     if (list.length === 0) return { isError: true, text: 'Nenhum widget na proposta.' }
+    // A escolha "o que entregar" do painel (ver aiRequestOptions.mjs) — limita
+    // só o tipo de widget; medidas nomeadas seguem livres.
+    const allowed = allowedWidgetTypes(ctx.options)
+    if (allowed) {
+      const outside = list.filter((w) => !allowed.has(w?.type)).map((w) => `"${w?.title ?? '?'}" (${w?.type})`)
+      if (outside.length) {
+        return { isError: true, text: `A pessoa pediu só ${deliverLabel(ctx.options)} neste pedido — tipos permitidos: ${[...allowed].join(', ')}. Troque ou tire: ${outside.join('; ')}. Chame propose_widgets de novo.` }
+      }
+    }
     const problems = []
     list.forEach((w, i) => {
       const errors = validateWidget(w, ctx.sources)
@@ -501,7 +511,9 @@ export async function startConversation({ email, folderId, sourceKeys, accessTok
 // tirar fonte no meio da conversa — só valem as que a pasta libera
 // (listSourceDefs já filtra), e a troca entra no histórico como aviso, pro
 // modelo não seguir propondo com a fonte que saiu.
-export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [], sourceKeys }) {
+// `options`: as preferências deste pedido (personalização e o que entregar —
+// ver aiRequestOptions.mjs).
+export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [], sourceKeys, options }) {
   const conv = conversations.get(conversationId)
   if (!conv) throw new Error('Esta conversa expirou. Comece uma nova.')
   if (conv.email !== email) throw new Error('Esta conversa pertence a outro usuário.')
@@ -541,7 +553,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   // acumula propose_measures dentro do MESMO turno (ver runTool) — permite
   // uma fórmula do turno referenciar, por nome, uma medida proposta poucas
   // idas antes, no mesmo turno, sem precisar já estar salva de verdade.
-  const ctx = { sources, accessToken, emit, proposed: 0, dashboardMeasures: [...dashboardMeasures] }
+  const ctx = { sources, accessToken, emit, proposed: 0, dashboardMeasures: [...dashboardMeasures], options: normalizeRequestOptions(options) }
   const tools = buildTools()
   const system = [
     { type: 'text', text: INSTRUCTIONS },
@@ -553,6 +565,9 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
     // vez que alguém aprova uma medida.
     { type: 'text', text: catalogText(sources), cache_control: { type: 'ephemeral' } },
     { type: 'text', text: measuresText(ctx.dashboardMeasures) },
+    // Preferências deste pedido (passos 3 e 4 do painel) — também mudam a cada
+    // turno, então ficam fora do prefixo cacheado, como as medidas.
+    { type: 'text', text: requestOptionsText(ctx.options) },
   ]
 
   let totalUsd = 0

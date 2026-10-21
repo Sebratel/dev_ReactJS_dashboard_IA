@@ -6,7 +6,7 @@
 //
 // Resposta de antes desta regra (sem `autoSave`) ou cortada no meio (conexão,
 // F5) não é salva sozinha: mostra o botão "Salvar na dashboard".
-import { AlertTriangle, Check, CheckCircle2, Loader2, Pencil, RotateCcw, Save, Sigma, Undo2 } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, Loader2, Pencil, RotateCcw, Save, Sigma, Undo2, Wand2 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import type { MeasureDef } from '../types'
 import type { ChatTurn } from './aiChatStore'
@@ -23,7 +23,7 @@ function summarizeMeasure(m: MeasureDef): string {
 }
 
 export function hasDelivery(turn: ChatTurn): boolean {
-  return !!(turn.proposal?.widgets.length || turn.measureProposal?.measures.length || turn.measureUpdateProposal?.measures.length)
+  return !!(turn.proposal?.widgets.length || turn.measureProposal?.measures.length || turn.measureUpdateProposal?.measures.length || turn.widgetUpdates?.length)
 }
 
 export function AiTurnResult({ turn, tabLabel, onSave, onUndo }: {
@@ -37,7 +37,8 @@ export function AiTurnResult({ turn, tabLabel, onSave, onUndo }: {
   const created = turn.measureProposal?.measures ?? []
   const updated = turn.measureUpdateProposal?.measures ?? []
   const widgets = turn.proposal?.widgets ?? []
-  const where = tabLabel(auto?.tabId ?? turn.tabId)
+  const adjusted = turn.widgetUpdates ?? []
+  const where = tabLabel(auto?.tabId ?? auto?.updatedTabId ?? turn.tabId)
   // Resposta de antes desta regra já adicionada ao rascunho por "Adicionar".
   const legacyApplied = !turn.autoSave && !auto
     && (!turn.proposal || turn.proposal.applied) && (!turn.measureProposal || turn.measureProposal.applied)
@@ -57,7 +58,7 @@ export function AiTurnResult({ turn, tabLabel, onSave, onUndo }: {
         {state === 'undoing' && <><Loader2 size={12} className="animate-spin text-gray-400" /><span className="text-gray-200">Desfazendo…</span></>}
         {state === 'saved' && (
           <><CheckCircle2 size={13} className="text-emerald-500" />
-            <span className="text-gray-100">Salvo{widgets.length && where ? <> na guia <span className="text-emerald-500">“{where}”</span></> : ' na dashboard'}</span></>
+            <span className="text-gray-100">Salvo{(widgets.length || adjusted.length) && where ? <> na guia <span className="text-emerald-500">“{where}”</span></> : ' na dashboard'}</span></>
         )}
         {state === 'failed' && <><AlertTriangle size={13} className="text-risk-critical" /><span className="text-gray-100">Não foi salvo</span></>}
         {state === 'undone' && <><Undo2 size={12} className="text-gray-500" /><span className="text-gray-400">Desfeito — nada disto ficou na dashboard</span></>}
@@ -82,6 +83,20 @@ export function AiTurnResult({ turn, tabLabel, onSave, onUndo }: {
             <ul className="space-y-0.5">
               {updated.map((m) => (
                 <li key={m.id} className="text-[11px] text-gray-200"><span className="font-semibold">{m.name}</span><span className="text-gray-500"> — {summarizeMeasure(m)}</span></li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {adjusted.length > 0 && (
+          <div>
+            <p className="mb-1 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-gray-500"><Wand2 size={10} /> {adjusted.length} widget(s) ajustado(s)</p>
+            <ul className="space-y-1">
+              {adjusted.map((u) => (
+                <li key={u.widgetId} className="text-[11px] text-gray-200">
+                  <span className="mr-1.5 rounded bg-app-surface px-1.5 py-0.5 font-mono text-[9px] text-gray-400">{u.widget.type}</span>
+                  <span className="font-semibold">{u.widget.title}</span>
+                  {u.summary && <span className="block text-gray-500">{u.summary}</span>}
+                </li>
               ))}
             </ul>
           </div>

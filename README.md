@@ -571,6 +571,7 @@ leitura, o modelo vê o resultado **já agregado** que o gráfico desenha.
 | posição x/y fora do schema | o cliente calcula com `findFreeSpot` ao salvar — o modelo nunca sobrepõe o que já existe |
 | entra salvo, mas só o que ela entregou | ao fim da resposta, o navegador grava as medidas (uma a uma) e depois os widgets, na guia do pedido — sem levar junto o rascunho da pessoa; cada resposta tem "Desfazer" |
 | fontes da conversa | só as fontes liberadas para a pasta, marcadas no painel — dá para pôr ou tirar no meio da conversa, e vale a partir da mensagem seguinte; `field_values` só alcança as marcadas; turno de conversa de outro e-mail é recusado |
+| ajustar um widget que já existe ("Ajustar com IA") | `update_widget` recebe só o que muda (`changes`) e o que sai (`remove`), aplicado por [applyWidgetPatch](server/aiWidgetSchema.mjs): o resto do widget — formatação, leitura fixada, posição — passa intacto, e o id e o lugar na guia ficam. Campo que o widget já usava vale mesmo fora do catálogo (fonte relacionada); campo novo tem de estar nele. Sem widget escolhido, a chamada volta como erro |
 | o que entregar (passo 4 do painel) | com a entrega restrita (tabelas, gráficos, cards), `propose_widgets` recusa tipo não marcado (inclusive texto) — volta como erro e o modelo refaz na mesma resposta. Medidas nomeadas ficam fora da restrição: o modelo cria as que a análise pedir em qualquer escolha ([server/aiRequestOptions.mjs](server/aiRequestOptions.mjs)) |
 
 O **nível de personalização** (passo 3: Mínimo, Médio — o padrão — ou Alto) e a
@@ -965,7 +966,7 @@ aviso.
 
 ```bash
 npm run test:auth     # 21 casos — verificação do ID token do Firebase
-npm run test:ai       # 83 casos — adaptadores dos três provedores, a retomada de conversa e as preferências do pedido
+npm run test:ai       # 95 casos — adaptadores dos três provedores, a retomada de conversa, as preferências do pedido e o ajuste de um widget
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
 npm run test:direct   # 125 casos — leitura direta no Data Hub × cópia local, filtro por clique nos dois modos, tráfego e ETL
 npm run test:locks    # 63 casos — bloqueio por guia, gravação guia por guia, página antiga barrada, medidas uma a uma, duplicar dashboard

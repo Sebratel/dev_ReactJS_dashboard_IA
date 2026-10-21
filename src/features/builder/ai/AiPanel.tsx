@@ -7,6 +7,11 @@
 // "Desfazer" no cartão (AiTurnResult.tsx). Antes era preciso aprovar cartão
 // por cartão e ainda clicar em "Salvar".
 //
+// "Ajustar com IA" num widget (botão no cabeçalho dele): o painel abre com o
+// widget escolhido (aiChatStore.focus) e cada pedido vai com ele — a IA ajusta
+// aquele widget no lugar (update_widget), em vez de montar um novo. O "×" da
+// faixa "Ajustando" volta ao modo de sempre.
+//
 // Autocontido de propósito: o DashboardBuilder só monta este componente e
 // passa o salvar/desfazer por callback, sem herdar estado nenhum da conversa.
 //
@@ -14,14 +19,14 @@
 // durante a sessão. Fechar o painel não apaga nada — e uma resposta em
 // andamento continua chegando com ele fechado.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Sparkles, X, Send, Loader2, AlertTriangle, Wrench, RotateCcw } from 'lucide-react'
+import { Sparkles, X, Send, Loader2, AlertTriangle, Wrench, RotateCcw, Wand2 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 import { ModalPortal } from '@/components/ui/ModalPortal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { getAllSources } from '../fieldCatalog'
 import type { MeasureDef } from '../types'
-import { fetchAiStatus, ApiError } from './aiApi'
-import { useAiChatStore, chatKey, EMPTY_CHAT } from './aiChatStore'
+import { fetchAiStatus, ApiError, type AiTarget } from './aiApi'
+import { useAiChatStore, chatKey, EMPTY_CHAT, type AiFocus } from './aiChatStore'
 import { AiSourcePicker } from './AiSourcePicker'
 import { AiTurnResult } from './AiTurnResult'
 import { AiRequestOptionsPicker, optionsSummary } from './AiRequestOptions'
@@ -33,6 +38,7 @@ const TOOL_LABEL: Record<string, string> = {
   preview_measure: 'conferindo o cálculo contra os dados',
   propose_measures: 'montando a medida',
   update_measures: 'atualizando a medida',
+  update_widget: 'ajustando o widget',
 }
 
 // Mesmas frases do convite da guia vazia (ai/AiEmptyState.tsx): a pessoa que
@@ -43,7 +49,15 @@ const SUGGESTIONS = [
   'Compare o volume por mês e destaque as variações relevantes.',
 ]
 
-export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasures, resolveTargetTab, tabLabel, onSaveTurn, onUndoTurn, onClose }: {
+// Com um widget escolhido ("Ajustar com IA").
+const FOCUS_SUGGESTIONS = [
+  'Por que o número deste widget é diferente do dos outros?',
+  'Revise os filtros deste widget e me diga o que ele está mostrando.',
+  'Troque para um tipo de gráfico que leia melhor.',
+  'Mostre os valores em cima do gráfico.',
+]
+
+export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasures, resolveTargetTab, resolveFocusTarget, tabLabel, onSaveTurn, onUndoTurn, onClose }: {
   folderId: string
   // Cada dashboard tem a sua conversa (ver aiChatStore.ts).
   dashboardId: string
@@ -58,6 +72,9 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   // Chamado a cada pedido enviado: em que guia os widgets da resposta vão
   // cair. Na guia de boas-vindas, cria uma guia nova (ver DashboardBuilder).
   resolveTargetTab: () => string | null
+  // O widget escolhido como está AGORA (e os outros da guia) — null se ele
+  // não existe mais.
+  resolveFocusTarget: (focus: AiFocus) => AiTarget | null
   // Nome atual de uma guia, pro cartão dizer onde a resposta entrou.
   tabLabel: (tabId: string | undefined) => string | null
   // Salvar (ou tentar de novo) e desfazer o que uma resposta entregou (ver
@@ -69,9 +86,10 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
   const key = chatKey(folderId, dashboardId)
   const chat = useAiChatStore((s) => s.chats[key]) ?? EMPTY_CHAT
   const status = useAiChatStore((s) => s.status)
-  const { setStatus, setSources, setOptions, send: sendTurn, reset } = useAiChatStore.getState()
-  const { conversationId, turns, busy, tool, error } = chat
+  const { setStatus, setSources, setOptions, setFocus, send: sendTurn, reset } = useAiChatStore.getState()
+  const { conversationId, turns, busy, tool, error, focus } = chat
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [focusError, setFocusError] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [confirmReset, setConfirmReset] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -104,8 +122,20 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
 
   const send = (text: string) => {
     if (!text.trim() || busy) return
+    // Com widget escolhido, o pedido vai com ele e com a guia dele — não abre
+    // guia nova (resolveTargetTab criaria uma, vindo da de boas-vindas).
+    const target = focus ? resolveFocusTarget(focus) : null
+    if (focus && !target) {
+      setFocusError(`O widget "${focus.title}" não está mais na dashboard. Feche a faixa "Ajustando" para pedir outra coisa.`)
+      return
+    }
+    setFocusError(null)
     setInput('')
-    void sendTurn({ key, folderId, text, dashboardMeasures, tabId: resolveTargetTab() ?? undefined })
+    void sendTurn({
+      key, folderId, text, dashboardMeasures,
+      tabId: focus ? focus.tabId : resolveTargetTab() ?? undefined,
+      target: target ?? undefined,
+    })
   }
 
   const overBudget = !!status && status.budgetUsd > 0 && status.spentUsd >= status.budgetUsd
@@ -158,7 +188,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
           <div className="min-w-0">
             <h2 className="text-[13px] font-semibold leading-tight text-white">Montar com IA</h2>
             <p className="truncate text-[10px] leading-tight text-gray-500">
-              {conversationId ? 'Conversa em andamento' : 'Descreva o que quer ver'}
+              {focus ? 'Ajustando um widget' : conversationId ? 'Conversa em andamento' : 'Descreva o que quer ver'}
             </p>
           </div>
         </div>
@@ -221,8 +251,45 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
         conversationActive={!!conversationId || turns.length > 0}
       />
 
+      {focus && (
+        <div className="shrink-0 border-b border-app-border bg-brand-cyan/5 px-4 py-2.5">
+          <div className="flex items-start gap-2">
+            <Wand2 size={13} className="mt-0.5 shrink-0 text-brand-cyan" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-semibold text-gray-100">
+                Ajustando: <span className="text-brand-cyan">“{focus.title}”</span>
+              </p>
+              <p className="text-[10px] leading-snug text-gray-500">O que você pedir muda este widget, no mesmo lugar da guia — e dá para desfazer.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setFocus(key, null); setFocusError(null) }}
+              aria-label="Parar de ajustar este widget"
+              title="Parar de ajustar este widget — volta a pedir widgets novos"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-gray-500 hover:bg-app-surface hover:text-gray-200"
+            >
+              <X size={12} />
+            </button>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {FOCUS_SUGGESTIONS.map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => { setInput(s); inputRef.current?.focus() }}
+                disabled={busy || overBudget}
+                className="rounded-md border border-app-border/70 bg-app-card px-2 py-1 text-left text-[10px] leading-snug text-gray-300 transition-colors hover:border-brand-cyan/40 hover:text-gray-100 disabled:opacity-40"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+          {focusError && <p className="mt-2 flex items-start gap-1.5 text-[10px] text-risk-critical"><AlertTriangle size={11} className="mt-px shrink-0" /> {focusError}</p>}
+        </div>
+      )}
+
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
-        {turns.length === 0 && (
+        {turns.length === 0 && !focus && (
           <div className="space-y-3 pt-1">
             <p className="text-[12px] font-semibold text-gray-100">2. Descreva o que você quer ver</p>
             <p className="text-[11px] leading-relaxed text-gray-400">
@@ -256,7 +323,8 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
             {turn.role === 'user' ? (
               <div className="flex max-w-[85%] flex-col items-end gap-0.5">
                 <p className="rounded-xl rounded-br-sm bg-brand-blue/15 px-3 py-2 text-[11px] text-gray-100">{turn.text}</p>
-                {turn.options && <span className="text-[9px] text-gray-500">{optionsSummary(turn.options)}</span>}
+                {turn.focusTitle && <span className="flex items-center gap-1 text-[9px] text-brand-cyan"><Wand2 size={9} /> Ajuste em “{turn.focusTitle}”</span>}
+                {turn.options && !turn.focusTitle && <span className="text-[9px] text-gray-500">{optionsSummary(turn.options)}</span>}
               </div>
             ) : (
               <>
@@ -285,7 +353,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
         )}
       </div>
 
-      {turns.length > 0 && (
+      {turns.length > 0 && !focus && (
         <AiRequestOptionsPicker value={chat.options} onChange={(o) => setOptions(key, o)} compact />
       )}
 
@@ -302,6 +370,7 @@ export function AiPanel({ folderId, dashboardId, initialPrompt, dashboardMeasure
           disabled={!canChat || busy || overBudget}
           placeholder={
             overBudget ? 'Limite de uso de IA de hoje atingido.'
+              : canChat && focus ? `O que mudar em “${focus.title}”? (Enter envia)`
               : canChat ? 'O que você quer ver? (Enter envia, Shift+Enter quebra linha)'
                 : 'Marque pelo menos uma fonte acima para começar.'
           }

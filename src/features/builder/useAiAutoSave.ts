@@ -2,7 +2,8 @@
 // medidas que ela criou ou ajustou são gravadas primeiro (os widgets podem
 // usá-las) e depois os widgets, na guia do pedido (ver resolveAiTargetTab no
 // DashboardBuilder). Antes era preciso aprovar cartão por cartão e ainda
-// clicar em "Salvar".
+// clicar em "Salvar". Um ajuste num widget que já existe ("Ajustar com IA",
+// update_widget) troca a configuração dele no mesmo lugar da guia.
 //
 // Cada gravação leva SÓ o que a IA entregou: o rascunho que a pessoa ainda não
 // salvou (um widget arrastado, um filtro novo) continua rascunho. É o mesmo
@@ -10,8 +11,8 @@
 // `rev` da guia) e as medidas uma a uma (saveDashboardMeasures).
 //
 // Cada resposta salva tem "Desfazer" no painel — tira os widgets, as medidas
-// novas, volta as medidas ajustadas como estavam, e remove a guia que nasceu
-// pra elas se ela ficar vazia.
+// novas, volta as medidas e os widgets ajustados como estavam, e remove a guia
+// que nasceu pra elas se ela ficar vazia.
 import { useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from 'react'
 import {
   saveDashboardFull, saveDashboardMeasures, saveTabWidgets, ApiError,
@@ -181,6 +182,36 @@ export function useAiAutoSave({
         result.widgetIds = placed.map((w) => w.id)
         setActiveTabId(target.id)
       }
+
+      // 3. Ajuste num widget que já existia ("Ajustar com IA"): troca a
+      // configuração no MESMO lugar da guia — só largura/altura podem mudar —
+      // e guarda como ele estava, pro Desfazer.
+      const updates = turn.widgetUpdates ?? []
+      if (updates.length && !result.previousWidgets) {
+        const { dashboard: d, savedDashboard: s } = snapshot()
+        if (!d || !s) throw new Error('A dashboard ainda está carregando.')
+        const ids = new Set(updates.map((u) => u.widgetId))
+        const target = d.tabs.find((t) => t.id === turn.tabId && t.widgets.some((w) => ids.has(w.id)))
+          ?? d.tabs.find((t) => t.widgets.some((w) => ids.has(w.id)))
+        if (!target) throw new Error('O widget ajustado não está mais na dashboard.')
+        const lock = otherLock(target.id)
+        if (lock) throw new Error(`A guia "${target.label}" está sendo editada por ${lock.self ? 'você, em outra janela' : lock.name} agora.`)
+        const savedTab = s.tabs.find((t) => t.id === target.id)
+        const previous = updates
+          .map((u) => savedTab?.widgets.find((w) => w.id === u.widgetId) ?? target.widgets.find((w) => w.id === u.widgetId))
+          .filter((w): w is NonNullable<typeof w> => !!w)
+        if (previous.length !== updates.length) throw new Error('O widget ajustado foi removido da guia.')
+        const byId = new Map(updates.map((u) => [u.widgetId, u.widget]))
+        await commitTab(target.id, (t) => ({
+          ...t,
+          widgets: t.widgets.map((w) => {
+            const next = byId.get(w.id)
+            return next ? { ...next, id: w.id, layout: { ...w.layout, w: next.layout?.w ?? w.layout.w, h: next.layout?.h ?? w.layout.h } } : w
+          }),
+        }))
+        result.updatedTabId = target.id
+        result.previousWidgets = previous
+      }
       setAuto(chatKey, turnIndex, { ...result, state: 'saved' })
     } catch (e) {
       setAuto(chatKey, turnIndex, { ...result, state: 'failed', error: errorText(e) })
@@ -200,6 +231,14 @@ export function useAiAutoSave({
         const { savedDashboard: s } = snapshot()
         if (s?.tabs.some((t) => t.id === auto.tabId)) {
           await commitTab(auto.tabId, (t) => ({ ...t, widgets: t.widgets.filter((w) => !ids.has(w.id)) }))
+        }
+      }
+      // Widget ajustado volta a ser o de antes (se ainda estiver na guia).
+      if (auto.updatedTabId && auto.previousWidgets?.length) {
+        const before = new Map(auto.previousWidgets.map((w) => [w.id, w]))
+        const { savedDashboard: s } = snapshot()
+        if (s?.tabs.some((t) => t.id === auto.updatedTabId)) {
+          await commitTab(auto.updatedTabId, (t) => ({ ...t, widgets: t.widgets.map((w) => before.get(w.id) ?? w) }))
         }
       }
       if (auto.measureIds?.length || auto.previousMeasures?.length) {
@@ -225,7 +264,7 @@ export function useAiAutoSave({
       const turns = useAiChatStore.getState().chats[chatKey]?.turns ?? []
       turns.forEach((t, i) => {
         if (t.role !== 'assistant' || !t.autoSave || t.auto || t.streaming || t.interrupted) return
-        if (!t.proposal && !t.measureProposal && !t.measureUpdateProposal) return
+        if (!t.proposal && !t.measureProposal && !t.measureUpdateProposal && !t.widgetUpdates?.length) return
         if (running.current.has(i)) return
         running.current.add(i)
         void saveRef.current(i).finally(() => running.current.delete(i))

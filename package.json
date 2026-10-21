@@ -12,7 +12,7 @@
     "//api": "`api` recarrega ao salvar qualquer arquivo de server/ ou scripts/. NÃO recarrega ao mudar o .env (o arquivo não está no grafo de módulos; --include não resolve) — depois de editar o .env, reinicie na mão. `api:once` é o modo sem watch, igual ao que o container roda.",
     "fetch:install": "node scripts/fetch-install.mjs",
     "test:ai": "tsx scripts/test-ai-providers.mjs",
-    "//test:ai": "Verifica os adaptadores de provedor de IA (Anthropic/OpenAI/Gemini) contra um servidor de mentira que fala o protocolo de cada um: traducao de ida, normalizacao de volta, validacao da config, mascara da credencial e as preferencias do pedido (nivel de personalizacao e o que entregar). Nao usa chave real e nao gasta nada.",
+    "//test:ai": "Verifica os adaptadores de provedor de IA (Anthropic/OpenAI/Gemini) contra um servidor de mentira que fala o protocolo de cada um: traducao de ida, normalizacao de volta, validacao da config, mascara da credencial as preferencias do pedido (nivel de personalizacao e o que entregar) e o ajuste de um widget existente (update_widget: muda so o que veio, mantem formatacao e posicao, valida contra o catalogo). Nao usa chave real e nao gasta nada.",
     "test:click": "tsx scripts/test-click-filter.mjs",
     "//test:click": "Logica do filtro por clique (src/features/builder/clickFilter.ts): do clique para condicoes (valor, nivel de data como periodo, campo de outra fonte, chave composta), selecao com e sem Ctrl, filtros de guia que cada widget recebe (o de origem nunca se filtra), o que fica aceso e o texto do balao. Que o filtro da o mesmo numero da barra clicada, nos dois modos, esta no test:direct. Sem rede e sem servidor.",
     "test:auth": "tsx scripts/test-auth.mjs",

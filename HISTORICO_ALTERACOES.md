@@ -4,6 +4,23 @@
 
 ---
 
+## 21/10/2026 — "Ajustar com IA" em cada widget, e o editor mostra tudo que a IA preenche (vários filtros fixos, ordenação, paleta)
+
+Pedido (com print do "Como foi calculado" de uma pizza): a IA montou uma pizza e umas barras praticamente iguais, mas a pizza dava 79 e as barras 80 — a pizza tinha um filtro fixo "Status igual a Encerrado" que as barras não tinham. Pedidos: (1) um botão para pedir à IA que ajuste, modifique ou melhore um widget específico, como o botão da leitura por IA; (2) os widgets que a IA monta devem vir com os campos preenchidos para o cliente alterar como quiser; (3) no meio do trabalho: poder pôr quantos filtros fixos o cliente quiser no widget, não só um.
+
+**Por que o filtro não aparecia**: o editor de widget só mostrava o **primeiro** filtro fixo (`widgetFilters[0]`). A pizza tinha dois (Tipo de Solicitação e Status); o segundo, o que fazia a diferença, ficava invisível — e mexer no primeiro gravava só ele, apagando o segundo sem aviso. Comparando campo a campo o que a IA preenche (`WIDGET_SCHEMA`) com o que o editor mostra, faltavam também a **ordenação** (`sort`) e a **paleta de cores** (`palette`).
+
+- **Ajustar com IA** (botão de varinha no cabeçalho do widget, para quem pode editar a guia): abre a conversa com o widget escolhido (`aiChatStore.focus`, faixa "Ajustando: *título*" com sugestões). Cada pedido vai com a configuração atual do widget e a dos outros da guia, só para comparar (`target` na rota; `sanitizeTarget`/`targetText` em `aiAssistant.mjs`). Ferramenta nova `update_widget`: só o que muda (`changes`) e o que sai (`remove`), aplicado por `applyWidgetPatch` (`aiWidgetSchema.mjs`) — o resto do widget passa intacto (formatação, leitura fixada, posição), id e lugar na guia ficam, campo que o widget já usava vale mesmo fora do catálogo (fonte relacionada). Entra salvo como o resto da IA (`useAiAutoSave`: troca o widget no lugar), com **Desfazer** que devolve o widget como era; o cartão mostra "widget ajustado" e o que mudou.
+- **Prevenção**: as instruções da IA e a descrição de `widgetFilters` dizem para só filtrar quando o pedido pede aquele recorte, usar o mesmo filtro nos widgets do mesmo assunto e dizer o recorte no subtítulo.
+- **Vários filtros fixos** (`WidgetFiltersEditor.tsx`, novo): uma lista, cada filtro com campo, regra ("está em"/"não está em") e valores, todos valendo juntos; "+" acrescenta, "×" tira só aquele; busca quando há muitos valores; campo de fonte relacionada busca os valores na fonte dele; aviso quando "está em" fica sem valor (não deixaria passar nada).
+- **Ordenação** (Modificadores, gráficos com categoria) e **Paleta de cores** (Formato; `PaletteEditor.tsx`, novo): o que o motor já aceitava e a IA já preenchia, agora com controle no editor.
+- Documentação: DOCUMENTACAO 3.3 (Modificadores e Paleta) e 3.7-quater (Ajustar com IA, mesmo recorte), README (trava nova e contagem do `test:ai`).
+
+Verificado: `npm run test:ai` 95/95 (12 novos: tirar um filtro entre dois, `remove`, troca de tipo com a medida certa, campo inventado recusado, tipo/título/fonte não saem, largura muda e posição não, o resto do widget intacto, campo de fonte relacionada aceito só se já usado, e o que vai da guia para comparar). Os demais testes seguem passando, e o `tsc` não aponta erros. No navegador, numa cópia local com dados fictícios e uma IA falsa em 127.0.0.1, montei o caso relatado — pizza por tipo com dois filtros fixos e barras por tipo sem filtro (834/796/232/192):
+- **Ajustar com IA na pizza**: abriu o painel com "Ajustando: Protocolos por tipo". A IA recebeu a pizza com os dois filtros e as barras para comparar, e tirou os filtros. O servidor gravou a pizza sem filtros, com a mesma paleta e o mesmo lugar, e o subtítulo novo. Ela passou a dar 834/796/232/192, igual às barras.
+- **Desfazer**: devolveu a pizza com os dois filtros e o subtítulo antigo.
+- **Editor da pizza**: mostrou os dois filtros. Acrescentei um terceiro (SLA = No prazo) e uma quinta cor na paleta; ao salvar, o servidor gravou os três filtros e as cinco cores.
+
 ## 20/10/2026 — Filtro por clique: clicar num item filtra a guia inteira
 
 Pedido: ler a Agenda do Dia (dev_ReactJS_schedule_dashboard) e trazer o filtro por clique dela — clicar na linha com o nome de uma pessoa numa tabela e a página inteira passar a filtrar por ela, e assim com colunas, linhas, nomes e eixos. Na dashboard a mesma tabela costuma servir a várias coisas; as dificuldades apontadas eram cálculos, medidas e relacionamento entre tabelas.

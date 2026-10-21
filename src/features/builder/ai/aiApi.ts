@@ -43,6 +43,8 @@ export type AiEvent =
   | { type: 'widgets'; widgets: WidgetConfig[]; summary: string }
   | { type: 'measures'; measures: MeasureDef[]; summary: string }
   | { type: 'measureUpdates'; measures: MeasureDef[]; summary: string }
+  // "Ajustar com IA": o widget escolhido, já com o ajuste (mesmo id e lugar).
+  | { type: 'widgetUpdate'; widgetId: string; widget: WidgetConfig; summary: string }
   | { type: 'done'; usd: number; usage: AiStatus }
   | { type: 'error'; message: string }
 
@@ -106,12 +108,19 @@ export interface AiRequestOptions {
 }
 export const DEFAULT_AI_OPTIONS: AiRequestOptions = { personalization: 'medium', deliver: null }
 
+// "Ajustar com IA" num widget: ele como está agora, e os outros da mesma guia
+// (só para a IA comparar — ver targetText em server/aiAssistant.mjs).
+export interface AiTarget {
+  widget: WidgetConfig
+  others: Partial<WidgetConfig>[]
+}
+
 // `sourceKeys`: as fontes marcadas agora no painel — a pessoa pode pôr ou tirar
 // fonte no meio da conversa, e vale a partir desta mensagem. `options`: as
-// preferências deste pedido.
-export async function* streamAiTurn(conversationId: string, text: string, dashboardMeasures: MeasureDef[] = [], sourceKeys?: string[], options?: AiRequestOptions): AsyncGenerator<AiEvent> {
+// preferências deste pedido. `target`: o widget escolhido, se houver.
+export async function* streamAiTurn(conversationId: string, text: string, dashboardMeasures: MeasureDef[] = [], sourceKeys?: string[], options?: AiRequestOptions, target?: AiTarget): AsyncGenerator<AiEvent> {
   const res = await apiFetch(`/api/ai/conversations/${encodeURIComponent(conversationId)}/messages`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dashboardMeasures, sourceKeys, options }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, dashboardMeasures, sourceKeys, options, target }),
   })
   // Erro antes do stream começar (400/403/503) vem como JSON normal.
   if (!res.ok || !res.body) {

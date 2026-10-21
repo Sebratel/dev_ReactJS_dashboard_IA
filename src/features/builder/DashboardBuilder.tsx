@@ -30,9 +30,10 @@ import { useAiAutoSave } from './useAiAutoSave'
 import { WelcomePanel } from './WelcomePanel'
 import { isStockWelcomeWidget } from './defaultConfig'
 import { useAuthStore } from '@/store/authStore'
-import { chatKey } from './ai/aiChatStore'
+import { chatKey, useAiChatStore, type AiFocus } from './ai/aiChatStore'
+import type { AiTarget } from './ai/aiApi'
 import { TabLockBanner, TabLockChip, TabLockIcon } from './TabLockNotice'
-import { registerDynamicSources } from './fieldCatalog'
+import { getAllSources, registerDynamicSources } from './fieldCatalog'
 import { WidgetRenderer } from './WidgetRenderer'
 import { FilterBar } from './FilterBar'
 import { ClickFilterBar } from './ClickFilterBar'
@@ -126,6 +127,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
   // resolveAiTargetTab).
   const askAi = (prompt: string) => {
     refreshSources().then(() => {
+      useAiChatStore.getState().setFocus(chatKey(folderId, dashboardId), null)
       setEditMode(true)
       setAiInitialPrompt(prompt)
       setAiPanelOpen(true)
@@ -467,6 +469,35 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
 
   const tabLabel = (tabId: string | undefined) => dashboard?.tabs.find((t) => t.id === tabId)?.label ?? null
 
+  // "Ajustar com IA" num widget: abre a conversa já com ele escolhido (ver
+  // AiPanel), no modo edição como o resto da IA. A fonte do widget entra nas
+  // fontes da conversa — sem ela, a IA não teria os campos para ajustá-lo.
+  const adjustWithAi = (w: WidgetConfig) => {
+    if (!tab) return
+    const key = chatKey(folderId, dashboardId)
+    const tabId = tab.id
+    refreshSources().then(() => {
+      const store = useAiChatStore.getState()
+      const current = store.chats[key]?.sourceKeys ?? []
+      if (w.source && !current.includes(w.source) && getAllSources().some((s) => s.key === w.source)) {
+        store.setSources(key, [...current, w.source])
+      }
+      store.setFocus(key, { widgetId: w.id, tabId, title: w.title || 'Widget sem título' })
+      setEditMode(true)
+      setAiInitialPrompt(undefined)
+      setAiPanelOpen(true)
+    })
+  }
+
+  // O widget escolhido como está AGORA na tela (com o rascunho), e os outros
+  // da mesma guia, para a IA comparar — ver targetText em server/aiAssistant.mjs.
+  const resolveFocusTarget = (focus: AiFocus): AiTarget | null => {
+    const home = dashboard?.tabs.find((t) => t.widgets.some((w) => w.id === focus.widgetId))
+    const widget = home?.widgets.find((w) => w.id === focus.widgetId)
+    if (!home || !widget) return null
+    return { widget, others: home.widgets.filter((w) => w.id !== widget.id) }
+  }
+
   const onLayoutChange = (layout: Layout) => {
     if (!tabEditable) return
     updateTab((t) => ({
@@ -733,7 +764,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                       nesta guia pode pedir pra IA montar. Na guia de
                       boas-vindas, cada pedido abre uma guia nova na hora do
                       envio (resolveAiTargetTab) — por isso não sai dela aqui. */}
-                  <button onClick={() => { refreshSources().then(() => setAiPanelOpen(true)) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
+                  <button onClick={() => { refreshSources().then(() => { useAiChatStore.getState().setFocus(chatKey(folderId, dashboardId), null); setAiPanelOpen(true) }) }} className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-brand-cyan/30 text-[11px] font-semibold text-brand-cyan hover:bg-brand-cyan/10" title="Montar widgets conversando com a IA"><Sparkles size={11} /> IA</button>
                 </>
               )}
               {canManageDashboard && (
@@ -876,6 +907,8 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
                       onDuplicate={() => duplicateWidget(w)}
                       onColumnWidthsChange={(columnWidths) => patchWidget(w.id, { tableFormat: { ...w.tableFormat, columnWidths } })}
                       onPinInsight={(insight) => patchWidget(w.id, { insight })}
+                      // Quem pode editar esta guia agora (e não com o editor aberto neste widget).
+                      onAdjustWithAi={canEditCurrentTab && !(widgetModal.open && previewWidget?.id === w.id) ? () => adjustWithAi(w) : undefined}
                     />
                   </div>
                 ))}
@@ -966,6 +999,7 @@ export function DashboardBuilder({ folderId, dashboardId }: { folderId: string; 
           initialPrompt={aiInitialPrompt}
           dashboardMeasures={dashboard?.measures ?? []}
           resolveTargetTab={resolveAiTargetTab}
+          resolveFocusTarget={resolveFocusTarget}
           tabLabel={tabLabel}
           onSaveTurn={aiSave.saveTurn}
           onUndoTurn={aiSave.undoTurn}

@@ -258,7 +258,7 @@ export const WIDGET_SCHEMA = {
     measureX: { ...measureSchema, description: 'Só em scatter: a medida do eixo X.' },
     widgetFilters: {
       type: 'array',
-      description: 'Filtro fixo do widget. Use field_values antes para conferir a grafia exata dos valores.',
+      description: 'Filtro fixo do widget. Use field_values antes para conferir a grafia exata dos valores. Só filtre quando o pedido pedir esse recorte (ou ele for indispensável) — e então diga o recorte no subtitle (ex. "Só protocolos encerrados") e use o MESMO filtro nos outros widgets do mesmo assunto: dois gráficos da mesma coisa, um com filtro e outro sem, mostram números diferentes e parecem errados.',
       items: {
         type: 'object', additionalProperties: false,
         properties: {
@@ -342,6 +342,92 @@ export const PROPOSE_TOOL_SCHEMA = {
   required: ['widgets', 'summary'],
 }
 
+// ─── Ajustar UM widget que já existe (botão "Ajustar com IA") ────────────
+// O modelo manda só o que muda (`changes`) e o que sai (`remove`); o resto do
+// widget fica como está — inclusive o que o schema nem descreve (posição,
+// leitura fixada, larguras de coluna). Um patch, e não o widget inteiro de
+// novo, porque copiar 40 campos de formatação a cada ajuste é onde o modelo
+// esquece um e apaga a personalização da pessoa sem ninguém pedir.
+const NOT_REMOVABLE = new Set(['type', 'title', 'source', 'w', 'h'])
+export const REMOVABLE_WIDGET_FIELDS = Object.keys(WIDGET_SCHEMA.properties).filter((k) => !NOT_REMOVABLE.has(k))
+
+const { required: _widgetRequired, ...WIDGET_PATCH_SCHEMA } = WIDGET_SCHEMA
+
+export const UPDATE_WIDGET_TOOL_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    changes: {
+      ...WIDGET_PATCH_SCHEMA,
+      description: 'Só os campos que mudam, cada um com o valor novo COMPLETO — uma lista (widgetFilters, measures, columns, conditionalRules…) vai inteira: o que fica mais o que entra. Campos ausentes continuam como estão.',
+    },
+    remove: {
+      type: 'array', items: { type: 'string', enum: REMOVABLE_WIDGET_FIELDS },
+      description: 'Campos a TIRAR do widget (ex. ["widgetFilters"] para tirar todos os filtros fixos, ["legendDimension"], ["target"]). Para tirar só um filtro entre vários, mande widgetFilters em `changes` sem ele.',
+    },
+    summary: { type: 'string', description: 'Uma frase dizendo à pessoa o que mudou e por quê.' },
+  },
+  required: ['summary'],
+}
+
+// Aplica um ajuste (`update_widget`) ao widget atual: junta `changes`, tira o
+// que está em `remove`, valida e normaliza. O widget mantém o id e o lugar na
+// guia — só largura/altura mudam, se vierem. O que não está no schema (a
+// leitura fixada, larguras de coluna, a posição) passa intacto.
+// → { widget } ou { errors: [...] }.
+export function applyWidgetPatch(current, input, sources) {
+  const changes = input?.changes && typeof input.changes === 'object' ? input.changes : {}
+  const remove = (Array.isArray(input?.remove) ? input.remove : []).filter((k) => REMOVABLE_WIDGET_FIELDS.includes(k))
+  const { w, h, ...fieldChanges } = changes
+  if (!Object.keys(fieldChanges).length && !remove.length && w == null && h == null) {
+    return { errors: ['Nada a mudar: informe o que muda em `changes` e/ou o que sai em `remove`.'] }
+  }
+  const merged = { ...current, ...fieldChanges }
+  for (const k of remove) delete merged[k]
+  // O que o widget já usava vale (pode ser campo de fonte relacionada, que não
+  // está no catálogo); o que entra de novo tem de estar no catálogo.
+  const errors = validateWidget(merged, sources, { knownFields: fieldsUsedBy(current) })
+  if (errors.length) return { errors }
+  // normalizeWidget dá id às regras de alerta novas; o id e a posição do
+  // widget ficam os de antes.
+  const { id: _newId, layout: _newLayout, ...normalized } = normalizeWidget({ ...merged, w, h })
+  const old = current.layout ?? { x: 0, y: 0, w: 12, h: 10 }
+  return {
+    widget: {
+      ...normalized,
+      id: current.id,
+      layout: {
+        ...old,
+        ...(w != null ? { w: Math.min(24, Math.max(4, Number(w) || old.w)) } : {}),
+        ...(h != null ? { h: Math.max(6, Number(h) || old.h) } : {}),
+      },
+    },
+  }
+}
+
+// Os campos que um widget usa (base, sem o nível de data) — num ajuste, o que
+// ele JÁ usava vale mesmo que não esteja no catálogo da conversa (ex. um
+// campo de fonte relacionada, "fonte.campo", posto à mão no editor).
+export function fieldsUsedBy(widget) {
+  const w = widget ?? {}
+  const out = new Set()
+  const add = (raw) => { const f = baseField(raw); if (f) out.add(f) }
+  const addMeasure = (m) => { if (m?.field) add(m.field) }
+  for (const d of w.dimensions ?? []) add(d)
+  if (w.legendDimension) add(w.legendDimension)
+  for (const f of w.widgetFilters ?? []) add(f?.field)
+  addMeasure(w.measure)
+  for (const m of w.measures ?? []) addMeasure(m)
+  for (const m of w.measuresLine ?? []) addMeasure(m)
+  addMeasure(w.measureX)
+  addMeasure(w.matrixValue)
+  for (const c of w.columns ?? []) add(c)
+  for (const r of w.matrixRows ?? []) add(r)
+  for (const c of w.matrixColumns ?? []) add(c)
+  if (w.histogramField) add(w.histogramField)
+  return out
+}
+
 // Uma dimensão pode vir como 'year:campo'/'quarter:campo'/'month:campo'/
 // 'day:campo' (bucket de data — Hierarquia de datas) — o campo real é o que
 // vem depois dos dois-pontos. Espelha BUCKET_RE/dimensionKeyFn em server/widgetQuery.mjs.
@@ -356,7 +442,9 @@ function baseField(dimension) {
 // devolve. Só as fontes que o usuário selecionou pra conversa entram aqui,
 // então isto também é a barreira de acesso: um `source` fora da lista é
 // recusado, não importa o que o modelo tenha pedido.
-export function validateWidget(widget, sources) {
+// `knownFields`: campos aceitos além dos da fonte — num ajuste, os que o
+// widget já usava (ver fieldsUsedBy).
+export function validateWidget(widget, sources, { knownFields } = {}) {
   const errors = []
   const w = widget ?? {}
   const type = w.type
@@ -383,7 +471,7 @@ export function validateWidget(widget, sources) {
   const requireField = (raw, where) => {
     const field = baseField(raw)
     if (!field) { errors.push(`${where}: campo vazio.`); return }
-    if (!fieldKeys.has(field)) {
+    if (!fieldKeys.has(field) && !knownFields?.has(field)) {
       errors.push(`${where}: a fonte "${source.key}" não tem o campo "${field}".`)
     }
   }

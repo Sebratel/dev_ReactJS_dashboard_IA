@@ -2,7 +2,7 @@
 // filtros da aba). Tipos de visual: kpi, bar, barH, barStacked, barHStacked,
 // comboBarLine, line, area, pie, scatter, funnel, table, matrix.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react'
+import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown, Wand2 } from 'lucide-react'
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, ComposedChart,
   ScatterChart, Scatter, FunnelChart, Funnel, LabelList, ReferenceLine,
@@ -21,7 +21,9 @@ import { MATRIX_LABEL_SORT_KEY, MATRIX_ROW_SEP, MATRIX_TOTAL_SORT_KEY } from './
 import type { ClickCond } from './clickFilter'
 import { useWidgetClick, type ClickEvent, type WidgetClick } from './useClickFilter'
 
-const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
+// A paleta do app — a que vale quando o widget não tem `palette` própria. O
+// editor (PaletteEditor) parte dela ao personalizar.
+export const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
 
 // Cor padrão dos rótulos de eixo. Antes eram dois hexadecimais fixos (#9ca3af e
 // #6b7280) escolhidos olhando só o tema escuro: no claro ficavam lavados sobre o
@@ -530,10 +532,14 @@ interface WidgetRendererProps {
   // Filtro por clique (ver clickFilter.ts): só fora do modo edição, onde o
   // clique é de arrastar e redimensionar.
   clickable?: boolean
+  // "Ajustar com IA" neste widget (ver ChartFrame) — ausente = sem o botão.
+  onAdjustWithAi?: () => void
 }
 
-function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit, onRemove, onDuplicate, onPinInsight, cardEffect, children }: {
+function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit, onRemove, onDuplicate, onPinInsight, onAdjustWithAi, cardEffect, children }: {
   widget: WidgetConfig; editMode: boolean; onEdit?: () => void; onRemove?: () => void; onDuplicate?: () => void
+  // "Ajustar com IA" — só para quem pode editar a guia (ver DashboardBuilder).
+  onAdjustWithAi?: () => void
   tabFilters: { filter: FilterConfig; values: string[] }[]
   relations: TabRelation[]
   // Recorte do resultado que serve de impressão digital pra saber se uma
@@ -631,6 +637,18 @@ function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit
               widget={widget} tabFilters={tabFilters} relations={relations} points={dataShape} editMode={editMode} onPin={onPinInsight}
               iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined}
             />
+            {onAdjustWithAi && (
+              <button
+                type="button"
+                onClick={onAdjustWithAi}
+                style={iconStyle}
+                aria-label="Ajustar com IA"
+                title="Ajustar com IA — peça para a IA mudar este widget (filtros, tipo, campos, aparência)"
+                className={cn('h-6 w-6 flex items-center justify-center rounded-md hover:text-brand-cyan hover:bg-brand-cyan/10', !widget.iconColor && 'text-gray-500')}
+              >
+                <Wand2 size={11} />
+              </button>
+            )}
             <WidgetCommentsPopover widgetId={widget.id} iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined} />
           </div>
           {editMode && (
@@ -1530,7 +1548,7 @@ function TextBody({ content }: { content?: string }) {
 }
 
 // ─── Componente principal ────────────────────────────────────────
-export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasures, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight, clickable }: WidgetRendererProps) {
+export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasures, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight, clickable, onAdjustWithAi }: WidgetRendererProps) {
   const click = useWidgetClick(widget, relations, !!clickable)
   const [data, setData] = useState<WidgetDataResponse | null>(null)
   const [loading, setLoading] = useState(true)
@@ -1683,7 +1701,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
   return (
     <ChartFrame
       widget={widget} tabFilters={tabFilters} relations={relations} dataShape={dataShape} editMode={editMode}
-      onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} onPinInsight={onPinInsight} cardEffect={cardEffect}
+      onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} onPinInsight={onPinInsight} onAdjustWithAi={onAdjustWithAi} cardEffect={cardEffect}
     >
       {body}
     </ChartFrame>

@@ -411,6 +411,51 @@ console.log('\n── Retomada de conversa ──')
     'com a entrega restrita, o texto do prompt mantém as medidas liberadas')
 }
 
+// ─── "Ajustar com IA" num widget (update_widget) ──────────────────────
+// server/aiWidgetSchema.mjs › applyWidgetPatch: o ajuste muda só o que veio,
+// mantém o resto (formatação, leitura fixada, posição), valida contra o
+// catálogo e aceita o que o widget já usava (campo de fonte relacionada).
+// O caso que motivou: uma pizza com dois filtros fixos, um deles escondido.
+{
+  console.log('\n── Ajustar com IA (update_widget) ──')
+  const s = await import(mod('aiWidgetSchema.mjs'))
+  const a = await import(mod('aiAssistant.mjs'))
+  const P = 'dhub:prot'
+  const B = 'dhub:bases'
+  const sources = [{ key: P, label: 'Protocolos', fields: ['Solução', 'Tipo', 'Status', 'Cidade'].map((key) => ({ key, kind: 'dimension' })).concat([{ key: 'Valor', kind: 'number' }]) }]
+  const pizza = {
+    id: 'w-pizza', type: 'pie', title: 'Percentual por Parecer', subtitle: 'Participação de cada parecer', source: P,
+    dimensions: ['Solução'], measure: { agg: 'count' },
+    widgetFilters: [{ field: 'Tipo', op: 'in', values: ['Viabilidade'] }, { field: 'Status', op: 'in', values: ['Encerrado'] }],
+    palette: ['#111111', '#222222', '#333333'], titleFormat: { fontSize: 16 },
+    insight: { text: 'leitura fixada' }, layout: { x: 6, y: 4, w: 8, h: 10 },
+  }
+  const semStatus = s.applyWidgetPatch(pizza, { changes: { widgetFilters: [pizza.widgetFilters[0]] }, summary: 'tirei o filtro de Status' }, sources)
+  ok(semStatus.widget?.widgetFilters?.length === 1 && semStatus.widget.widgetFilters[0].field === 'Tipo', 'tira um filtro entre dois mandando a lista sem ele')
+  ok(semStatus.widget?.id === 'w-pizza' && JSON.stringify(semStatus.widget.layout) === JSON.stringify(pizza.layout), 'o widget mantém o id e o lugar na guia')
+  ok(JSON.stringify(semStatus.widget?.palette) === JSON.stringify(pizza.palette) && semStatus.widget?.titleFormat?.fontSize === 16
+    && semStatus.widget?.insight?.text === 'leitura fixada' && semStatus.widget?.subtitle === pizza.subtitle,
+  'o resto fica como estava: paleta, formatação, leitura fixada, subtítulo')
+  const semFiltros = s.applyWidgetPatch(pizza, { remove: ['widgetFilters'], summary: 'sem filtro' }, sources)
+  ok(semFiltros.widget && !('widgetFilters' in semFiltros.widget) && semFiltros.widget.dimensions[0] === 'Solução', '`remove` tira o campo inteiro e só ele')
+  const virouBarra = s.applyWidgetPatch(pizza, { changes: { type: 'bar', measures: [{ agg: 'count' }] }, remove: ['measure'], summary: 'barras' }, sources)
+  ok(virouBarra.widget?.type === 'bar' && virouBarra.widget.measures?.length === 1 && !virouBarra.widget.measure, 'troca o tipo de gráfico com a medida no formato certo')
+  const campoInventado = s.applyWidgetPatch(pizza, { changes: { dimensions: ['Parecer técnico'] }, summary: 'x' }, sources)
+  ok(campoInventado.errors?.some((e) => /Parecer técnico/.test(e)), 'campo que não existe na fonte é recusado (a IA corrige)')
+  ok(s.applyWidgetPatch(pizza, { remove: ['type', 'title', 'source'], summary: 'x' }, sources).errors?.length === 1, 'tipo, título e fonte não saem por `remove` (e sem mais nada, "nada a mudar")')
+  const maior = s.applyWidgetPatch(pizza, { changes: { w: 12 }, summary: 'maior' }, sources)
+  ok(maior.widget?.layout.w === 12 && maior.widget.layout.x === 6 && maior.widget.layout.y === 4, 'largura muda; a posição não')
+  const comRelacao = { ...pizza, widgetFilters: [{ field: `${B}.Região`, op: 'in', values: ['Sul'] }] }
+  ok(!s.applyWidgetPatch(comRelacao, { changes: { title: 'Pareceres no Sul' }, summary: 'x' }, sources).errors,
+    'campo de fonte relacionada que o widget já usava continua aceito')
+  ok(!!s.applyWidgetPatch(comRelacao, { changes: { dimensions: [`${B}.Cidade`] }, summary: 'x' }, sources).errors,
+    'mas um campo de fora do catálogo que ele não usava é recusado')
+  const alvo = a.sanitizeTarget({ widget: pizza, others: [pizza, { id: 'w-barras', type: 'bar', title: 'Barras', palette: ['#000000'], segredo: 'x' }, 'lixo'] })
+  ok(alvo?.others.length === 1 && alvo.others[0].id === 'w-barras' && !('palette' in alvo.others[0]) && !('segredo' in alvo.others[0]),
+    'os outros widgets vão sem o escolhido e só com o que importa para comparar')
+  ok(a.sanitizeTarget({ widget: { title: 'sem id' } }) === null && a.sanitizeTarget(null) === null, 'widget escolhido inválido: pedido comum')
+}
+
 server.close()
 // Limpa a configuração de teste — só a que ESTE processo criou (se alguém
 // passou AI_CONFIG_PATH de fora, o arquivo é dele).

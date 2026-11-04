@@ -31,6 +31,7 @@
 // entrega tem "Desfazer" no painel (ver useAiAutoSave.ts). Antes era preciso
 // aprovar cartão por cartão e ainda clicar em "Salvar".
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { randomUUID } from 'node:crypto'
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource } from './sheetSources.mjs'
@@ -688,7 +689,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       return finish()
     }
     if (turn.stopReason !== 'tool_use') {
-      console.log(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+      logger.info(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
       return finish()
     }
 
@@ -702,7 +703,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       } catch (e) {
         out = { isError: true, text: e.message }
       }
-      console.log(`[ai] ida ${iteration + 1}/${maxIterations} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
+      logger.info(`[ai] ida ${iteration + 1}/${maxIterations} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
       results.push({
         type: 'tool_result', tool_use_id: call.id, content: out.text,
         ...(out.isError ? { is_error: true } : {}),
@@ -715,7 +716,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
 
   // Estourou o orçamento. Se ele JÁ propôs algo, aquilo vale — o usuário
   // recebe os widgets em vez de perder o turno inteiro (e o dinheiro).
-  console.log(`[ai] orçamento de ${maxIterations} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+  logger.info(`[ai] orçamento de ${maxIterations} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
   if (ctx.proposed === 0) {
     emit({
       type: 'error',

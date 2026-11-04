@@ -13,6 +13,7 @@
 //
 // Bootstrap: se o snapshot ainda não existe, gera na hora.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from '../server/logger.mjs'
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -25,17 +26,17 @@ const BASE_INTERVAL_MINUTES = Math.max(1, Number(process.env.ETL_BASE_INTERVAL_M
 
 let running = false
 function runETL(reason) {
-  if (running) { console.log('[etl] já em execução — ignorando gatilho.'); return }
+  if (running) { logger.info('[etl] já em execução — ignorando gatilho.'); return }
   running = true
-  console.log(`[etl] iniciando ETL (${reason}) → ${OUT}`)
+  logger.info(`[etl] iniciando ETL (${reason}) → ${OUT}`)
   const child = spawn(process.execPath, [ETL], { stdio: 'inherit', env: process.env })
-  child.on('exit', (code) => { running = false; console.log(`[etl] finalizado (code ${code}) em ${new Date().toISOString()}`) })
-  child.on('error', (e) => { running = false; console.error(`[etl] falha ao iniciar: ${e.message}`) })
+  child.on('exit', (code) => { running = false; logger.info(`[etl] finalizado (code ${code}) em ${new Date().toISOString()}`) })
+  child.on('error', (e) => { running = false; logger.error(`[etl] falha ao iniciar: ${e.message}`) })
 }
 
 if (!existsSync(OUT)) runETL('bootstrap — snapshot ausente no volume')
 else if (process.env.ETL_RUN_ON_START === 'true') runETL('ETL_RUN_ON_START=true')
-else console.log(`[etl] snapshot existente: ${OUT} (sem execução imediata)`)
+else logger.info(`[etl] snapshot existente: ${OUT} (sem execução imediata)`)
 
 setInterval(() => runETL(`ciclo base (${BASE_INTERVAL_MINUTES}min)`), BASE_INTERVAL_MINUTES * 60_000)
-console.log(`[etl] scheduler ativo · ciclo base=${BASE_INTERVAL_MINUTES}min (o ritmo real de cada query depende do modo dela — ver Configurações)`)
+logger.info(`[etl] scheduler ativo · ciclo base=${BASE_INTERVAL_MINUTES}min (o ritmo real de cada query depende do modo dela — ver Configurações)`)

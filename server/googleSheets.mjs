@@ -1,3 +1,4 @@
+import { logger } from './logger.mjs'
 // ─────────────────────────────────────────────────────────────────────────
 // Leitura de planilhas do Google Sheets via API REST v4, usando o próprio
 // access_token OAuth do usuário logado (escopo spreadsheets.readonly, ver
@@ -21,7 +22,7 @@ async function googleFetch(url, accessToken) {
   let body = null
   try { body = await r.json() } catch { /* sem corpo JSON */ }
   const msg = body?.error?.message ?? ''
-  console.error('[google-sheets] erro da API:', r.status, msg || '(sem mensagem)')
+  logger.error('[google-sheets] erro da API:', r.status, msg || '(sem mensagem)')
   if (r.status === 401 || (r.status === 403 && /scope/i.test(msg))) {
     throw new Error('Sua sessão do Google ainda não tem permissão pra ler planilhas — saia e entre de novo pra conceder o novo acesso.')
   }

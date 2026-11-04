@@ -13,9 +13,10 @@
 // domínio restrito), adaptado para este projeto.
 // ─────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
+import { logger, requestLogger } from './logger.mjs'
 import express from 'express'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -54,6 +55,13 @@ import {
 } from './sessions.mjs'
 import { verifyFirebaseIdToken, firebaseProjectId } from './firebaseToken.mjs'
 
+// Versão da aplicação: a do package.json (a mesma da tag da imagem e do label no Portainer).
+// APP_VERSION do ambiente só vale se alguém sobrescrever de propósito (o Dockerfile.api a define a
+// partir do compose, que é conferido contra o package.json pelo CI).
+const APP_VERSION = process.env.APP_VERSION && process.env.APP_VERSION !== '0.0.0'
+  ? process.env.APP_VERSION
+  : JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf8')).version
+
 const PORT = Number(process.env.API_PORT) || 8788
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -86,22 +94,41 @@ const AUTH_DISABLED_NAME = process.env.AUTH_DISABLED_NAME || AUTH_DISABLED_EMAIL
 // premissa falsa. Então para na subida, dizendo o que corrigir, em vez de
 // atender pela metade.
 if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
-  console.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
+  logger.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
   process.exit(1)
 }
 
 const app = express()
+// requestId + um log JSON por requisição (skill observabilidade-backend). Primeiro da cadeia: mede tudo.
+app.use(requestLogger())
 app.use(express.json({ limit: '2mb' }))
 
+app.disable('x-powered-by')
+
+// CORS: só origens que a própria instalação autoriza. Em produção o navegador e a
+// API são da MESMA origem (o nginx do frontend faz o proxy de /api/), então nenhuma
+// origem cruzada é necessária e a lista fica vazia. Antes o servidor devolvia
+// QUALQUER Origin em Access-Control-Allow-Origin junto com Allow-Credentials:true —
+// o que autoriza, por definição, qualquer site a ler respostas autenticadas de quem
+// está logado. CORS_ORIGINS (separadas por vírgula) é só para quem serve o front em
+// outro endereço (ex.: https://painel.exemplo.com.br).
+const CORS_ORIGINS = new Set(
+  (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
+)
+
 app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Cache-Control', 'no-store')
   const origin = req.headers.origin
-  if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  // A sessão agora é um cookie, não um header Authorization — sem isto o
-  // navegador não envia o cookie em requisição de origem cruzada.
-  res.setHeader('Access-Control-Allow-Credentials', 'true')
+  if (origin && CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // A sessão é um cookie, não um header Authorization — sem isto o navegador
+    // não envia o cookie em requisição de origem cruzada.
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
@@ -229,7 +256,7 @@ app.post('/api/auth/session', async (req, res) => {
   } catch (e) {
     // Só cai aqui por falha de INFRAESTRUTURA (primeira busca dos certificados
     // sem rede). Token inválido devolve null, não exceção.
-    console.error(`[auth] não foi possível validar o token: ${e.message}`)
+    logger.error(`[auth] não foi possível validar o token: ${e.message}`)
     return res.status(503).json({ error: 'Não foi possível validar o login agora. Tente de novo em instantes.' })
   }
   if (!claims) return res.status(401).json({ error: 'Login inválido ou expirado. Entre novamente.' })
@@ -335,7 +362,7 @@ let etlRunning = false
 // então ele não enxerga a fonte que acabou de ser cadastrada/editada. Descartar
 // o pedido deixava essa fonte fora do snapshot até o próximo ciclo agendado —
 // 60 min por padrão, e em dev não há scheduler nenhum rodando (só o serviço
-// `etl` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
+// `scheduler` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
 // fonte, ela aparece em Configurações e as colunas não chegam em lugar nenhum".
 let etlPending = null
 // `forceIds`: fontes que o ciclo deve buscar mesmo fora da agenda — ações
@@ -350,7 +377,7 @@ function triggerEtlRefresh(reason, forceIds = []) {
       reason,
       forceIds: new Set([...(etlPending?.forceIds ?? []), ...forceIds]),
     }
-    console.log(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
+    logger.info(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
     return
   }
   etlRunning = true
@@ -372,13 +399,13 @@ function triggerEtlRefresh(reason, forceIds = []) {
     }
   }
   child.on('exit', done)
-  child.on('error', (e) => { console.error(`[etl] falha ao disparar: ${e.message}`); done() })
-  console.log(`[etl] atualizando snapshot em segundo plano (${reason})`)
+  child.on('error', (e) => { logger.error(`[etl] falha ao disparar: ${e.message}`); done() })
+  logger.info(`[etl] atualizando snapshot em segundo plano (${reason})`)
 }
 
 // ─── Rotas ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'indicadores-sebratel-api', time: new Date().toISOString() })
+  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', version: APP_VERSION, timestamp: new Date().toISOString() })
 })
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {
@@ -844,7 +871,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
       target,
     })
   } catch (e) {
-    console.error(`[ai] turno falhou: ${e.message}`)
+    logger.error(`[ai] turno falhou: ${e.message}`)
     emit({ type: 'error', message: e.message })
   } finally {
     clearInterval(keepAlive)
@@ -1333,13 +1360,13 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
 // poderia simplesmente não acontecer.
 
 app.listen(PORT, () => {
-  console.log(`Indicadores Sebratel API ouvindo em :${PORT}`)
-  console.log(`  domínio permitido: @${ALLOWED_DOMAIN}`)
+  logger.info(`Indicadores Sebratel API ouvindo em :${PORT}`)
+  logger.info(`  domínio permitido: @${ALLOWED_DOMAIN}`)
   if (AUTH_DISABLED) {
-    console.warn('  ****************************************************************')
-    console.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
-    console.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
-    console.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
-    console.warn('  ****************************************************************')
+    logger.warn('  ****************************************************************')
+    logger.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
+    logger.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
+    logger.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
+    logger.warn('  ****************************************************************')
   }
 })

@@ -20,6 +20,7 @@
 // como `sheet:<id>` — o prefixo evita qualquer colisão com ids de query SQL
 // e deixa a dispatch (SQL vs. planilha) inequívoca a partir só da string.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { extractSpreadsheetId, fetchSheetRows } from './googleSheets.mjs'
@@ -52,7 +53,7 @@ function load() {
     const list = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[sheet-sources] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[sheet-sources] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }

@@ -218,13 +218,13 @@ lixo silenciosamente.
 
 A chave vem de `SECRETS_KEY` ou, faltando ela, de 32 bytes aleatórios gerados em
 `data/.secret-key` na primeira subida. A gravação usa flag `wx` e relê o arquivo
-se falhar, porque `api` e `etl` podem subir ao mesmo tempo e tentar gerar a chave
+se falhar, porque `backend` e `scheduler` podem subir ao mesmo tempo e tentar gerar a chave
 juntos.
 
 **Trocar `SECRETS_KEY` desloga todo mundo** (as sessões salvas viram ilegíveis e
 são tratadas como expiradas, não como erro), invalida os tokens do Data Hub já
 cadastrados — que precisam ser recadastrados na tela — e torna a credencial de IA
-ilegível. E ela precisa ser **idêntica** nos serviços `api` e `etl`, senão um não
+ilegível. E ela precisa ser **idêntica** nos serviços `backend` e `scheduler`, senão um não
 decifra o que o outro cifrou.
 
 O token do Data Hub vai no header `X-Api-Token`, **nunca na query string**, para
@@ -540,7 +540,7 @@ preenchido.
 As duas únicas variáveis de IA que sobraram são da **leitura de gráfico**, não da
 montagem, porque nunca tiveram tela: `AI_INSIGHT_EFFORT` (padrão `medium`) e
 `AI_INSIGHT_MAX_TOKENS` (padrão 1200). Nenhuma das duas está no
-[docker-compose.yml](docker-compose.yml) — em produção rodam sempre no padrão.
+[docker-compose.portainer.yml](docker-compose.portainer.yml) — em produção rodam sempre no padrão.
 
 Padrões de fábrica: esforço `high`, teto de 16.000 tokens, 14 idas por turno,
 orçamento de US$ 5 por usuário por dia. O campo **modelo nasce vazio, inclusive
@@ -807,7 +807,7 @@ nativa e, onde ela não existe ou não responde em 1,5 s, cobre a janela por CSS
 > `assetFileNames` do [vite.config.ts](vite.config.ts) renomeia.
 >
 > **`pdfjs-dist` está em `devDependencies`, de propósito.** O Vite o empacota no
-> build da imagem `web`; a imagem `api` roda `npm ci --omit=dev` e não precisa
+> build da imagem `frontend`; a imagem `backend` roda `npm ci --omit=dev` e não precisa
 > dele — nem da dependência opcional dele, `@napi-rs/canvas`, um binário nativo de
 > ~37 MB (que por isso também fica fora do `node_modules/` versionado, ver
 > `.gitignore`).
@@ -825,9 +825,9 @@ deploy, rodando `npm ci` + `vite build` dentro dele:
 
 | Serviço | O que é | Porta |
 |---|---|---|
-| `web` | nginx servindo a SPA + proxy de `/api/` | `${WEB_PORT}:80` — a única publicada |
-| `api` | Express rodado por `tsx` | 8788, só na rede interna |
-| `etl` | **a mesma imagem do `api`**, com o comando trocado para o agendador | nenhuma |
+| `frontend` | nginx servindo a SPA + proxy de `/api/` | `${WEB_PORT}:80` — a única publicada |
+| `backend` | Express rodado por `tsx` | 8788, só na rede interna |
+| `scheduler` | **a mesma imagem do `backend`**, com o comando trocado para o agendador | nenhuma |
 
 ```bash
 docker compose up -d --build
@@ -839,7 +839,7 @@ docker compose up -d --build
 |---|---|---|
 | **Login (BUILD)** | `VITE_FIREBASE_API_KEY` `VITE_FIREBASE_AUTH_DOMAIN` `VITE_FIREBASE_PROJECT_ID` `VITE_FIREBASE_APP_ID` | **sim — e exigem rebuild** |
 | Login (runtime) | `FIREBASE_PROJECT_ID` (derivado do `VITE_` no compose) `ALLOWED_DOMAIN` `ADMIN_EMAILS` `SESSION_TTL_DAYS` | sim |
-| Cifra | `SECRETS_KEY` | não — gerada sozinha, mas **idêntica em `api` e `etl`** |
+| Cifra | `SECRETS_KEY` | não — gerada sozinha, mas **idêntica em `backend` e `scheduler`** |
 | Publicação | `WEB_PORT` | **sim — o deploy para sem ela** |
 | Data Hub | `DHUB_BASE_URL` `DHUB_PAGE_SIZE` `DHUB_MAX_ROWS` `DHUB_TIMEOUT_MS` `DHUB_COPY_MAX_MB` `DHUB_QUERY_CACHE_SECONDS` `DHUB_QUERY_CONCURRENCY` `DHUB_QUERY_TIMEOUT_MS` | não |
 | ETL | `ETL_BASE_INTERVAL_MINUTES` `ETL_RUN_ON_START` | não |
@@ -862,53 +862,49 @@ problema de rede, sendo variável faltando. Hoje o deploy para e diz o que defin
 
 ### Os dois volumes vão nos dois serviços
 
-`snapshot` em `/snapshot` e `data` em `/app/data`, montados em `api` **e** `etl`
-ao mesmo tempo. Separá-los quebra tudo em silêncio: o `etl` não vê as fontes
+`snapshot` em `/snapshot` e `data` em `/app/data`, montados em `backend` **e** `scheduler`
+ao mesmo tempo. Separá-los quebra tudo em silêncio: o `scheduler` não vê as fontes
 cadastradas pela tela, grava um snapshot vazio, e os tokens do Data Hub ficam
 indecifráveis do lado dele. Os containers continuam saudáveis e o Builder fica
 sem dado.
 
-Pelo mesmo motivo o `api` monta `/snapshot` **com escrita**: é ele quem dispara o
+Pelo mesmo motivo o `backend` monta `/snapshot` **com escrita**: é ele quem dispara o
 ETL sob demanda quando alguém mexe no catálogo de fontes. Montar como
 somente-leitura faz essa atualização falhar silenciosamente.
 
-O nginx resolve o endereço do `api` **por requisição**, via DNS interno do Docker,
+O nginx resolve o endereço do `backend` **por requisição**, via DNS interno do Docker,
 e não no start. Com host literal em `proxy_pass`, o nginx se recusa a subir quando
-o `api` ainda não existe e guarda o IP para sempre — e todo redeploy da stack
-recria os containers. Com a resolução diferida, o `web` sobe mesmo com o backend
+o `backend` ainda não existe e guarda o IP para sempre — e todo redeploy da stack
+recria os containers. Com a resolução diferida, o `frontend` sobe mesmo com o backend
 fora, `/api/` responde 502 e volta sozinho.
 
 ### Detalhes que já morderam
 
-- **`web` depende do `api` saudável** (`condition: service_healthy`). Se o `api`
-  entrar em crash loop, o `web` não inicia — nem a tela de login aparece.
-- **O `etl` herda o healthcheck da imagem**, que bate em `:8788/api/health`, e o
-  processo do agendador nunca abre porta nenhuma. Ele tende a aparecer como
-  `unhealthy` permanentemente. Nada depende da saúde dele, então a stack funciona
-  — mas o painel mente. O [DEPLOY-PORTAINER.md](DEPLOY-PORTAINER.md) afirma o
-  contrário; confira em campo antes de acreditar em qualquer um dos dois.
-- **Dois nomes de variável para o mesmo arquivo**: o `api` lê `SNAPSHOT_PATH`, o
-  `etl` escreve em `SNAPSHOT_OUT`, e cada uma só existia no seu próprio serviço.
+- **`frontend` depende do `backend` saudável** (`condition: service_healthy`). Se o `backend`
+  entrar em crash loop, o `frontend` não inicia — nem a tela de login aparece.
+- **O `scheduler` tem healthcheck próprio** no compose (`pgrep -f etl-scheduler`): o da imagem bate em `:8788/api/health` e o agendador nunca abre porta, o que o deixava `unhealthy` para sempre — e faria o `up --wait` do CI reprovar a stack.
+- **Dois nomes de variável para o mesmo arquivo**: o `backend` lê `SNAPSHOT_PATH`, o
+  `scheduler` escreve em `SNAPSHOT_OUT`, e cada uma só existia no seu próprio serviço.
   Acontece que **o ETL também roda disparado pela API**, com o ambiente do
-  container do `api` — onde `SNAPSHOT_OUT` não existe. Ele caía no padrão
-  `./public/installData.data` dentro do container do `api`, caminho que ninguém
+  container do `backend` — onde `SNAPSHOT_OUT` não existe. Ele caía no padrão
+  `./public/installData.data` dentro do container do `backend`, caminho que ninguém
   lê, enquanto a API seguia lendo `/snapshot/installData.data`. A fonte era
   buscada de verdade, o snapshot era gravado de verdade, e os dois nunca se
-  encontravam; a fonte só aparecia quando o serviço `etl` separado rodasse — com
+  encontravam; a fonte só aparecia quando o serviço `scheduler` separado rodasse — com
   agendamento de 60 minutos, até uma hora depois. Pior, **a contagem de linhas na
   tela era pista falsa**: ela vem do registro da fonte, não do snapshot, então
   dava para ver "185.564 linhas" com o snapshot vazio daquela fonte. Corrigido em
   14/09/2026: o destino agora é `SNAPSHOT_OUT || SNAPSHOT_PATH ||
   ./public/installData.data`.
 - **`API_PORT` no compose é o literal 8788**, não `${API_PORT}`. Definir a
-  variável na tela da stack não muda a porta; o nginx também tem `api:8788` fixo.
+  variável na tela da stack não muda a porta; o nginx também tem `backend:8788` fixo.
 - **`ADMIN_EMAILS` vazio não deixa a instalação sem admin** — há 7 e-mails
   embutidos como bootstrap. Quem espera que "vazio = ninguém é admin" vai se
   surpreender. O contrário também: com um admin já salvo, pôr um e-mail em
   `ADMIN_EMAILS` não o torna admin — ele entra como Padrão e é promovido na aba
   Acessos.
-- Heap limitado de propósito (`--max-old-space-size` 1024 no `api`, 2048 no
-  `etl`): o processo carrega o snapshot inteiro em memória, e sem teto um dataset
+- Heap limitado de propósito (`--max-old-space-size` 1024 no `backend`, 2048 no
+  `scheduler`): o processo carrega o snapshot inteiro em memória, e sem teto um dataset
   grande derruba o container por OOM do host em vez de falhar só a consulta.
 - Log `json-file` capado em 10m × 3 nos três serviços — este serviço registra uma
   linha por ida ao modelo, e sem isso o log enche o disco do host.

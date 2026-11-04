@@ -8,6 +8,7 @@
 // Persistido em data/widgetComments.json, mesmo padrão de arquivo único já
 // usado em sheetSources.mjs/fieldDictionary.mjs.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 
@@ -23,7 +24,7 @@ function load() {
     const list = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[widget-comments] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[widget-comments] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }

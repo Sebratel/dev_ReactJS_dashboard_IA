@@ -7,7 +7,7 @@
 // A chave vem de SECRETS_KEY (qualquer texto — é derivada pra 32 bytes com
 // sha256). Sem essa env, uma chave aleatória é gerada em data/.secret-key na
 // primeira vez e reusada dali em diante: como `data/` é o MESMO volume nos
-// serviços `api` e `etl` (ver docker-compose.yml), os dois decifram o mesmo
+// serviços `backend` e `scheduler` (ver docker-compose.portainer.yml), os dois decifram o mesmo
 // token sem precisar de configuração nenhuma. Defina SECRETS_KEY quando
 // quiser controlar a chave de fora (rotação, ou compartilhar entre
 // ambientes) — trocar a chave invalida os tokens já salvos, que precisam ser
@@ -16,6 +16,7 @@
 // Formato do texto cifrado: `v1:<iv b64>:<tag b64>:<cifra b64>` — uma string
 // só, pra caber num campo de JSON como qualquer outro.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -37,7 +38,7 @@ function keyMaterial() {
     mkdirSync(dirname(KEY_FILE), { recursive: true })
     writeFileSync(KEY_FILE, generated, { encoding: 'utf8', flag: 'wx' })
     try { chmodSync(KEY_FILE, 0o600) } catch { /* FS sem suporte a permissão (Windows) — segue */ }
-    console.log(`[secret-box] chave gerada em ${KEY_FILE} (defina SECRETS_KEY para controlar de fora)`)
+    logger.info(`[secret-box] chave gerada em ${KEY_FILE} (defina SECRETS_KEY para controlar de fora)`)
     return generated
   } catch (e) {
     if (existsSync(KEY_FILE)) return readFileSync(KEY_FILE, 'utf8')

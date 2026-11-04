@@ -31,6 +31,10 @@ RUN npm run build
 
 FROM nginx:alpine AS serve
 
+# Versão da aplicação como label da imagem (o Portainer a mostra). Vem do compose; o CI confere contra o package.json.
+ARG APP_VERSION=0.0.0
+LABEL org.opencontainers.image.version=$APP_VERSION
+
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 

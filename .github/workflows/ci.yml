@@ -33,6 +33,24 @@ jobs:
             --exceptions .github/compose-exceptions.txt \
             docker-compose.portainer.yml
 
+  # REGRA MANDATÓRIA (skill cicd-deploy-backend, regra 10): todo commit que sobe para um ambiente tem versão
+  # ESTRITAMENTE MAIOR que a que está nele. PR: compara com a branch de destino; push: com o commit anterior.
+  # Também confere package.json = package-lock.json = valor padrão ${APP_VERSION:-X.Y.Z} do compose (a tag da imagem
+  # que o Portainer mostra). Corrija com: npm run version:set -- X.Y.Z
+  versao:
+    name: Versão — maior que a do ambiente
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Versão (package.json, lock e compose) estritamente maior que a da base
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: python3 .github/scripts/validate-version.py
+
   qualidade:
     name: Qualidade e segurança — tipos, varredura, testes
     runs-on: ubuntu-latest
@@ -200,7 +218,7 @@ jobs:
   ci-ok:
     name: ci-ok
     runs-on: ubuntu-latest
-    needs: [validacoes, qualidade, seguranca, imagem, carga-smoke]
+    needs: [validacoes, versao, qualidade, seguranca, imagem, carga-smoke]
     if: always()
     timeout-minutes: 5
     steps:

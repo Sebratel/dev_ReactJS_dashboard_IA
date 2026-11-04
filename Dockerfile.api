@@ -2,6 +2,12 @@
 FROM node:20-alpine
 WORKDIR /app
 
+# Versão da aplicação (vem do compose; o CI confere contra o package.json). Fica como label da imagem
+# — é o que o Portainer mostra — e como ENV para o /api/health reportar a mesma versão.
+ARG APP_VERSION=0.0.0
+LABEL org.opencontainers.image.version=$APP_VERSION
+ENV APP_VERSION=$APP_VERSION
+
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 

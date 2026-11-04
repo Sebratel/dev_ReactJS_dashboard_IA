@@ -15,7 +15,7 @@
 import 'dotenv/config'
 import express from 'express'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -53,6 +53,13 @@ import {
   COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, validAccessToken,
 } from './sessions.mjs'
 import { verifyFirebaseIdToken, firebaseProjectId } from './firebaseToken.mjs'
+
+// Versão da aplicação: a do package.json (a mesma da tag da imagem e do label no Portainer).
+// APP_VERSION do ambiente só vale se alguém sobrescrever de propósito (o Dockerfile.api a define a
+// partir do compose, que é conferido contra o package.json pelo CI).
+const APP_VERSION = process.env.APP_VERSION && process.env.APP_VERSION !== '0.0.0'
+  ? process.env.APP_VERSION
+  : JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf8')).version
 
 const PORT = Number(process.env.API_PORT) || 8788
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -395,7 +402,7 @@ function triggerEtlRefresh(reason, forceIds = []) {
 
 // ─── Rotas ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', time: new Date().toISOString() })
+  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', version: APP_VERSION, time: new Date().toISOString() })
 })
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {

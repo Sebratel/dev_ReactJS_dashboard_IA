@@ -1,6 +1,6 @@
 {
   "name": "indicadores-sebratel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -30,7 +30,9 @@
     "//test:security": "Seguranca da API REAL (sobe server/index.mjs com login de verdade e dados inventados): toda rota /api/* descoberta no codigo exige sessao, toda rota de admin recusa usuario comum, cookie e ID token forjados nao entram, pasta restrita, CORS sem eco de origem, erro sem stack, corpo acima de 2 MB, cabecalhos, entrada hostil. Nao toca em data/ nem na rede.",
     "test:all": "npm run test:ai && npm run test:click && npm run test:auth && npm run test:access && npm run test:direct && npm run test:locks && npm run test:security",
     "loadtest": "node loadtest/run.mjs",
-    "//loadtest": "Carga real contra a API (ver loadtest/README.md): npm run loadtest -- smoke | load | stress | spike | soak | abuso. Dataset sintetico, login de verdade, pasta temporaria; nao toca em data/."
+    "//loadtest": "Carga real contra a API (ver loadtest/README.md): npm run loadtest -- smoke | load | stress | spike | soak | abuso. Dataset sintetico, login de verdade, pasta temporaria; nao toca em data/.",
+    "version:set": "node scripts/set-version.mjs",
+    "//version:set": "Muda a versao da aplicacao em package.json, package-lock.json e no compose de uma vez: npm run version:set -- 1.2.3. Regra: todo commit que sobe para um ambiente tem versao MAIOR que a dele (o CI confere)."
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",

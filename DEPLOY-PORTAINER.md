@@ -83,6 +83,14 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 
 > Não ligue o **polling** do GitOps junto com o webhook: o Portainer poderia puxar um commit antes do CI terminar.
 
+**Versão da aplicação (regra mandatória da skill `cicd-deploy-backend`).** A versão vive no `package.json` (projeto novo
+nasce em `1.0.0`) e **todo commit que sobe para `staging` ou `main` precisa ter versão estritamente MAIOR que a da branch
+de destino** — o job `versao` do CI reprova igual ou menor. O Portainer enxerga a versão em três lugares: a **tag da
+imagem** (`indicadores-sebratel-backend:1.0.1`), o label `org.opencontainers.image.version` dos containers e o campo
+`version` de `/api/health`. Para mudar, **nunca edite na mão**: `npm run version:set -- 1.0.2` altera `package.json`,
+`package-lock.json` e o valor padrão `${APP_VERSION:-X.Y.Z}` do compose juntos (o CI reprova se divergirem).
+Patch = correção, minor = funcionalidade compatível, major = quebra de contrato.
+
 **Nomes** (validados a cada PR por [`.github/scripts/validate-compose.py`](.github/scripts/validate-compose.py)):
 `name:` é o nome do repositório em minúsculas (`dev_reactjs_dashboard_ia`); nenhum serviço define `container_name`;
 os serviços têm o **papel** como nome — `frontend`, `backend`, `scheduler` — sem o nome do repositório nem palavra de

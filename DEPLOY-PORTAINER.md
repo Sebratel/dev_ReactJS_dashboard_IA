@@ -68,7 +68,7 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 | Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
 | Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
 | Firebase / Data Hub | projeto e token **de staging** | os de produção |
-| `WEB_PORT` / `ADMIN_EMAILS` | os do host de staging | os de produção |
+| `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (porta na faixa de frontend **3000–3099**; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
 
 **Webhook de deploy de staging** (o job `deploy-staging` de [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 

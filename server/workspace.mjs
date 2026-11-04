@@ -10,6 +10,7 @@
 // usado em accessLog.mjs/lakehouseSources.mjs — escala bem pro tamanho de uma
 // ferramenta interna, sem concorrência de escrita pesada.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { isAdmin, isKnownUser, resolveUsers, listKnownEmails } from './accessLog.mjs'
@@ -41,7 +42,7 @@ function loadLegacyDashboardConfig() {
     const config = JSON.parse(readFileSync(LEGACY_DASHBOARD_PATH, 'utf8'))
     if (config && Array.isArray(config.tabs)) return config
   } catch (e) {
-    console.error(`[workspace] falha ao ler dashboard-config.json legado: ${e.message}`)
+    logger.error(`[workspace] falha ao ler dashboard-config.json legado: ${e.message}`)
   }
   return null
 }
@@ -70,7 +71,7 @@ function buildInitialWorkspace() {
       createdBy: null, createdAt: nowIso(), updatedBy: null, updatedAt: null,
       tabs: legacy.tabs.map((t) => ({ ...t, access: t.access ?? { mode: 'open', view: [], edit: [] } })),
     })
-    console.log('[workspace] migrado a partir de dashboard-config.json legado — guias existentes marcadas como abertas')
+    logger.info('[workspace] migrado a partir de dashboard-config.json legado — guias existentes marcadas como abertas')
   } else {
     folder.dashboards.push({
       id: 'principal', name: 'Dashboard Principal', order: 0,
@@ -181,13 +182,13 @@ function loadWorkspace() {
           const parts = []
           if (gridMigrated) parts.push('resolução da grade dobrada (12→24 colunas)')
           if (textMigrated > 0) parts.push(`texto de boas-vindas atualizado em ${textMigrated} guia(s)`)
-          console.log(`[workspace] ${parts.join(' · ')} — backup do anterior em ${WORKSPACE_PATH}.bak`)
+          logger.info(`[workspace] ${parts.join(' · ')} — backup do anterior em ${WORKSPACE_PATH}.bak`)
         }
         return ws
       }
       throw new Error('formato inválido — "folders" (array) ausente')
     } catch (e) {
-      console.error(`[workspace] arquivo corrompido (${e.message}) — recriando a partir do padrão`)
+      logger.error(`[workspace] arquivo corrompido (${e.message}) — recriando a partir do padrão`)
     }
   }
   const ws = buildInitialWorkspace()

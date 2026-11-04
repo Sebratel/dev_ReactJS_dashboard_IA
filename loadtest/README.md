@@ -20,7 +20,7 @@ SOAK_SECONDS=3600 node loadtest/run.mjs soak   # vazamento de memória (padrão 
 node loadtest/run.mjs load stress spike     # vários, cada um com uma API nova
 ```
 
-Requer Node 20+ e `openssl` (já vem no Git for Windows, no macOS e no Linux). Sem Docker, sem k6.
+Requer Node 22+ e `openssl` (já vem no Git for Windows, no macOS e no Linux). Sem Docker, sem k6.
 Variáveis: `ROWS` (linhas do dataset, padrão 100 000), `USERS` (60), `HEAP_MB` (1024 — o teto do compose),
 `LOAD_SECONDS` (600), `SOAK_SECONDS` (1800), `OUT_DIR`. No CI manual: *Actions → Carga (manual)*.
 

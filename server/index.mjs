@@ -13,6 +13,7 @@
 // domínio restrito), adaptado para este projeto.
 // ─────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
+import { logger, requestLogger } from './logger.mjs'
 import express from 'express'
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
@@ -93,11 +94,13 @@ const AUTH_DISABLED_NAME = process.env.AUTH_DISABLED_NAME || AUTH_DISABLED_EMAIL
 // premissa falsa. Então para na subida, dizendo o que corrigir, em vez de
 // atender pela metade.
 if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
-  console.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
+  logger.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
   process.exit(1)
 }
 
 const app = express()
+// requestId + um log JSON por requisição (skill observabilidade-backend). Primeiro da cadeia: mede tudo.
+app.use(requestLogger())
 app.use(express.json({ limit: '2mb' }))
 
 app.disable('x-powered-by')
@@ -253,7 +256,7 @@ app.post('/api/auth/session', async (req, res) => {
   } catch (e) {
     // Só cai aqui por falha de INFRAESTRUTURA (primeira busca dos certificados
     // sem rede). Token inválido devolve null, não exceção.
-    console.error(`[auth] não foi possível validar o token: ${e.message}`)
+    logger.error(`[auth] não foi possível validar o token: ${e.message}`)
     return res.status(503).json({ error: 'Não foi possível validar o login agora. Tente de novo em instantes.' })
   }
   if (!claims) return res.status(401).json({ error: 'Login inválido ou expirado. Entre novamente.' })
@@ -374,7 +377,7 @@ function triggerEtlRefresh(reason, forceIds = []) {
       reason,
       forceIds: new Set([...(etlPending?.forceIds ?? []), ...forceIds]),
     }
-    console.log(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
+    logger.info(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
     return
   }
   etlRunning = true
@@ -396,13 +399,13 @@ function triggerEtlRefresh(reason, forceIds = []) {
     }
   }
   child.on('exit', done)
-  child.on('error', (e) => { console.error(`[etl] falha ao disparar: ${e.message}`); done() })
-  console.log(`[etl] atualizando snapshot em segundo plano (${reason})`)
+  child.on('error', (e) => { logger.error(`[etl] falha ao disparar: ${e.message}`); done() })
+  logger.info(`[etl] atualizando snapshot em segundo plano (${reason})`)
 }
 
 // ─── Rotas ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', version: APP_VERSION, time: new Date().toISOString() })
+  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', version: APP_VERSION, timestamp: new Date().toISOString() })
 })
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {
@@ -868,7 +871,7 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
       target,
     })
   } catch (e) {
-    console.error(`[ai] turno falhou: ${e.message}`)
+    logger.error(`[ai] turno falhou: ${e.message}`)
     emit({ type: 'error', message: e.message })
   } finally {
     clearInterval(keepAlive)
@@ -1357,13 +1360,13 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
 // poderia simplesmente não acontecer.
 
 app.listen(PORT, () => {
-  console.log(`Indicadores Sebratel API ouvindo em :${PORT}`)
-  console.log(`  domínio permitido: @${ALLOWED_DOMAIN}`)
+  logger.info(`Indicadores Sebratel API ouvindo em :${PORT}`)
+  logger.info(`  domínio permitido: @${ALLOWED_DOMAIN}`)
   if (AUTH_DISABLED) {
-    console.warn('  ****************************************************************')
-    console.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
-    console.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
-    console.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
-    console.warn('  ****************************************************************')
+    logger.warn('  ****************************************************************')
+    logger.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
+    logger.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
+    logger.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
+    logger.warn('  ****************************************************************')
   }
 })

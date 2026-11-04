@@ -199,10 +199,27 @@ try {
   check('X-Content-Type-Options: nosniff', hd.headers.get('x-content-type-options') === 'nosniff')
   const corpoHealth = await hd.json()
   check('/api/health informa a versão da aplicação (X.Y.Z)', /^\d+\.\d+\.\d+$/.test(corpoHealth.version), String(corpoHealth.version))
-  check('/api/health devolve {"status":"ok"} (o que o CI confere) e não vaza dado', corpoHealth.status === 'ok' && Object.keys(corpoHealth).every((k) => ['status', 'ok', 'service', 'version', 'time'].includes(k)), JSON.stringify(corpoHealth))
+  check('/api/health devolve {"status":"ok"} (o que o CI confere) e não vaza dado', corpoHealth.status === 'ok' && Object.keys(corpoHealth).every((k) => ['status', 'ok', 'service', 'version', 'timestamp'].includes(k)), JSON.stringify(corpoHealth))
   const nginx = readFileSync(join(RAIZ, 'docker', 'nginx.conf'), 'utf8')
   check('nginx: server_tokens off', /server_tokens\s+off/.test(nginx))
   check('nginx: X-Content-Type-Options e X-Frame-Options', /X-Content-Type-Options/.test(nginx) && /X-Frame-Options/.test(nginx))
+
+  // Observabilidade: requestId devolvido, reaproveitado e presente no log JSON, sem segredo
+  const rid = await fetch(`${h.base}/api/auth/me`, { headers: { cookie: comum, 'x-request-id': 'teste-correlacao-123' } })
+  check('X-Request-Id enviado é reaproveitado e devolvido', rid.headers.get('x-request-id') === 'teste-correlacao-123', String(rid.headers.get('x-request-id')))
+  const gerado = await fetch(`${h.base}/api/health`)
+  check('sem X-Request-Id a API gera um (UUID)', /^[0-9a-f-]{36}$/.test(gerado.headers.get('x-request-id') ?? ''))
+  const ruim = await fetch(`${h.base}/api/health`, { headers: { 'x-request-id': 'x'.repeat(300) } })
+  check('X-Request-Id com mais de 200 caracteres é descartado', (ruim.headers.get('x-request-id') ?? '').length <= 200)
+  await new Promise((ok) => setTimeout(ok, 300))
+  const linhas = h.logRecente().filter((l) => l.startsWith('{')).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+  const acesso = linhas.find((l) => l.requestId === 'teste-correlacao-123')
+  check('o log de acesso é JSON com requestId, method, path, status, durationMs', acesso && acesso.msg === 'request completed' && acesso.method === 'GET' && acesso.path === '/api/auth/me' && acesso.status === 200 && typeof acesso.durationMs === 'number', JSON.stringify(acesso))
+  check('o log tem os campos fixos (timestamp ISO UTC, level, service, env)', acesso && /Z$/.test(acesso.timestamp) && acesso.level === 'info' && acesso.service && acesso.env, JSON.stringify(acesso))
+  check('o log de 401 sai como warn', linhas.some((l) => l.level === 'warn' && l.status === 401))
+  const todoLog = h.logRecente().join('\n')
+  check('o log não contém cookie de sessão nem token', !todoLog.includes(comum.split('=')[1]) && !/dhub_token_ficticio/.test(todoLog))
+  check('/api/health não polui o log quando responde 200', !linhas.some((l) => l.path === '/api/health' && l.status === 200))
 
   // 9) entrada hostil: nada pode derrubar nem poluir
   const S = h.chave

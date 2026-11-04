@@ -5,6 +5,7 @@
 // este módulo só guarda o pedido e a decisão. Mesmo padrão de persistência de
 // accessLog.mjs (JSON em data/, leitura e escrita síncronas).
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -29,7 +30,7 @@ function load() {
     const list = JSON.parse(readFileSync(REQUESTS_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[access-requests] arquivo corrompido (${REQUESTS_PATH}): ${e.message} — usando vazio`)
+    logger.error(`[access-requests] arquivo corrompido (${REQUESTS_PATH}): ${e.message} — usando vazio`)
     return []
   }
 }

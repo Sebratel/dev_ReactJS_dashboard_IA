@@ -138,7 +138,7 @@ A proteção de verdade mora sempre no servidor — cada rota da API confere de 
 
 ### 2.5 Requisitos, instalação e deploy
 
-**Para rodar em desenvolvimento**: Node 20 (a versão usada nas imagens Docker; não há um mínimo declarado à parte pro ambiente de dev) e npm. Pelo menos dois processos em paralelo:
+**Para rodar em desenvolvimento**: Node 22 (a versão usada nas imagens Docker e no CI, padrão da skill cicd-deploy-backend; não há um mínimo declarado à parte pro ambiente de dev) e npm. Pelo menos dois processos em paralelo:
 
 | Comando | O que faz |
 |---|---|

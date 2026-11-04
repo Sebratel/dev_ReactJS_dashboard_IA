@@ -6,6 +6,7 @@
 //   SNAPSHOT_PATH  caminho do snapshot (ex.: /snapshot/installData.data).
 //                  Sem a env, cai em ./public/installData.data (dev).
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, statSync, existsSync } from 'node:fs'
 import { gunzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
@@ -30,7 +31,7 @@ function ensureFresh() {
     cache = JSON.parse(text)
     cacheMtime = mtime
     lastError = null
-    console.log(`[dataset] carregado: ${Object.keys(cache?.data ?? {}).length} fontes · ${SNAPSHOT_PATH}`)
+    logger.info(`[dataset] carregado: ${Object.keys(cache?.data ?? {}).length} fontes · ${SNAPSHOT_PATH}`)
   } catch (e) {
     lastError = e.message
   }

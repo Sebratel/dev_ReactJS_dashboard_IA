@@ -3,6 +3,7 @@
 // de ações administrativas. Mesmo padrão de persistência de lakehouseSources.mjs
 // / dashboardConfig.mjs (JSON em data/, leitura/escrita síncrona).
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 
@@ -73,7 +74,7 @@ function loadJson(path, fallback) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'))
   } catch (e) {
-    console.error(`[access-log] arquivo corrompido (${path}): ${e.message} — usando vazio`)
+    logger.error(`[access-log] arquivo corrompido (${path}): ${e.message} — usando vazio`)
     return fallback
   }
 }

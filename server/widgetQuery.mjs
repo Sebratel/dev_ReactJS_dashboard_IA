@@ -18,6 +18,7 @@
 // funções exportadas abaixo). Os dois módulos se importam: é seguro porque
 // nenhum dos dois usa o outro antes de uma chamada.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource, sheetSourceId, sourceKey as sheetSourceKey, listSheetSources, resolveSheetRows } from './sheetSources.mjs'
 import { listLakehouseSources, sourceKey as lakehouseSourceKey, readModeOf } from './lakehouseSources.mjs'
@@ -261,7 +262,7 @@ export async function listSourceDefs(folderId, accessToken) {
     try {
       return withDictionary(await directSourceDef(key, titles.get(key)))
     } catch (e) {
-      console.warn(`[leitura direta] ${key}: ${e.message}`)
+      logger.warn(`[leitura direta] ${key}: ${e.message}`)
       return { key, label: titles.get(key) ?? key, fields: [], direct: true, error: e.message }
     }
   }))

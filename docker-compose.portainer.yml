@@ -61,10 +61,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 256m
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 256m
+    memswap_limit: 256m
 
   backend:
     build:
@@ -145,6 +145,13 @@ services:
       # (ver server/dataset.mjs), então sem teto um dataset grande derruba o
       # container por OOM do host em vez de falhar só a consulta.
       NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=1024}
+      # Observabilidade (skill observabilidade-backend): log JSON com requestId. APP_ENV é o campo `env` do log
+      # (production | staging); no Portainer de staging, defina APP_ENV=staging.
+      NODE_ENV: production
+      APP_ENV: ${APP_ENV:-production}
+      SLOW_REQUEST_MS: ${SLOW_REQUEST_MS:-5000}
+      # Origens extras autorizadas a chamar a API com cookie (CORS). Vazio = só a mesma origem (o nginx faz o proxy).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     # Log limitado: sem isto o json-file cresce até encher o disco do host, e
     # este serviço registra uma linha por ida ao modelo. Mesmo ajuste do
     # comercial_pbi.
@@ -153,10 +160,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 1.5g
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 1.5g
+    memswap_limit: 1.5g
     volumes:
       # Leitura E escrita: além de ler o snapshot, a API dispara o ETL em
       # segundo plano quando alguém mexe no catálogo de fontes (ver
@@ -217,15 +224,17 @@ services:
       # Teto maior que o da api: é este processo que materializa os datasets,
       # montando o snapshot inteiro em memória antes de gravar.
       NODE_OPTIONS: ${ETL_NODE_OPTIONS:---max-old-space-size=2048}
+      NODE_ENV: production
+      APP_ENV: ${APP_ENV:-production}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 2.5g
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 2.5g
+    memswap_limit: 2.5g
     volumes:
       - snapshot:/snapshot
       - data:/app/data

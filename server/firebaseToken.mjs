@@ -19,6 +19,7 @@
 // milhares de arquivos no histórico. O que precisamos são ~80 linhas de
 // node:crypto.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { createVerify, X509Certificate } from 'node:crypto'
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
@@ -89,7 +90,7 @@ async function getCerts() {
       inFlight = fetchCerts()
         .then((c) => { memo = c; return c })
         .catch((e) => {
-          console.warn(`[auth] não consegui renovar os certificados do Google (${e.message}); seguindo com os que estão em cache.`)
+          logger.warn(`[auth] não consegui renovar os certificados do Google (${e.message}); seguindo com os que estão em cache.`)
           return memo
         })
         .finally(() => { inFlight = null })

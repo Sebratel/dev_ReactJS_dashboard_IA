@@ -12,6 +12,8 @@ Regras (erro = exit 1):
   C4  o compose nao aponta para o gateway de outro ambiente: staging nao pode conter o gateway de producao
       e producao nao pode conter o de staging.
 Aviso (nao falha): C5  nome de servico fora da lista de papeis conhecidos.
+Aviso (nao falha; erro com --strict-ports): C6  porta do host publicada fora da faixa da categoria do papel
+      (ver references/portas.md). So avalia portas com valor literal ou default `${VAR:-porta}`.
 
 Excecoes ja existentes ficam num arquivo (uma por linha): `<arquivo>:<regra>[:<servico>]  # motivo`.
 Uma excecao e uma pendencia de migracao registrada, nao uma licenca: o CI as lista a cada execucao.
@@ -24,13 +26,48 @@ import sys
 
 import yaml
 
-PROD_GATEWAY = "api-gateway-bff.sebratel.net.br"  # este projeto não usa gateway; a regra C4 continua valendo caso passe a usar
+PROD_GATEWAY = "api-gateway-bff.sebratel.net.br"
 STAGING_GATEWAY = "api-gateway-bff-staging.sebratel.net.br"
 FORBIDDEN_WORDS = ("staging", "stage", "prod", "production", "portainer")
 NAME_RE = re.compile(r"^[a-z][a-z0-9]*(-[a-z0-9]+)*$")
 KNOWN_ROLES = {"frontend", "backend", "bff", "api", "worker", "scheduler", "redis", "mysql", "mariadb", "postgres",
                "mongo", "rabbitmq", "kafka", "elasticsearch", "nginx", "lb", "proxy", "prometheus", "grafana",
                "gateway", "migrations"}
+
+
+# Faixas de porta do host por papel (references/portas.md). Papel fora daqui nao e avaliado.
+ROLE_RANGES = {
+    "frontend": (3000, 3099, "Frontend / Web UI"),
+    "backend": (3100, 3199, "Backend / API"),
+    "api": (3100, 3199, "Backend / API"),
+    "bff": (3200, 3299, "BFF / Gateway"),
+    "gateway": (3200, 3299, "BFF / Gateway"),
+    "postgres": (5400, 5499, "Banco de dados"),
+    "mysql": (5400, 5499, "Banco de dados"),
+    "mariadb": (5400, 5499, "Banco de dados"),
+    "redis": (6370, 6379, "Cache"),
+    "kafka": (6390, 6399, "Fila de mensagens"),
+    "prometheus": (9080, 9099, "Observabilidade: metricas/APM"),
+    "grafana": (9080, 9099, "Observabilidade: metricas/APM"),
+}
+VAR_DEFAULT_RE = re.compile(r"\$\{[^}:-]+:?-([^}]*)\}")
+
+
+def host_ports(cfg):
+    """Portas do host (int) publicadas por um servico; ignora o que nao tem valor literal."""
+    found = []
+    for entry in cfg.get("ports") or []:
+        if isinstance(entry, dict):
+            value = entry.get("published")
+        else:
+            text = VAR_DEFAULT_RE.sub(r"\1", str(entry)).split("/", 1)[0]
+            parts = text.split(":")
+            value = parts[-2] if len(parts) >= 2 else None
+        try:
+            found.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return found
 
 
 def load_exceptions(path):
@@ -48,6 +85,7 @@ def main():
     ap.add_argument("--repo", required=True)
     ap.add_argument("--env", required=True, choices=["staging", "production"])
     ap.add_argument("--exceptions")
+    ap.add_argument("--strict-ports", action="store_true", help="C6 (faixa de portas) vira erro em vez de aviso")
     ap.add_argument("files", nargs="+")
     args = ap.parse_args()
 
@@ -79,6 +117,18 @@ def main():
                 report(f, "C3", svc, f"servico '{svc}' nao deve conter o nome do repositorio nem palavra de ambiente; use o papel.")
             if svc not in KNOWN_ROLES:
                 warnings.append(f"{f} [C5] servico '{svc}' fora dos papeis conhecidos ({', '.join(sorted(KNOWN_ROLES))}).")
+            if svc in ROLE_RANGES:
+                lo, hi, category = ROLE_RANGES[svc]
+                for port in host_ports(cfg):
+                    if not lo <= port <= hi:
+                        msg = (f"servico '{svc}' publica a porta {port}; a faixa de {category} e {lo}-{hi} "
+                               f"(references/portas.md). Se nao precisa ser alcancado de fora da stack, remova `ports:`.")
+                        if args.strict_ports:
+                            report(f, "C6", svc, msg)
+                        elif f"{f}:C6" not in exceptions and f"{f}:C6:{svc}" not in exceptions:
+                            warnings.append(f"{f} [C6] {msg}")
+                        else:
+                            pending.append(f"{f} [C6] {msg}")
         if args.env == "staging" and PROD_GATEWAY in raw:
             report(f, "C4", None, f"compose de STAGING aponta para o gateway de producao ({PROD_GATEWAY}); use {STAGING_GATEWAY}.")
         if args.env == "production" and "-staging.sebratel.net.br" in raw:

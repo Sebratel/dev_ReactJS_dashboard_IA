@@ -49,6 +49,7 @@
 // diante o motor de widgets não sabe que aquela fonte veio de uma API HTTP);
 // na DIRETA ele só confere que o Data Hub responde e anota o total de linhas.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { encryptSecret, decryptSecret, maskSecret } from './secretBox.mjs'
@@ -114,7 +115,7 @@ function load() {
     const list = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[lakehouse] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[lakehouse] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }
@@ -388,7 +389,7 @@ async function httpFailure(res, url, datasetSlug) {
 
   if (!detail) {
     const trecho = corpo.replace(/\s+/g, ' ').trim().slice(0, 160)
-    console.error(`[data-hub] ${res.status} em ${url.origin} sem JSON de erro — corpo: ${trecho || '(vazio)'}`)
+    logger.error(`[data-hub] ${res.status} em ${url.origin} sem JSON de erro — corpo: ${trecho || '(vazio)'}`)
     return new Error(
       `O Data Hub respondeu ${res.status} ao buscar "${datasetSlug}", mas o corpo não é JSON — ` +
       'sinal de que quem respondeu não foi ele, e sim algo no caminho (proxy ou firewall da rede onde a API roda). ' +
@@ -508,7 +509,7 @@ export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS, maxByt
   }
 
   if (pageCount >= MAX_PAGES) {
-    console.warn(`[lakehouse] ${credentials.datasetSlug}: parei em ${MAX_PAGES} páginas (${fetched} linhas) — teto de segurança da paginação`)
+    logger.warn(`[lakehouse] ${credentials.datasetSlug}: parei em ${MAX_PAGES} páginas (${fetched} linhas) — teto de segurança da paginação`)
   }
   return { rows: pages.flat(), total: total ?? fetched, pages: pageCount }
 }

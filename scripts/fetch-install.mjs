@@ -35,6 +35,7 @@
 // Grava um snapshot (gzip) em SNAPSHOT_OUT/public/installData.data.
 // Rodado sob demanda (`npm run fetch:install`) ou pelo scheduler.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from '../server/logger.mjs'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
@@ -101,11 +102,11 @@ async function main() {
   const now = Date.now()
   const data = {}
   const runs = []
-  if (FORCED.size) console.log(`[etl] busca manual pedida para: ${[...FORCED].join(', ')}`)
+  if (FORCED.size) logger.info(`[etl] busca manual pedida para: ${[...FORCED].join(', ')}`)
 
   const sources = listLakehouseForEtl()
   if (sources.length === 0) {
-    console.log('[etl] nenhuma fonte do Data Hub cadastrada — cadastre em Configurações.')
+    logger.info('[etl] nenhuma fonte do Data Hub cadastrada — cadastre em Configurações.')
   }
 
   // Sequencial (não Promise.all): são datasets de tamanho desconhecido —
@@ -114,7 +115,7 @@ async function main() {
   for (const src of sources) {
     const key = lakehouseKey(src.id)
     if (src.enabled === false) {
-      console.log(`[etl] ${key}: desativada — pulando`)
+      logger.info(`[etl] ${key}: desativada — pulando`)
       continue
     }
     if (readModeOf(src) === 'direct') {
@@ -126,11 +127,11 @@ async function main() {
           baseUrl: src.baseUrl, datasetSlug: src.datasetSlug, token: decryptSecret(src.tokenEnc),
         }, { limit: 1 })
         runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: total ?? null, error: null })
-        console.log(`[etl] ${key} (${src.datasetSlug}): leitura direta — ${total ?? '?'} linha(s) no Data Hub, nada copiado`)
+        logger.info(`[etl] ${key} (${src.datasetSlug}): leitura direta — ${total ?? '?'} linha(s) no Data Hub, nada copiado`)
       } catch (e) {
         // Sem lastRunAt: confere de novo no próximo ciclo (é uma consulta só).
         runs.push({ id: src.id, error: e.message })
-        console.log(`[etl] ${key} (${src.datasetSlug}): leitura direta falhou (${e.message})`)
+        logger.info(`[etl] ${key} (${src.datasetSlug}): leitura direta falhou (${e.message})`)
       }
       continue
     }
@@ -141,7 +142,7 @@ async function main() {
     // já tinha rodado.
     if (!FORCED.has(src.id) && !isDue(src, now) && previous.data[key]) {
       data[key] = previous.data[key]
-      console.log(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${data[key].length} linha(s) anteriores`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${data[key].length} linha(s) anteriores`)
       continue
     }
     try {
@@ -152,7 +153,7 @@ async function main() {
       data[key] = rows
       runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: rows.length, rowTotal: total, error: null })
       const truncated = rows.length < total ? ` de ${total} (teto de ${MAX_LAKEHOUSE_ROWS})` : ''
-      console.log(`[etl] ${key} (${src.datasetSlug}): ${rows.length} linhas${truncated} em ${pages} página(s)`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): ${rows.length} linhas${truncated} em ${pages} página(s)`)
     } catch (e) {
       if (e instanceof CopyTooLargeError) {
         // Não é falha passageira: a fonte segue a agenda dela (lastRunAt) em
@@ -160,7 +161,7 @@ async function main() {
         // tinha, se tinha.
         if (previous.data[key]) data[key] = previous.data[key]
         runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), error: e.message })
-        console.log(`[etl] ${key} (${src.datasetSlug}): ${e.message}`)
+        logger.info(`[etl] ${key} (${src.datasetSlug}): ${e.message}`)
         continue
       }
       // Falha transitória — mantém o último dado bom em vez de zerar, e NÃO
@@ -168,7 +169,7 @@ async function main() {
       // registrado pra aparecer na tela de Configurações.
       data[key] = previous.data[key] ?? []
       runs.push({ id: src.id, error: e.message })
-      console.log(`[etl] ${key} (${src.datasetSlug}): falhou (${e.message}) — mantendo ${data[key].length} linha(s) anteriores`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): falhou (${e.message}) — mantendo ${data[key].length} linha(s) anteriores`)
     }
   }
   const snapshot = { meta: { generatedAt: new Date().toISOString() }, data }
@@ -199,7 +200,7 @@ async function main() {
   }
   if (runs.length) recordLakehouseRuns(runs)
   const ok = runs.filter((r) => !r.error).length
-  console.log(`OK — snapshot gravado em ${OUT} (${(json.length / 1048576).toFixed(1)} MB → gzip ${(gz.length / 1048576).toFixed(1)} MB) · ${ok} dataset(s) do Data Hub executado(s)`)
+  logger.info(`OK — snapshot gravado em ${OUT} (${(json.length / 1048576).toFixed(1)} MB → gzip ${(gz.length / 1048576).toFixed(1)} MB) · ${ok} dataset(s) do Data Hub executado(s)`)
 }
 
-main().catch((e) => { console.error('[etl] falhou:', e); process.exit(1) })
+main().catch((e) => { logger.error('[etl] falhou:', e); process.exit(1) })

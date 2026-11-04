@@ -66,7 +66,7 @@ data/                   — estado persistente em JSON (fontes, sessões, worksp
 manual/                 — o PDF do manual de uso (manual-de-uso.pdf), servido por GET /api/manual (3.15)
 public/                 — assets estáticos + installData.data (o snapshot em si, gzip)
 docker/                 — nginx.conf (produção)
-Dockerfile / Dockerfile.api / docker-compose.yml / DEPLOY-PORTAINER.md — build e deploy (ver 2.5)
+Dockerfile / Dockerfile.api / docker-compose.portainer.yml / DEPLOY-PORTAINER.md — build e deploy (ver 2.5)
 ```
 
 > `src/types/index.ts` guarda um modelo de domínio fixo (`ProtocoloGeral`, `Turno`, `Grupo`...) que parece resquício de uma versão anterior do app — hoje nada em `src/` importa esse arquivo, já que o schema de cada fonte é inferido ao vivo (3.7), não declarado num tipo fixo. Deixado como está; sinalizado aqui só pra não confundir quem for explorar a pasta.
@@ -158,17 +158,17 @@ O ciclo automático de ETL (`scripts/etl-scheduler.mjs`) não faz parte do `npm 
 | | `AUTH_DISABLED`, `AUTH_DISABLED_EMAIL` | Não — **só desenvolvimento**, desligada por padrão. Ver 3.9. |
 | IA (3.7-quater) | *nenhuma* | A IA **não se configura por ambiente** desde 10/09/2026 — é tela (Configurações › Provedor de IA), guardada em `data/aiConfig.json`. Ver 3.7-quinquies. Só a leitura de gráfico mantém `AI_INSIGHT_EFFORT` e `AI_INSIGHT_MAX_TOKENS`, ambos com padrão. |
 | | `AI_MODEL`, `AI_EFFORT`, `AI_MAX_TOKENS`, `AI_MAX_ITERATIONS`, `AI_DAILY_BUDGET_USD` | Não — todas com padrão. |
-| Cifra de segredos | `SECRETS_KEY` | Não (gera uma sozinha em `data/.secret-key`), mas **precisa ser igual** entre os serviços `api` e `etl` — senão um não decifra o que o outro cifrou. |
+| Cifra de segredos | `SECRETS_KEY` | Não (gera uma sozinha em `data/.secret-key`), mas **precisa ser igual** entre os serviços `backend` e `scheduler` — senão um não decifra o que o outro cifrou. |
 | Data Hub | `DHUB_BASE_URL`, `DHUB_PAGE_SIZE`, `DHUB_MAX_ROWS`, `DHUB_TIMEOUT_MS`, `DHUB_COPY_MAX_MB` (100) | Não — todas com padrão (os mesmos números da tabela de limites, seção 5). |
-| Data Hub — leitura direta | `DHUB_QUERY_CACHE_SECONDS` (60), `DHUB_QUERY_CONCURRENCY` (6), `DHUB_QUERY_TIMEOUT_MS` (45000) | Não. Só a `api` usa. |
+| Data Hub — leitura direta | `DHUB_QUERY_CACHE_SECONDS` (60), `DHUB_QUERY_CONCURRENCY` (6), `DHUB_QUERY_TIMEOUT_MS` (45000) | Não. Só a `backend` usa. |
 | API/ETL | `API_PORT` (8788), `SNAPSHOT_PATH`, `ETL_BASE_INTERVAL_MINUTES` (2 min), `ETL_RUN_ON_START` | Não. |
 | Deploy | `WEB_PORT` (8081) | Só em produção. |
 
 Planilhas do Google não têm variável própria — reusam o Client ID acima e o token OAuth do próprio usuário logado (3.7-bis).
 
-**Produção**: três serviços no `docker-compose.yml` — **web** (compila o frontend e serve com Nginx), **api** (a API Express) e **etl** (mesma imagem da API, rodando só o scheduler). `docker/nginx.conf` serve a SPA e repassa `/api/` pro serviço `api`. Não existe registry de imagem: o próprio Portainer builda a partir do repositório GitHub a cada deploy (ver `DEPLOY-PORTAINER.md`), e as variáveis de ambiente entram pelo campo da stack — não existe `.env` no servidor de produção.
+**Produção**: três serviços no `docker-compose.portainer.yml` — **frontend** (compila o frontend e serve com Nginx), **backend** (a API Express) e **scheduler** (mesma imagem da API, rodando só o scheduler). `docker/nginx.conf` serve a SPA e repassa `/api/` pro serviço `backend`. Não existe registry de imagem: o próprio Portainer builda a partir do repositório GitHub a cada deploy (ver `DEPLOY-PORTAINER.md`), e as variáveis de ambiente entram pelo campo da stack — não existe `.env` no servidor de produção.
 
-**Estado persistente**: dois volumes nomeados, montados nos serviços `api` e `etl` **ao mesmo tempo** — um pro snapshot (`installData.data`) e outro pra `data/` (fontes cadastradas, sessões, workspace, comentários, a chave de cifra). Os dois serviços precisam enxergar os mesmos volumes: se `etl` não tivesse acesso ao mesmo `data/` do `api`, não veria as fontes cadastradas pela tela nem conseguiria decifrar os tokens que o `api` salvou.
+**Estado persistente**: dois volumes nomeados, montados nos serviços `backend` e `scheduler` **ao mesmo tempo** — um pro snapshot (`installData.data`) e outro pra `data/` (fontes cadastradas, sessões, workspace, comentários, a chave de cifra). Os dois serviços precisam enxergar os mesmos volumes: se `scheduler` não tivesse acesso ao mesmo `data/` do `backend`, não veria as fontes cadastradas pela tela nem conseguiria decifrar os tokens que o `backend` salvou.
 
 ---
 

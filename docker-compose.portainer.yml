@@ -8,12 +8,14 @@
 #   1. Nenhum `container_name` fixo — o Portainer prefixa os containers com o
 #      nome da stack. Nome fixo colide entre stacks (ex. uma de homologação e
 #      uma de produção no mesmo host) e atrapalha o redeploy.
-#   2. Nenhuma credencial do Google no build nem no serviço `web`: o login é
+#   2. Nenhuma credencial do Google no build nem no serviço `frontend`: o login é
 #      conduzido pelo servidor (fluxo de código de autorização), então o Client
-#      ID e o Client Secret ficam só no `api`, lidos do ambiente em runtime.
-#      A imagem do `web` é a mesma em qualquer ambiente.
+#      ID e o Client Secret ficam só no `backend`, lidos do ambiente em runtime.
+#      A imagem do `frontend` é a mesma em qualquer ambiente.
+name: dev_reactjs_dashboard_ia
+
 services:
-  web:
+  frontend:
     build:
       context: .
       dockerfile: Dockerfile
@@ -33,7 +35,7 @@ services:
     networks:
       - indicadores-sebratel
     depends_on:
-      api:
+      backend:
         condition: service_healthy
     ports:
       # `:?` em vez de um valor vazio: sem WEB_PORT, o Docker publicava numa
@@ -44,7 +46,7 @@ services:
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -59,7 +61,7 @@ services:
         limits:
           memory: 256m
 
-  api:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -71,7 +73,7 @@ services:
     environment:
       API_PORT: 8788
       ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-sebratel.com.br}
-      # Arquivo que a API LÊ. O `etl` grava o mesmo arquivo, sob o nome
+      # Arquivo que a API LÊ. O `scheduler` grava o mesmo arquivo, sob o nome
       # SNAPSHOT_OUT. Aqui não é preciso declarar SNAPSHOT_OUT: quando a API
       # dispara o ETL sozinha (ao cadastrar/editar uma fonte), o script usa
       # este valor como destino — ver o comentário em scripts/fetch-install.mjs.
@@ -89,7 +91,7 @@ services:
       #
       # Não há mais client secret nem redirect_uri: o fluxo de código de
       # autorização foi aposentado em 13/09/2026. O que o navegador precisa
-      # (VITE_FIREBASE_*) vai no BUILD do serviço `web`, acima.
+      # (VITE_FIREBASE_*) vai no BUILD do serviço `frontend`, acima.
       FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
       # Tempo de vida da sessão de login, em dias.
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
@@ -97,7 +99,7 @@ services:
       # tokens do Google das sessões de login. Se ficar vazia, uma chave
       # aleatória é gerada em data/.secret-key no volume compartilhado —
       # funciona, mas definir aqui dá controle sobre rotação. DEVE ser igual à
-      # do serviço `etl`, senão o ETL não decifra os tokens do Data Hub.
+      # do serviço `scheduler`, senão o ETL não decifra os tokens do Data Hub.
       # Trocá-la desloga todo mundo (as sessões viram ilegíveis).
       SECRETS_KEY: ${SECRETS_KEY:-}
       # Não há credencial de banco aqui de propósito: este serviço não fala com
@@ -117,7 +119,7 @@ services:
       # a API roda numa instância só (a memória da IA já exige isso).
       TAB_LOCK_TTL_SECONDS: ${TAB_LOCK_TTL_SECONDS:-120}
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
-      # indisponível e o resto do app segue normal. Só o `api` precisa — o
+      # indisponível e o resto do app segue normal. Só o `backend` precisa — o
       # navegador nunca vê a chave.
       # A IA NÃO se configura por ambiente. Provedor, credencial, modelo,
       # esforço, tetos, orçamento e preço vivem em "Configurações › Provedor de
@@ -151,7 +153,7 @@ services:
       - snapshot:/snapshot
       - data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8788/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -160,7 +162,7 @@ services:
   # Job do ETL — materializa os datasets do Data Hub num ciclo curto, gravando
   # no volume `snapshot`. O ritmo real de CADA fonte é configurado na tela
   # (tempo real / agendada); este intervalo é só o ciclo base.
-  etl:
+  scheduler:
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -170,12 +172,21 @@ services:
     networks:
       - indicadores-sebratel
     command: ["node", "scripts/etl-scheduler.mjs"]
+    # O agendador não abre porta, então o HEALTHCHECK herdado da imagem (:8788/api/health)
+    # o deixaria `unhealthy` para sempre — e `up --wait` do CI (e o Portainer) reprovariam a stack.
+    # Saudável aqui = o processo do agendador está vivo.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f etl-scheduler >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     environment:
       SNAPSHOT_OUT: /snapshot/installData.data
       # Nome que o scheduler realmente lê (scripts/etl-scheduler.mjs).
       ETL_BASE_INTERVAL_MINUTES: ${ETL_BASE_INTERVAL_MINUTES:-2}
       ETL_RUN_ON_START: ${ETL_RUN_ON_START:-false}
-      # Precisa ser IGUAL à do serviço `api` — é com ela que os tokens do Data
+      # Precisa ser IGUAL à do serviço `backend` — é com ela que os tokens do Data
       # Hub cadastrados pela tela são decifrados aqui.
       SECRETS_KEY: ${SECRETS_KEY:-}
       # Ajustes de paginação/teto da busca no Data Hub — os padrões do código

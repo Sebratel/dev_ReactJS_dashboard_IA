@@ -44,3 +44,7 @@ data/.firebase-certs.json
 # Windows), inútil nas outras máquinas e no Docker, onde o `npm ci` baixa o da
 # própria plataforma.
 node_modules/@napi-rs/
+
+# Resultados do teste de carga (nascem em cada execução; só o RESULTS.md curado, em loadtest/, é versionado)
+loadtest/out/
+loadtest/out-*/

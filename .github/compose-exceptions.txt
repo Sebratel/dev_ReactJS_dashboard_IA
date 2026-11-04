@@ -1,0 +1,2 @@
+# Pendencias de migracao registradas (<arquivo>:<regra>[:<servico>]  # motivo)
+# Nenhuma no momento.

@@ -93,15 +93,32 @@ if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
 const app = express()
 app.use(express.json({ limit: '2mb' }))
 
+app.disable('x-powered-by')
+
+// CORS: só origens que a própria instalação autoriza. Em produção o navegador e a
+// API são da MESMA origem (o nginx do frontend faz o proxy de /api/), então nenhuma
+// origem cruzada é necessária e a lista fica vazia. Antes o servidor devolvia
+// QUALQUER Origin em Access-Control-Allow-Origin junto com Allow-Credentials:true —
+// o que autoriza, por definição, qualquer site a ler respostas autenticadas de quem
+// está logado. CORS_ORIGINS (separadas por vírgula) é só para quem serve o front em
+// outro endereço (ex.: https://painel.exemplo.com.br).
+const CORS_ORIGINS = new Set(
+  (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
+)
+
 app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Cache-Control', 'no-store')
   const origin = req.headers.origin
-  if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  // A sessão agora é um cookie, não um header Authorization — sem isto o
-  // navegador não envia o cookie em requisição de origem cruzada.
-  res.setHeader('Access-Control-Allow-Credentials', 'true')
+  if (origin && CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // A sessão é um cookie, não um header Authorization — sem isto o navegador
+    // não envia o cookie em requisição de origem cruzada.
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
@@ -335,7 +352,7 @@ let etlRunning = false
 // então ele não enxerga a fonte que acabou de ser cadastrada/editada. Descartar
 // o pedido deixava essa fonte fora do snapshot até o próximo ciclo agendado —
 // 60 min por padrão, e em dev não há scheduler nenhum rodando (só o serviço
-// `etl` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
+// `scheduler` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
 // fonte, ela aparece em Configurações e as colunas não chegam em lugar nenhum".
 let etlPending = null
 // `forceIds`: fontes que o ciclo deve buscar mesmo fora da agenda — ações
@@ -378,7 +395,7 @@ function triggerEtlRefresh(reason, forceIds = []) {
 
 // ─── Rotas ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'indicadores-sebratel-api', time: new Date().toISOString() })
+  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', time: new Date().toISOString() })
 })
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {

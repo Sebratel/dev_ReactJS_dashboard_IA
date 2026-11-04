@@ -7,7 +7,7 @@
 // A chave vem de SECRETS_KEY (qualquer texto — é derivada pra 32 bytes com
 // sha256). Sem essa env, uma chave aleatória é gerada em data/.secret-key na
 // primeira vez e reusada dali em diante: como `data/` é o MESMO volume nos
-// serviços `api` e `etl` (ver docker-compose.yml), os dois decifram o mesmo
+// serviços `backend` e `scheduler` (ver docker-compose.portainer.yml), os dois decifram o mesmo
 // token sem precisar de configuração nenhuma. Defina SECRETS_KEY quando
 // quiser controlar a chave de fora (rotação, ou compartilhar entre
 // ambientes) — trocar a chave invalida os tokens já salvos, que precisam ser

@@ -12,7 +12,7 @@ COPY . .
 # build: o Vite grava essas variáveis dentro do bundle, então passá-las como
 # `environment` do container não teria efeito nenhum — o JavaScript já estaria
 # gerado sem elas, e o login falharia com "chave inválida" em produção enquanto
-# funciona na sua máquina. Ver `build.args` no docker-compose.yml.
+# funciona na sua máquina. Ver `build.args` no docker-compose.portainer.yml.
 ARG VITE_FIREBASE_API_KEY
 ARG VITE_FIREBASE_AUTH_DOMAIN
 ARG VITE_FIREBASE_PROJECT_ID
@@ -37,10 +37,10 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # A imagem é agnóstica de ambiente: como o login é conduzido pelo servidor
 # (fluxo de código de autorização), a SPA não precisa de Client ID nem de
 # nenhuma outra configuração injetada em runtime — o segredo e o id ficam só no
-# serviço `api`. Por isso aqui não há entrypoint gerando config: nada a gerar.
+# serviço `backend`. Por isso aqui não há entrypoint gerando config: nada a gerar.
 EXPOSE 80
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://localhost/ >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1/ >/dev/null 2>&1 || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]

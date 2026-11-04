@@ -44,7 +44,7 @@ import {
 } from '../server/lakehouseSources.mjs'
 import { decryptSecret } from '../server/secretBox.mjs'
 
-// Onde gravar o snapshot. `SNAPSHOT_OUT` é o nome que o serviço `etl` usa; mas
+// Onde gravar o snapshot. `SNAPSHOT_OUT` é o nome que o serviço `scheduler` usa; mas
 // este script também roda disparado pela PRÓPRIA API (ao cadastrar/editar uma
 // fonte, ver triggerEtlRefresh em server/index.mjs), e lá o que existe no
 // ambiente é `SNAPSHOT_PATH` — o arquivo que ela LÊ.
@@ -54,7 +54,7 @@ import { decryptSecret } from '../server/secretBox.mjs'
 // container dela (caminho que ninguém lê) enquanto a API seguia lendo
 // /snapshot/installData.data — a fonte recém-cadastrada aparecia em
 // Configurações, com contagem de linhas e tudo, e NUNCA chegava no Builder nem
-// no dicionário. Era preciso esperar o serviço `etl` rodar, o que com fonte
+// no dicionário. Era preciso esperar o serviço `scheduler` rodar, o que com fonte
 // agendada de 60 min podia levar uma hora.
 const OUT = resolve(process.env.SNAPSHOT_OUT || process.env.SNAPSHOT_PATH || 'public/installData.data')
 

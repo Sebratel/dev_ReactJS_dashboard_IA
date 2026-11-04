@@ -88,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Dependências, segredos e Dockerfile (relatório HIGH+CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scanners: vuln,secret,misconfig
@@ -99,7 +99,7 @@ jobs:
       - name: Construir a imagem da API para varrer
         run: docker build -f Dockerfile.api -t backend:sec .
       - name: Imagem — CVEs CRITICAL/HIGH com correção (relatório)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: image
           image-ref: backend:sec

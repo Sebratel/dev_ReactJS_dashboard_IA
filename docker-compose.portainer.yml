@@ -43,11 +43,12 @@ services:
       backend:
         condition: service_healthy
     ports:
-      # `:?` em vez de um valor vazio: sem WEB_PORT, o Docker publicava numa
-      # porta ALEATÓRIA — a stack subia "saudável" e ficava inacessível no
-      # endereço esperado, com só um aviso perdido no log do deploy. Agora o
-      # deploy para, dizendo o que falta.
-      - "${WEB_PORT:?defina WEB_PORT na stack (faixa 3000-3099 da planilha de portas) — sem isso o Docker publica numa porta aleatoria}:80"
+      # Porta do HOST do frontend: 3011, registrada na planilha de portas (PROD linha 50 e STAGING linha 51,
+      # 04/11/2026), faixa de Frontend / Web UI (3000-3099), a mesma em staging e produção. Nunca porta
+      # aleatória: sem WEB_PORT vale a 3011 (um `${WEB_PORT}:80` em branco fazia o Docker publicar numa porta
+      # ALEATÓRIA e a stack subia "saudável" e inacessível). A produção já existente mantém o valor que a stack
+      # define em WEB_PORT até ser mexida; ao migrar, atualize NPM, firewall e monitoração.
+      - "${WEB_PORT:-3011}:80"
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:

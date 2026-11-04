@@ -137,7 +137,7 @@ jobs:
       VITE_FIREBASE_PROJECT_ID: ci-projeto
       VITE_FIREBASE_APP_ID: ci-app
       SECRETS_KEY: ci-descartavel-0123456789abcdef
-      WEB_PORT: '3000'
+      WEB_PORT: '3011'
     steps:
       - uses: actions/checkout@v4
 
@@ -151,18 +151,18 @@ jobs:
       - name: Health da API responde ok
         run: |
           curl -fsS --retry 15 --retry-delay 3 --retry-connrefused \
-            http://localhost:3000/api/health -o health.json
+            http://localhost:3011/api/health -o health.json
           grep -q '"status":"ok"' health.json || {
             echo "::error::/api/health devolveu resposta inesperada:"; cat health.json; exit 1; }
 
       - name: Frontend serve a SPA e o proxy /api/ alcança o backend
         run: |
-          curl -fsS http://localhost:3000/ | grep -qi '<div id="root"' || {
+          curl -fsS http://localhost:3011/ | grep -qi '<div id="root"' || {
             echo "::error::frontend não serviu o index.html"; exit 1; }
-          curl -fsSI http://localhost:3000/ | grep -qi 'x-content-type-options: nosniff' || {
+          curl -fsSI http://localhost:3011/ | grep -qi 'x-content-type-options: nosniff' || {
             echo "::error::nginx sem os cabeçalhos de segurança"; exit 1; }
           # rota autenticada sem cookie tem de responder 401 (e não 200 nem 502)
-          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3000/api/workspace/tree)
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3011/api/workspace/tree)
           [ "$codigo" = "401" ] || { echo "::error::/api/workspace/tree sem sessão devolveu $codigo (esperado 401)"; exit 1; }
 
       - name: Containers rodam sem root

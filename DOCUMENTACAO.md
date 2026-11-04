@@ -162,7 +162,7 @@ O ciclo automático de ETL (`scripts/etl-scheduler.mjs`) não faz parte do `npm 
 | Data Hub | `DHUB_BASE_URL`, `DHUB_PAGE_SIZE`, `DHUB_MAX_ROWS`, `DHUB_TIMEOUT_MS`, `DHUB_COPY_MAX_MB` (100) | Não — todas com padrão (os mesmos números da tabela de limites, seção 5). |
 | Data Hub — leitura direta | `DHUB_QUERY_CACHE_SECONDS` (60), `DHUB_QUERY_CONCURRENCY` (6), `DHUB_QUERY_TIMEOUT_MS` (45000) | Não. Só a `backend` usa. |
 | API/ETL | `API_PORT` (8788), `SNAPSHOT_PATH`, `ETL_BASE_INTERVAL_MINUTES` (2 min), `ETL_RUN_ON_START` | Não. |
-| Deploy | `WEB_PORT` (faixa 3000–3099, da planilha de portas) | Obrigatória em staging e produção. |
+| Deploy | `WEB_PORT` (3011, registrada na planilha de portas) | Padrão 3011; a produção existente mantém o valor da stack até ser mexida. |
 
 Planilhas do Google não têm variável própria — reusam o Client ID acima e o token OAuth do próprio usuário logado (3.7-bis).
 

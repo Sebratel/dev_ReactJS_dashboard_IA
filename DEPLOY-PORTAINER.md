@@ -68,7 +68,7 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 | Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
 | Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
 | Firebase / Data Hub | projeto e token **de staging** | os de produção |
-| `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (porta na faixa de frontend **3000–3099**; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
+| `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (`WEB_PORT=3011`, registrada; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
 
 **Webhook de deploy de staging** (o job `deploy-staging` de [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
 
@@ -135,7 +135,7 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
-| `WEB_PORT` | Porta publicada no host, na faixa de frontend **3000–3099** registrada na planilha de portas (mesma em staging e produção). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
+| `WEB_PORT` | Porta publicada no host. **Registrada: 3011** (faixa de frontend 3000–3099; planilha de portas, PROD linha 50 e STAGING linha 51), a mesma em staging e produção. Sem a variável o compose usa 3011 (nunca porta aleatória). A produção já existente mantém o valor que a stack define até ser mexida; ao migrar, atualize junto o upstream do NPM, o firewall e a monitoração. |
 
 ### Não há credencial de banco
 

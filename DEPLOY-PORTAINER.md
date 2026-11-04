@@ -135,7 +135,7 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
-| `WEB_PORT` | Porta publicada no host (ex. `8081`). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
+| `WEB_PORT` | Porta publicada no host, na faixa de frontend **3000–3099** registrada na planilha de portas (mesma em staging e produção). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
 
 ### Não há credencial de banco
 
@@ -177,7 +177,7 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
 
 1. `docker compose ps` (ou a tela da stack): `frontend` e `backend` devem ficar
    **healthy**; `scheduler` tem healthcheck próprio (o processo do agendador está vivo — ele não abre porta).
-2. Abra `http://<servidor>:8081/api/health` — deve responder
+2. Abra `http://<servidor>:<WEB_PORT>/api/health` — deve responder
    `{"status":"ok","ok":true,...}`. Se der 502, o `backend` não subiu (veja os logs dele).
 3. Faça login. A mensagem de erro diz de onde veio a recusa, e cada uma tem uma
    causa típica (seção 5): "endereço não está liberado no Firebase" é o host

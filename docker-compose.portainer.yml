@@ -47,7 +47,7 @@ services:
       # porta ALEATÓRIA — a stack subia "saudável" e ficava inacessível no
       # endereço esperado, com só um aviso perdido no log do deploy. Agora o
       # deploy para, dizendo o que falta.
-      - "${WEB_PORT:?defina WEB_PORT na stack (ex.: 8081) — sem isso o Docker publica numa porta aleatoria}:80"
+      - "${WEB_PORT:?defina WEB_PORT na stack (faixa 3000-3099 da planilha de portas) — sem isso o Docker publica numa porta aleatoria}:80"
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:

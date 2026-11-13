@@ -66,7 +66,7 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 | Branch | `staging` | `main` |
 | Stack no Portainer | `dev_reactjs_dashboard_ia-staging` | `indicadores-sebratel` (a atual — ver a nota de migração abaixo) |
 | Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
-| Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
+| Como atualiza | **automático**: push em `staging` → CI verde → webhook | **automático após aprovação**: PR para `main` (`ci-ok` + 1 aprovação) → merge → CI verde → job `deploy-production` aciona o webhook (com *Required reviewers* no Environment `production`, espera a aprovação do deploy). *Pull and redeploy* manual segue valendo |
 | Firebase / Data Hub | projeto e token **de staging** | os de produção |
 | `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (`WEB_PORT=3011`, registrada; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
 
@@ -80,6 +80,12 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
    o Portainer puxa a branch e **rebuilda no host** (o compose usa `build:`, não há registry).
 4. Conferir: o job termina com "Webhook acionado"; no Portainer, a stack mostra o redeploy e os três serviços
    ficam **healthy**; `http://<staging>:<WEB_PORT>/api/health` responde `{"status":"ok",...}`.
+
+**Webhook de deploy de produção** (job `deploy-production`, mesmo arquivo): stack `dev_reactjs_dashboard_ia` no Portainer de
+produção → **GitOps updates** → Webhook (com *Re-pull image* e *Force redeployment*). No GitHub: *Environments → production → Secrets*
+`PORTAINER_WEBHOOK_URL_PRODUCTION`; opcional em *Variables*, `HEALTH_URL_PRODUCTION` (ex.: `http://<host>:3011/api/health`) para o job
+conferir, em até 10 min, o `/api/health` `ok` na versão do `package.json`. Marque *Required reviewers* no Environment para exigir
+aprovação humana antes de cada deploy.
 
 > Não ligue o **polling** do GitOps junto com o webhook: o Portainer poderia puxar um commit antes do CI terminar.
 

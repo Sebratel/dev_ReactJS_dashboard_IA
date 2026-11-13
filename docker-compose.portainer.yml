@@ -25,17 +25,17 @@ services:
       # Portainer: mudar qualquer uma delas exige **redeploy com rebuild** —
       # recriar o container sozinho não muda nada.
       args:
-        APP_VERSION: ${APP_VERSION:-1.0.1}
+        APP_VERSION: ${APP_VERSION:-1.0.2}
         VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
         VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN}
         VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
         VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
-    image: indicadores-sebratel-frontend:${APP_VERSION:-1.0.1}
+    image: indicadores-sebratel-frontend:${APP_VERSION:-1.0.2}
     pull_policy: build
     # Versão da aplicação visível no Portainer (tag da imagem acima + este label). O valor padrão literal é
     # conferido contra o package.json pelo CI (.github/scripts/validate-version.py); mude com `npm run version:set`.
     labels:
-      org.opencontainers.image.version: ${APP_VERSION:-1.0.1}
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel
@@ -72,13 +72,13 @@ services:
       context: .
       dockerfile: Dockerfile.api
       args:
-        APP_VERSION: ${APP_VERSION:-1.0.1}
-    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.1}
+        APP_VERSION: ${APP_VERSION:-1.0.2}
+    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.2}
     pull_policy: build
     # Versão da aplicação visível no Portainer (tag da imagem acima + este label). O valor padrão literal é
     # conferido contra o package.json pelo CI (.github/scripts/validate-version.py); mude com `npm run version:set`.
     labels:
-      org.opencontainers.image.version: ${APP_VERSION:-1.0.1}
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel
@@ -150,6 +150,12 @@ services:
       # (production | staging); no Portainer de staging, defina APP_ENV=staging.
       NODE_ENV: production
       APP_ENV: ${APP_ENV:-production}
+      # Elastic APM (skill observabilidade-backend). ATENCAO: `${VAR-default}` SEM dois-pontos é de propósito — vazio
+      # significa "agente desligado" (CI, local); com `:-` não haveria como desligar. Nome do serviço fixo entre
+      # ambientes; o ambiente (production | staging) é o que o Kibana usa para separar.
+      ELASTIC_APM_SERVER_URL: ${ELASTIC_APM_SERVER_URL-https://apm.sebratel.net.br}
+      ELASTIC_APM_SERVICE_NAME: ${ELASTIC_APM_SERVICE_NAME:-indicadores-sebratel-api}
+      ELASTIC_APM_ENVIRONMENT: ${ELASTIC_APM_ENVIRONMENT:-${APP_ENV:-production}}
       SLOW_REQUEST_MS: ${SLOW_REQUEST_MS:-5000}
       # Origens extras autorizadas a chamar a API com cookie (CORS). Vazio = só a mesma origem (o nginx faz o proxy).
       CORS_ORIGINS: ${CORS_ORIGINS:-}
@@ -186,11 +192,11 @@ services:
       context: .
       dockerfile: Dockerfile.api
       args:
-        APP_VERSION: ${APP_VERSION:-1.0.1}
-    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.1}
+        APP_VERSION: ${APP_VERSION:-1.0.2}
+    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.2}
     pull_policy: build
     labels:
-      org.opencontainers.image.version: ${APP_VERSION:-1.0.1}
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel

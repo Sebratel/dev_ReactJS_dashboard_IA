@@ -136,6 +136,9 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
 | `WEB_PORT` | Porta publicada no host. **Registrada: 3011** (faixa de frontend 3000–3099; planilha de portas, PROD linha 50 e STAGING linha 51), a mesma em staging e produção. Sem a variável o compose usa 3011 (nunca porta aleatória). A produção já existente mantém o valor que a stack define até ser mexida; ao migrar, atualize junto o upstream do NPM, o firewall e a monitoração. |
+| `ELASTIC_APM_SERVER_URL` | Elastic APM. Padrão `https://apm.sebratel.net.br`; **vazio desliga o agente** (por isso o compose usa `${VAR-default}`, sem dois-pontos). O CI roda com ela vazia. |
+| `ELASTIC_APM_SERVICE_NAME` | Nome do serviço no APM: **fixo entre ambientes** (`indicadores-sebratel-api`, igual ao campo `service` do log). Nunca ponha o ambiente no nome. |
+| `ELASTIC_APM_ENVIRONMENT` | `production` ou `staging` — é o que separa os ambientes no Kibana. Sem ela vale `APP_ENV`. |
 
 ### Não há credencial de banco
 

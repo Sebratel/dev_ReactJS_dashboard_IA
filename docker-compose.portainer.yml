@@ -251,10 +251,16 @@ networks:
     driver: bridge
 
 volumes:
+  # `name:` explícito com padrão = o que o Compose geraria sozinho para a stack `dev_reactjs_dashboard_ia`
+  # (`<stack>_<volume>`), então stack nova não muda de comportamento. Existe para MIGRAR uma stack que mudou de
+  # nome sem perder dados: no Environment da stack, aponte para os volumes antigos (ver DEPLOY-PORTAINER.md,
+  # "Migração do nome da stack"). Sem `external: true` de propósito: o volume é criado se não existir.
   snapshot:
+    name: ${SNAPSHOT_VOLUME_NAME:-dev_reactjs_dashboard_ia_snapshot}
   # Fontes do Data Hub (data/lakehouseSources.json), planilhas, workspace,
   # sessões de login (data/sessions.json) e a chave de cifra
   # (data/.secret-key) — precisa ser o MESMO volume nos serviços api e etl.
   # Com volumes separados, o etl não vê as fontes cadastradas pela tela (grava
   # um snapshot vazio) e os tokens do Data Hub ficam indecifráveis do lado dele.
   data:
+    name: ${DATA_VOLUME_NAME:-dev_reactjs_dashboard_ia_data}

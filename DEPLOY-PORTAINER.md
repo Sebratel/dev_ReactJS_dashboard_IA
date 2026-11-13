@@ -64,7 +64,7 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 | | Staging | Produção |
 |---|---|---|
 | Branch | `staging` | `main` |
-| Stack no Portainer | `dev_reactjs_dashboard_ia-staging` | `indicadores-sebratel` (a atual — ver a nota de migração abaixo) |
+| Stack no Portainer | `dev_reactjs_dashboard_ia` (hoje `dashboard-ia`; migração abaixo) | `dev_reactjs_dashboard_ia` (ainda não criada no Portainer de produção) |
 | Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
 | Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
 | Firebase / Data Hub | projeto e token **de staging** | os de produção |
@@ -103,6 +103,27 @@ ambiente (`staging`, `prod`...). O ambiente se distingue pela **stack** e pelas 
 > `snapshot` e `data`). **Não renomeie a stack de produção**: um nome novo cria volumes novos e vazios (a chave
 > `SECRETS_KEY`, as fontes e as sessões ficariam para trás). Renomear só com cópia prévia dos volumes. (3) Se algo
 > externo apontava para o nome do container (`web`/`api`), ajuste — nada neste repositório aponta.
+
+**Migração do nome da stack — staging `dashboard-ia` → `dev_reactjs_dashboard_ia`** (padrão: nome do repositório em minúsculas).
+Renomear = recriar, e o nome é o prefixo dos volumes: sem cuidado, a stack nova sobe com `data` e `snapshot` **vazios**
+(perde `SECRETS_KEY`/chave de cifra, fontes do Data Hub, dashboards, sessões e a config de IA). Por isso o compose aceita
+`DATA_VOLUME_NAME` e `SNAPSHOT_VOLUME_NAME`, que fazem a stack nova reaproveitar os volumes da antiga:
+
+1. Antes: *Volumes* no Portainer de staging → confirme os nomes `dashboard-ia_data` e `dashboard-ia_snapshot`. Anote as
+   *Environment variables* da stack atual (Editor → Environment variables), sobretudo `SECRETS_KEY` — **tem de ser a mesma**.
+2. Mergeie este PR em `staging` (a stack antiga, que usa o webhook, vai redeployar já com o compose novo — é inofensivo:
+   sem as variáveis novas os nomes de volume continuam `dashboard-ia_*`? **Não**: o padrão passa a ser `dev_reactjs_dashboard_ia_*`.
+   Por isso, ANTES de mergear, adicione `DATA_VOLUME_NAME=dashboard-ia_data` e `SNAPSHOT_VOLUME_NAME=dashboard-ia_snapshot`
+   às variáveis da stack antiga e salve; só então mergeie).
+3. Crie a stack nova `dev_reactjs_dashboard_ia` (*Add stack → Repository*, `refs/heads/staging`, `docker-compose.portainer.yml`,
+   mesmas variáveis da antiga **mais** `DATA_VOLUME_NAME=dashboard-ia_data` e `SNAPSHOT_VOLUME_NAME=dashboard-ia_snapshot`).
+   **Antes de dar *Deploy***: *Stop* da stack antiga (dois processos no mesmo volume corrompem `data/`; a porta 3011 também colide).
+4. Depois do *Deploy*: os três serviços *healthy*, login funciona e as dashboards antigas aparecem. O Compose avisa que o volume
+   "não foi criado por ele" — é esperado.
+5. Ligue o **Webhook** da stack nova (*Re-pull image* + *Force redeployment*) e troque o secret `PORTAINER_WEBHOOK_URL_STAGING`
+   (GitHub → Environments → staging). Depois de alguns dias estável, apague a stack antiga **sem marcar a remoção de volumes**.
+6. Os volumes continuam com o prefixo antigo: é só nome, nada a corrigir. Se um dia quiser o nome novo, copie os dados para um
+   volume novo com a stack parada.
 
 **Rollback**: `git revert <commit>` na branch (via PR, com o CI rodando) e *Pull and redeploy*. Em emergência, aponte a
 *Repository reference* da stack para o commit/tag anterior e faça o redeploy; depois corrija a branch. Nunca force-push

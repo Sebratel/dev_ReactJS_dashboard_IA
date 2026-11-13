@@ -8,12 +8,14 @@
 #   1. Nenhum `container_name` fixo — o Portainer prefixa os containers com o
 #      nome da stack. Nome fixo colide entre stacks (ex. uma de homologação e
 #      uma de produção no mesmo host) e atrapalha o redeploy.
-#   2. Nenhuma credencial do Google no build nem no serviço `web`: o login é
+#   2. Nenhuma credencial do Google no build nem no serviço `frontend`: o login é
 #      conduzido pelo servidor (fluxo de código de autorização), então o Client
-#      ID e o Client Secret ficam só no `api`, lidos do ambiente em runtime.
-#      A imagem do `web` é a mesma em qualquer ambiente.
+#      ID e o Client Secret ficam só no `backend`, lidos do ambiente em runtime.
+#      A imagem do `frontend` é a mesma em qualquer ambiente.
+name: dev_reactjs_dashboard_ia
+
 services:
-  web:
+  frontend:
     build:
       context: .
       dockerfile: Dockerfile
@@ -23,28 +25,34 @@ services:
       # Portainer: mudar qualquer uma delas exige **redeploy com rebuild** —
       # recriar o container sozinho não muda nada.
       args:
+        APP_VERSION: ${APP_VERSION:-1.0.2}
         VITE_FIREBASE_API_KEY: ${VITE_FIREBASE_API_KEY}
         VITE_FIREBASE_AUTH_DOMAIN: ${VITE_FIREBASE_AUTH_DOMAIN}
         VITE_FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID}
         VITE_FIREBASE_APP_ID: ${VITE_FIREBASE_APP_ID}
-    image: indicadores-sebratel-web:latest
+    image: indicadores-sebratel-frontend:${APP_VERSION:-1.0.2}
     pull_policy: build
+    # Versão da aplicação visível no Portainer (tag da imagem acima + este label). O valor padrão literal é
+    # conferido contra o package.json pelo CI (.github/scripts/validate-version.py); mude com `npm run version:set`.
+    labels:
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel
     depends_on:
-      api:
+      backend:
         condition: service_healthy
     ports:
-      # `:?` em vez de um valor vazio: sem WEB_PORT, o Docker publicava numa
-      # porta ALEATÓRIA — a stack subia "saudável" e ficava inacessível no
-      # endereço esperado, com só um aviso perdido no log do deploy. Agora o
-      # deploy para, dizendo o que falta.
-      - "${WEB_PORT:?defina WEB_PORT na stack (ex.: 8081) — sem isso o Docker publica numa porta aleatoria}:80"
+      # Porta do HOST do frontend: 3011, registrada na planilha de portas (PROD linha 50 e STAGING linha 51,
+      # 04/11/2026), faixa de Frontend / Web UI (3000-3099), a mesma em staging e produção. Nunca porta
+      # aleatória: sem WEB_PORT vale a 3011 (um `${WEB_PORT}:80` em branco fazia o Docker publicar numa porta
+      # ALEATÓRIA e a stack subia "saudável" e inacessível). A produção já existente mantém o valor que a stack
+      # define em WEB_PORT até ser mexida; ao migrar, atualize NPM, firewall e monitoração.
+      - "${WEB_PORT:-3011}:80"
     environment:
       TZ: ${TZ:-America/Sao_Paulo}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -54,24 +62,30 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 256m
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 256m
+    memswap_limit: 256m
 
-  api:
+  backend:
     build:
       context: .
       dockerfile: Dockerfile.api
-    image: indicadores-sebratel-api:latest
+      args:
+        APP_VERSION: ${APP_VERSION:-1.0.2}
+    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.2}
     pull_policy: build
+    # Versão da aplicação visível no Portainer (tag da imagem acima + este label). O valor padrão literal é
+    # conferido contra o package.json pelo CI (.github/scripts/validate-version.py); mude com `npm run version:set`.
+    labels:
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel
     environment:
       API_PORT: 8788
       ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-sebratel.com.br}
-      # Arquivo que a API LÊ. O `etl` grava o mesmo arquivo, sob o nome
+      # Arquivo que a API LÊ. O `scheduler` grava o mesmo arquivo, sob o nome
       # SNAPSHOT_OUT. Aqui não é preciso declarar SNAPSHOT_OUT: quando a API
       # dispara o ETL sozinha (ao cadastrar/editar uma fonte), o script usa
       # este valor como destino — ver o comentário em scripts/fetch-install.mjs.
@@ -89,7 +103,7 @@ services:
       #
       # Não há mais client secret nem redirect_uri: o fluxo de código de
       # autorização foi aposentado em 13/09/2026. O que o navegador precisa
-      # (VITE_FIREBASE_*) vai no BUILD do serviço `web`, acima.
+      # (VITE_FIREBASE_*) vai no BUILD do serviço `frontend`, acima.
       FIREBASE_PROJECT_ID: ${VITE_FIREBASE_PROJECT_ID:-}
       # Tempo de vida da sessão de login, em dias.
       SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-30}
@@ -97,15 +111,27 @@ services:
       # tokens do Google das sessões de login. Se ficar vazia, uma chave
       # aleatória é gerada em data/.secret-key no volume compartilhado —
       # funciona, mas definir aqui dá controle sobre rotação. DEVE ser igual à
-      # do serviço `etl`, senão o ETL não decifra os tokens do Data Hub.
+      # do serviço `scheduler`, senão o ETL não decifra os tokens do Data Hub.
       # Trocá-la desloga todo mundo (as sessões viram ilegíveis).
       SECRETS_KEY: ${SECRETS_KEY:-}
       # Não há credencial de banco aqui de propósito: este serviço não fala com
       # Postgres nem MariaDB. Todo dado corporativo entra pelo Data Hub.
       # Endereço padrão sugerido no cadastro de uma fonte do Data Hub.
       DHUB_BASE_URL: ${DHUB_BASE_URL:-https://data-hub.sebratel.net.br}
+      # Leitura direta (fontes em "Direto no Data Hub"): cada widget é uma
+      # consulta no Data Hub. Cache do resultado, consultas simultâneas e tempo
+      # limite — os padrões casam com o motor de lá (6 vagas, 30 s).
+      DHUB_QUERY_CACHE_SECONDS: ${DHUB_QUERY_CACHE_SECONDS:-60}
+      DHUB_QUERY_CONCURRENCY: ${DHUB_QUERY_CONCURRENCY:-6}
+      DHUB_QUERY_TIMEOUT_MS: ${DHUB_QUERY_TIMEOUT_MS:-45000}
+      # Teto de uma fonte em CÓPIA LOCAL (o ETL disparado pela tela roda aqui).
+      DHUB_COPY_MAX_MB: ${DHUB_COPY_MAX_MB:-100}
+      # Bloqueio de edição por guia (server/tabLocks.mjs): prazo, em segundos,
+      # para o bloqueio de quem fechou a tela vencer sozinho. Fica em memória —
+      # a API roda numa instância só (a memória da IA já exige isso).
+      TAB_LOCK_TTL_SECONDS: ${TAB_LOCK_TTL_SECONDS:-120}
       # Montagem com IA. Sem ANTHROPIC_API_KEY o botão "IA" avisa que está
-      # indisponível e o resto do app segue normal. Só o `api` precisa — o
+      # indisponível e o resto do app segue normal. Só o `backend` precisa — o
       # navegador nunca vê a chave.
       # A IA NÃO se configura por ambiente. Provedor, credencial, modelo,
       # esforço, tetos, orçamento e preço vivem em "Configurações › Provedor de
@@ -120,6 +146,19 @@ services:
       # (ver server/dataset.mjs), então sem teto um dataset grande derruba o
       # container por OOM do host em vez de falhar só a consulta.
       NODE_OPTIONS: ${API_NODE_OPTIONS:---max-old-space-size=1024}
+      # Observabilidade (skill observabilidade-backend): log JSON com requestId. APP_ENV é o campo `env` do log
+      # (production | staging); no Portainer de staging, defina APP_ENV=staging.
+      NODE_ENV: production
+      APP_ENV: ${APP_ENV:-production}
+      # Elastic APM (skill observabilidade-backend). ATENCAO: `${VAR-default}` SEM dois-pontos é de propósito — vazio
+      # significa "agente desligado" (CI, local); com `:-` não haveria como desligar. Nome do serviço fixo entre
+      # ambientes; o ambiente (production | staging) é o que o Kibana usa para separar.
+      ELASTIC_APM_SERVER_URL: ${ELASTIC_APM_SERVER_URL-https://apm.sebratel.net.br}
+      ELASTIC_APM_SERVICE_NAME: ${ELASTIC_APM_SERVICE_NAME:-indicadores-sebratel-api}
+      ELASTIC_APM_ENVIRONMENT: ${ELASTIC_APM_ENVIRONMENT:-${APP_ENV:-production}}
+      SLOW_REQUEST_MS: ${SLOW_REQUEST_MS:-5000}
+      # Origens extras autorizadas a chamar a API com cookie (CORS). Vazio = só a mesma origem (o nginx faz o proxy).
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     # Log limitado: sem isto o json-file cresce até encher o disco do host, e
     # este serviço registra uma linha por ida ao modelo. Mesmo ajuste do
     # comercial_pbi.
@@ -128,10 +167,10 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 1.5g
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 1.5g
+    memswap_limit: 1.5g
     volumes:
       # Leitura E escrita: além de ler o snapshot, a API dispara o ETL em
       # segundo plano quando alguém mexe no catálogo de fontes (ver
@@ -139,7 +178,7 @@ services:
       - snapshot:/snapshot
       - data:/app/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8788/api/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8788/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -148,22 +187,35 @@ services:
   # Job do ETL — materializa os datasets do Data Hub num ciclo curto, gravando
   # no volume `snapshot`. O ritmo real de CADA fonte é configurado na tela
   # (tempo real / agendada); este intervalo é só o ciclo base.
-  etl:
+  scheduler:
     build:
       context: .
       dockerfile: Dockerfile.api
-    image: indicadores-sebratel-api:latest
+      args:
+        APP_VERSION: ${APP_VERSION:-1.0.2}
+    image: indicadores-sebratel-backend:${APP_VERSION:-1.0.2}
     pull_policy: build
+    labels:
+      org.opencontainers.image.version: ${APP_VERSION:-1.0.2}
     restart: unless-stopped
     networks:
       - indicadores-sebratel
     command: ["node", "scripts/etl-scheduler.mjs"]
+    # O agendador não abre porta, então o HEALTHCHECK herdado da imagem (:8788/api/health)
+    # o deixaria `unhealthy` para sempre — e `up --wait` do CI (e o Portainer) reprovariam a stack.
+    # Saudável aqui = o processo do agendador está vivo.
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f etl-scheduler >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     environment:
       SNAPSHOT_OUT: /snapshot/installData.data
       # Nome que o scheduler realmente lê (scripts/etl-scheduler.mjs).
       ETL_BASE_INTERVAL_MINUTES: ${ETL_BASE_INTERVAL_MINUTES:-2}
       ETL_RUN_ON_START: ${ETL_RUN_ON_START:-false}
-      # Precisa ser IGUAL à do serviço `api` — é com ela que os tokens do Data
+      # Precisa ser IGUAL à do serviço `backend` — é com ela que os tokens do Data
       # Hub cadastrados pela tela são decifrados aqui.
       SECRETS_KEY: ${SECRETS_KEY:-}
       # Ajustes de paginação/teto da busca no Data Hub — os padrões do código
@@ -171,19 +223,25 @@ services:
       DHUB_PAGE_SIZE: ${DHUB_PAGE_SIZE:-10000}
       DHUB_MAX_ROWS: ${DHUB_MAX_ROWS:-500000}
       DHUB_TIMEOUT_MS: ${DHUB_TIMEOUT_MS:-120000}
+      # Teto de uma fonte em CÓPIA LOCAL, em MB de JSON — acima disso ela vira
+      # erro nela mesma (com a sugestão de leitura direta) em vez de derrubar o
+      # ciclo. A api carrega o snapshot inteiro: 100 MB já pesam ~300 MB lá.
+      DHUB_COPY_MAX_MB: ${DHUB_COPY_MAX_MB:-100}
       TZ: ${TZ:-America/Sao_Paulo}
       # Teto maior que o da api: é este processo que materializa os datasets,
       # montando o snapshot inteiro em memória antes de gravar.
       NODE_OPTIONS: ${ETL_NODE_OPTIONS:---max-old-space-size=2048}
+      NODE_ENV: production
+      APP_ENV: ${APP_ENV:-production}
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    deploy:
-      resources:
-        limits:
-          memory: 2.5g
+    # Limite de memória explícito (skill cicd-deploy-backend): um vazamento derruba só este container, não o host.
+    # memswap_limit igual ao mem_limit = sem swap.
+    mem_limit: 2.5g
+    memswap_limit: 2.5g
     volumes:
       - snapshot:/snapshot
       - data:/app/data

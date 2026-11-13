@@ -425,6 +425,10 @@ export interface TabConfig {
   widgets: WidgetConfig[]
   access?: TabAccess           // ausente = tratado como 'open' (guias legadas/migradas)
   isWelcome?: boolean          // guia de boas-vindas auto-criada — não pode ser removida
+  rev?: number                 // versão da guia no servidor (sobe a cada gravação) — ver saveDashboardFull
+  updatedBy?: string           // e-mail de quem gravou a guia por último (ver stampTab no servidor)
+  updatedByName?: string
+  updatedAt?: string           // ISO
 }
 
 export interface DashboardConfig {
@@ -452,7 +456,10 @@ export interface WidgetDataRequest {
   pageSize?: number
 }
 
-export interface WidgetDataPoint { label: string; value: number; x?: number }
+// `key`: a chave crua do agrupamento, só quando o rótulo exibido é outro (numa
+// Hierarquia de datas, "Março" no lugar de "2026-03") — o filtro por clique
+// lê o período dela (ver clickFilter.ts). Sem `key`, a chave é o próprio label.
+export interface WidgetDataPoint { label: string; value: number; x?: number; key?: string }
 
 // Metadado de uma série extra num ponto (quando o widget tem measures[] ou
 // legendDimension) — a chave real do valor no ponto vive em WidgetDataPoint
@@ -501,6 +508,10 @@ export interface ColumnSort {
 // exatamente as constantes de mesmo nome em server/widgetQuery.mjs — mudar
 // um lado sem o outro quebra a ordenação por essas duas colunas.
 export const MATRIX_LABEL_SORT_KEY = '__row_label__'
+// Separador das partes da chave de uma linha da Matriz (MatrixRowNode.key) —
+// espelha MATRIX_SEP em server/widgetQuery.mjs. O filtro por clique separa a
+// chave por ele para saber o valor de cada nível da linha clicada.
+export const MATRIX_ROW_SEP = '\u0001'
 export const MATRIX_TOTAL_SORT_KEY = '__row_total__'
 
 export interface WidgetDataResponse {

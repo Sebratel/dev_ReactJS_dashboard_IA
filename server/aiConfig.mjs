@@ -29,6 +29,7 @@
 // recadastrar a credencial a cada ida e volta transformaria a comparação num
 // trabalho manual.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { encryptSecret, decryptSecret, maskSecret } from './secretBox.mjs'
@@ -144,7 +145,7 @@ function load() {
     // do app (dashboards, fontes, acessos) não depende dela. Cai no padrão,
     // que é "não configurada" — a tela diz isso, e o arquivo pode ser
     // regravado ali mesmo.
-    console.error(`[ai-config] arquivo ilegível (${e.message}) — tratando como não configurada`)
+    logger.error(`[ai-config] arquivo ilegível (${e.message}) — tratando como não configurada`)
     cache = padrao()
     return cache
   }
@@ -169,7 +170,7 @@ export function aiConfig() {
       // Chave de cifra trocada (SECRETS_KEY diferente, ou volume novo): a
       // credencial salva é inutilizável. Vale como ausente — a tela dirá que
       // a IA não está configurada e pede o recadastro, que é a única saída.
-      console.error(`[ai-config] credencial de ${c.provider} ilegível (${e.message}) — recadastre na tela`)
+      logger.error(`[ai-config] credencial de ${c.provider} ilegível (${e.message}) — recadastre na tela`)
     }
   }
   // `baseUrl` resolvido pro provedor ativo: o adaptador não precisa saber que

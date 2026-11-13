@@ -1,0 +1,46 @@
+name: Carga (manual)
+
+# Teste de carga/stress/spike/soak/abuso sob demanda — não roda em PR (leva de minutos a horas).
+# Rode antes de mudanças que afetam o caminho quente (POST /api/widget-data, widgetQuery, dataset.mjs,
+# sessions.mjs) ou o dimensionamento (memória do compose). O `smoke` já roda a cada PR no ci.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      cenarios:
+        description: 'Cenários separados por espaço: smoke load stress spike soak abuso'
+        default: 'smoke load'
+        required: true
+      linhas:
+        description: 'Linhas do dataset sintético (o snapshot real de produção, em linhas)'
+        default: '100000'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  carga:
+    name: Carga (${{ inputs.cenarios }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Rodar os cenários
+        # Via env, nunca interpolado no script: o valor vem de um input digitado por uma pessoa.
+        env:
+          CENARIOS: ${{ inputs.cenarios }}
+          ROWS: ${{ inputs.linhas }}
+        run: node loadtest/run.mjs $CENARIOS
+      - name: Resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-resultados
+          path: loadtest/out/
+          if-no-files-found: ignore
+          retention-days: 30

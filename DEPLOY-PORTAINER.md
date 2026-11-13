@@ -8,23 +8,23 @@ Portainer com a stack ligada a este repositório. Para o que o app faz, ver
 
 ## 1. O que sobe
 
-A stack ([`docker-compose.yml`](docker-compose.yml)) tem três serviços:
+A stack ([`docker-compose.portainer.yml`](docker-compose.portainer.yml)) tem três serviços:
 
 | Serviço | Imagem | O que faz |
 |---|---|---|
-| `web` | nginx + build da SPA | Serve a interface e faz proxy de `/api/` para o `api`. É o único com porta publicada. |
-| `api` | Node + Express | `/api/*`: workspace, catálogo de fontes, agregação dos widgets, montagem com IA. |
-| `etl` | mesma imagem do `api` | Job de segundo plano: materializa os datasets do Data Hub num snapshot. |
+| `frontend` | nginx + build da SPA | Serve a interface e faz proxy de `/api/` para o `backend`. É o único com porta publicada. |
+| `backend` | Node + Express | `/api/*`: workspace, catálogo de fontes, agregação dos widgets, montagem com IA. |
+| `scheduler` | mesma imagem do `backend` | Job de segundo plano: materializa os datasets do Data Hub num snapshot. |
 
-Dois volumes, os dois **compartilhados entre `api` e `etl`**:
+Dois volumes, os dois **compartilhados entre `backend` e `scheduler`**:
 
 - `snapshot` — o snapshot materializado (dado de todas as fontes, comprimido).
 - `data` — fontes do Data Hub, planilhas, workspace, usuários, sessões de
   login e a chave de cifra dos tokens (`data/.secret-key`).
 
-> **Não separe esses volumes por serviço.** Com volumes diferentes, o `etl` não
+> **Não separe esses volumes por serviço.** Com volumes diferentes, o `scheduler` não
 > vê as fontes cadastradas pela tela (grava um snapshot vazio) e os tokens do
-> Data Hub gravados pelo `api` ficam indecifráveis do lado dele.
+> Data Hub gravados pelo `backend` ficam indecifráveis do lado dele.
 
 ---
 
@@ -37,7 +37,7 @@ No Portainer: **Stacks → Add stack → Repository**.
 | Name | `indicadores-sebratel` |
 | Repository URL | a URL deste repositório no GitHub |
 | Repository reference | `refs/heads/main` (ou a branch que você publica) |
-| Compose path | `docker-compose.yml` |
+| Compose path | `docker-compose.portainer.yml` |
 | Authentication | ligado, se o repositório for privado (usuário + Personal Access Token) |
 
 **GitOps updates** (opcional, recomendado): ligue **Automatic updates**. Duas
@@ -57,6 +57,66 @@ e trocar `build:` por `image:` com tag.
 
 ---
 
+## 2.1. Staging, webhook e CI
+
+Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer próprio), o mesmo código:
+
+| | Staging | Produção |
+|---|---|---|
+| Branch | `staging` | `main` |
+| Stack no Portainer | `dev_reactjs_dashboard_ia-staging` | `indicadores-sebratel` (a atual — ver a nota de migração abaixo) |
+| Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
+| Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
+| Firebase / Data Hub | projeto e token **de staging** | os de produção |
+| `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (`WEB_PORT=3011`, registrada; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
+
+**Webhook de deploy de staging** (o job `deploy-staging` de [`.github/workflows/ci.yml`](.github/workflows/ci.yml)):
+
+1. No Portainer de staging: stack → **GitOps updates** → ligue **Webhook** e copie a URL.
+2. No GitHub: *Settings → Environments → staging → Secrets* → crie `PORTAINER_WEBHOOK_URL_STAGING` com essa URL.
+   A URL é segredo — quem a tem dispara deploy. Nunca a coloque em arquivo, log ou mensagem de commit
+   (o `npm run security:scan` reprova URL de webhook versionada).
+3. A partir daí, todo push em `staging` roda o CI inteiro e, **só se o `ci-ok` passar**, o job chama o webhook;
+   o Portainer puxa a branch e **rebuilda no host** (o compose usa `build:`, não há registry).
+4. Conferir: o job termina com "Webhook acionado"; no Portainer, a stack mostra o redeploy e os três serviços
+   ficam **healthy**; `http://<staging>:<WEB_PORT>/api/health` responde `{"status":"ok",...}`.
+
+> Não ligue o **polling** do GitOps junto com o webhook: o Portainer poderia puxar um commit antes do CI terminar.
+
+**Versão da aplicação (regra mandatória da skill `cicd-deploy-backend`).** A versão vive no `package.json` (projeto novo
+nasce em `1.0.0`) e **todo commit que sobe para `staging` ou `main` precisa ter versão estritamente MAIOR que a da branch
+de destino** — o job `versao` do CI reprova igual ou menor. O Portainer enxerga a versão em três lugares: a **tag da
+imagem** (`indicadores-sebratel-backend:1.0.1`), o label `org.opencontainers.image.version` dos containers e o campo
+`version` de `/api/health`. Para mudar, **nunca edite na mão**: `npm run version:set -- 1.0.2` altera `package.json`,
+`package-lock.json` e o valor padrão `${APP_VERSION:-X.Y.Z}` do compose juntos (o CI reprova se divergirem).
+Patch = correção, minor = funcionalidade compatível, major = quebra de contrato.
+
+**Nomes** (validados a cada PR por [`.github/scripts/validate-compose.py`](.github/scripts/validate-compose.py)):
+`name:` é o nome do repositório em minúsculas (`dev_reactjs_dashboard_ia`); nenhum serviço define `container_name`;
+os serviços têm o **papel** como nome — `frontend`, `backend`, `scheduler` — sem o nome do repositório nem palavra de
+ambiente (`staging`, `prod`...). O ambiente se distingue pela **stack** e pelas variáveis, nunca pelo nome do serviço.
+
+> **Migração dos nomes (stack de produção já existente).** Antes os serviços eram `web`/`api`/`etl` e o arquivo era
+> `docker-compose.yml`. Ao apontar a stack para `docker-compose.portainer.yml`: (1) troque o **Compose path** na stack e
+> faça *Pull and redeploy*; (2) os containers são recriados com os nomes novos — os **volumes não mudam** enquanto a
+> stack mantiver o nome `indicadores-sebratel` (o Portainer passa o nome da stack ao Compose, que prefixa os volumes
+> `snapshot` e `data`). **Não renomeie a stack de produção**: um nome novo cria volumes novos e vazios (a chave
+> `SECRETS_KEY`, as fontes e as sessões ficariam para trás). Renomear só com cópia prévia dos volumes. (3) Se algo
+> externo apontava para o nome do container (`web`/`api`), ajuste — nada neste repositório aponta.
+
+**Rollback**: `git revert <commit>` na branch (via PR, com o CI rodando) e *Pull and redeploy*. Em emergência, aponte a
+*Repository reference* da stack para o commit/tag anterior e faça o redeploy; depois corrija a branch. Nunca force-push
+na `main`. O snapshot e o `data/` ficam nos volumes — o rollback de código não os desfaz (mudanças de formato de
+`data/`, se houver, precisam ser compatíveis com a versão anterior).
+
+**Teste de carga**: ver [`loadtest/README.md`](loadtest/README.md). O cenário `smoke` roda a cada PR; `load`, `stress`, `spike`,
+`soak` e `abuso` são manuais (workflow *Carga (manual)*) e devem rodar antes de mudar o caminho quente ou o dimensionamento.
+
+**Proteção da `main`** (configuração no GitHub, não é arquivo): *Settings → Rules*: exigir PR com 1 aprovação, exigir o
+status check **`ci-ok`** (só ele), bloquear push direto e force-push.
+
+---
+
 ## 3. Variáveis de ambiente da stack
 
 Preencha em **Environment variables**, na própria tela da stack. O `.env` do
@@ -68,14 +128,17 @@ o que vale é o que está aqui. Referência completa e comentada:
 
 | Variável | Para quê |
 |---|---|
-| `VITE_FIREBASE_API_KEY` | Chave web do projeto Firebase. **Entra no BUILD** do serviço `web` (é gravada no bundle), não no runtime. Ver seção 5. |
+| `VITE_FIREBASE_API_KEY` | Chave web do projeto Firebase. **Entra no BUILD** do serviço `frontend` (é gravada no bundle), não no runtime. Ver seção 5. |
 | `VITE_FIREBASE_AUTH_DOMAIN` | `<projeto>.firebaseapp.com`. Também de build. |
-| `VITE_FIREBASE_PROJECT_ID` | Id do projeto Firebase (`authentication-dashboardsia`). De build **e** reaproveitada pelo `api` como `FIREBASE_PROJECT_ID`. |
+| `VITE_FIREBASE_PROJECT_ID` | Id do projeto Firebase (`authentication-dashboardsia`). De build **e** reaproveitada pelo `backend` como `FIREBASE_PROJECT_ID`. |
 | `VITE_FIREBASE_APP_ID` | Id do app web. De build. |
 | `ALLOWED_DOMAIN` | Domínio permitido no login. Padrão: `sebratel.com.br`. |
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
-| `WEB_PORT` | Porta publicada no host (ex. `8081`). **Não tem valor padrão**: se ficar em branco, o compose só emite um aviso e o Docker publica numa porta **aleatória** — a stack sobe, mas fica inacessível no endereço esperado. |
+| `WEB_PORT` | Porta publicada no host. **Registrada: 3011** (faixa de frontend 3000–3099; planilha de portas, PROD linha 50 e STAGING linha 51), a mesma em staging e produção. Sem a variável o compose usa 3011 (nunca porta aleatória). A produção já existente mantém o valor que a stack define até ser mexida; ao migrar, atualize junto o upstream do NPM, o firewall e a monitoração. |
+| `ELASTIC_APM_SERVER_URL` | Elastic APM. Padrão `https://apm.sebratel.net.br`; **vazio desliga o agente** (por isso o compose usa `${VAR-default}`, sem dois-pontos). O CI roda com ela vazia. |
+| `ELASTIC_APM_SERVICE_NAME` | Nome do serviço no APM: **fixo entre ambientes** (`indicadores-sebratel-api`, igual ao campo `service` do log). Nunca ponha o ambiente no nome. |
+| `ELASTIC_APM_ENVIRONMENT` | `production` ou `staging` — é o que separa os ambientes no Kibana. Sem ela vale `APP_ENV`. |
 
 ### Não há credencial de banco
 
@@ -96,11 +159,17 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
 | `DHUB_BASE_URL` | `https://data-hub.sebratel.net.br` | Endereço sugerido no cadastro de uma fonte do Data Hub. |
 | `ETL_BASE_INTERVAL_MINUTES` | `2` | Ciclo base do ETL. Não é o ritmo de cada fonte — isso se configura por fonte, na tela. |
 | `ETL_RUN_ON_START` | `false` | `true` força uma execução do ETL assim que o container sobe. |
-| `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `10000` / `500000` / `120000` | Ajuste fino da busca no Data Hub. O padrão de página é 10.000 porque é o teto do próprio Data Hub — pedir mais só gasta round-trip. |
-| `SESSION_TTL_DAYS` | `30` | Tempo de vida da sessão de login. |
-| `MANUAL_PATH` | `manual/manual-de-uso.pdf` (dentro da imagem `api`) | PDF da página "Manual de uso". Apontar para um arquivo no volume `data` (ex.: `/app/data/manual-de-uso.pdf`) permite trocar o manual sem rebuild. |
+| `DHUB_PAGE_SIZE` / `DHUB_MAX_ROWS` / `DHUB_TIMEOUT_MS` | `10000` / `500000` / `120000` | Ajuste fino da busca no Data Hub (fontes em cópia local). O padrão de página é 10.000 porque é o teto do próprio Data Hub — pedir mais só gasta round-trip. |
+| `DHUB_COPY_MAX_MB` | `100` | Teto de UMA fonte em cópia local, em MB de JSON. Acima disso a fonte vira erro nela mesma, sugerindo a leitura direta, em vez de derrubar o ciclo do ETL. Vai em `backend` e `scheduler`. |
+| `DHUB_QUERY_CACHE_SECONDS` / `DHUB_QUERY_CONCURRENCY` / `DHUB_QUERY_TIMEOUT_MS` | `60` / `6` / `45000` | Leitura direta (só a `backend`): quanto tempo o resultado de uma consulta fica em cache, quantas consultas vão ao Data Hub ao mesmo tempo e o tempo limite de cada uma. Os padrões casam com o motor do Data Hub (6 vagas para painéis, 30 s por consulta). |
+| (sem variável) versão nova do app | — | Depois de um redeploy, quem está com o app aberto vê "Saiu uma versão nova do app — Atualizar agora" em até 2 min, e o servidor recusa salvar de uma página de versão antiga (pede F5). Não é preciso avisar a equipe por fora. |
+| `TAB_LOCK_TTL_SECONDS` | `120` | Bloqueio de edição por guia (só a `backend`): em quanto tempo o bloqueio de quem fechou a tela, perdeu a rede ou a deixou parada vence sozinho. A tela renova a cada 30 s. Fica em memória, então a `backend` roda numa instância só — o que a memória da IA já exigia. |
 
-> `SECRETS_KEY` precisa ser **a mesma** nos serviços `api` e `etl` — o compose
+> **Leitura direta exige o Data Hub atualizado.** A fonte em "Direto no Data Hub" usa a rota `POST /api/public/v1/datasets/:slug/query` do Data Hub (commit `3cea3c6` "API publica: consulta agregada pelo token", na branch `staging` de `Sebratel/dev_DataHub_ReactJS`). Sem ela, o cadastro recusa a leitura direta com a mensagem "ainda não tem a consulta direta" e a fonte pode ser salva como cópia local; as fontes que já existem seguem em cópia e não são afetadas. A ordem segura é: publicar o Data Hub, depois esta stack.
+| `SESSION_TTL_DAYS` | `30` | Tempo de vida da sessão de login. |
+| `MANUAL_PATH` | `manual/manual-de-uso.pdf` (dentro da imagem `backend`) | PDF da página "Manual de uso". Apontar para um arquivo no volume `data` (ex.: `/app/data/manual-de-uso.pdf`) permite trocar o manual sem rebuild. |
+
+> `SECRETS_KEY` precisa ser **a mesma** nos serviços `backend` e `scheduler` — o compose
 > já garante isso passando a mesma variável para os dois. Trocar a chave depois
 > invalida os tokens do Data Hub já cadastrados: eles precisam ser
 > recadastrados na tela (o resto do cadastro é preservado).
@@ -109,28 +178,28 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
 
 ## 4. Depois de subir
 
-1. `docker compose ps` (ou a tela da stack): `web` e `api` devem ficar
-   **healthy**; `etl` não tem healthcheck, é um job em laço.
-2. Abra `http://<servidor>:8081/api/health` — deve responder
-   `{"ok":true,...}`. Se der 502, o `api` não subiu (veja os logs dele).
+1. `docker compose ps` (ou a tela da stack): `frontend` e `backend` devem ficar
+   **healthy**; `scheduler` tem healthcheck próprio (o processo do agendador está vivo — ele não abre porta).
+2. Abra `http://<servidor>:<WEB_PORT>/api/health` — deve responder
+   `{"status":"ok","ok":true,...}`. Se der 502, o `backend` não subiu (veja os logs dele).
 3. Faça login. A mensagem de erro diz de onde veio a recusa, e cada uma tem uma
    causa típica (seção 5): "endereço não está liberado no Firebase" é o host
    faltando em **Authorized domains**; "chave do Firebase não é válida" é
    `VITE_FIREBASE_*` ausente **no build** (redeploy com rebuild); "login não
-   configurado no servidor" é `FIREBASE_PROJECT_ID` faltando no `api`; e
+   configurado no servidor" é `FIREBASE_PROJECT_ID` faltando no `backend`; e
    "acesso restrito a contas @..." é conta de fora do domínio — essa é o
    sistema funcionando.
 4. Com uma conta de administrador (ver `ADMIN_EMAILS`), vá em **Configurações**
    para cadastrar as fontes — a tela não aparece para o usuário Padrão.
 5. **Trocar o manual de uso**: substitua `manual/manual-de-uso.pdf` no
-   repositório por outro PDF com o mesmo nome e faça o redeploy (a imagem `api`
+   repositório por outro PDF com o mesmo nome e faça o redeploy (a imagem `backend`
    copia a pasta). O número de slides é lido do arquivo. Para trocar sem
    rebuild, use `MANUAL_PATH` (seção 3) apontando para o volume `data`.
 
-Nenhum **segredo** é assado na imagem. O que vai no bundle do `web` são as
+Nenhum **segredo** é assado na imagem. O que vai no bundle do `frontend` são as
 `VITE_FIREBASE_*`, que são públicas por design (o navegador precisa delas para
 falar com o Firebase) — e é justamente por irem no bundle que mudá-las exige
-**rebuild**, não só reiniciar. O que o `api` lê em runtime é o
+**rebuild**, não só reiniciar. O que o `backend` lê em runtime é o
 `FIREBASE_PROJECT_ID` e a `SECRETS_KEY`; esses sim trocam com um restart.
 
 ---
@@ -172,7 +241,7 @@ O `Dockerfile` recebe as quatro como `ARG`/`ENV` e **falha o build** se a chave
 ou o project id vierem vazios: melhor quebrar aqui do que subir uma imagem que
 só mostra "chave inválida" no primeiro clique de quem for usar.
 
-O `api` recebe `FIREBASE_PROJECT_ID` (derivado de `VITE_FIREBASE_PROJECT_ID` no
+O `backend` recebe `FIREBASE_PROJECT_ID` (derivado de `VITE_FIREBASE_PROJECT_ID` no
 compose) como variável normal de runtime — é contra ele que o `aud` e o `iss`
 do token são conferidos.
 
@@ -199,7 +268,7 @@ do token são conferidos.
 | "endereço não está liberado no Firebase" (`auth/unauthorized-domain`) | Falta o host em **Authentication → Settings → Authorized domains**. |
 | "provedor Google deste projeto Firebase está com credencial inválida" (`auth/invalid-credential`) | O **client secret** em *Sign-in method → Google → Web SDK configuration* não confere com o client ID dele. Ver abaixo. |
 | "chave do Firebase não é válida" | `VITE_FIREBASE_*` ausente **no build** — redeploy com rebuild. |
-| "login não configurado no servidor" | Falta `FIREBASE_PROJECT_ID` no `api`. |
+| "login não configurado no servidor" | Falta `FIREBASE_PROJECT_ID` no `backend`. |
 | "acesso restrito a contas @…" | Conta de fora do domínio. É o sistema funcionando. |
 
 **Como saber se um client secret é válido, sem adivinhar** — peça um token ao
@@ -239,7 +308,7 @@ curl -s -X POST https://oauth2.googleapis.com/token \
 
 ## 6. Detalhes que evitam dor de cabeça
 
-- **Tudo em `public/` é público.** O nginx do `web` serve o `dist/` inteiro sem
+- **Tudo em `public/` é público.** O nginx do `frontend` serve o `dist/` inteiro sem
   login. Por isso o snapshot versionado (`public/installData.data`, dado real)
   está no `.dockerignore` desde 01/10/2026 — antes disso,
   `/installData.data` respondia para qualquer um. Imagem construída antes dessa
@@ -247,14 +316,14 @@ curl -s -X POST https://oauth2.googleapis.com/token \
 - **Sem `container_name` fixo.** O Portainer prefixa os containers com o nome
   da stack. Nome fixo colide se você tiver duas stacks no mesmo host (ex.
   homologação e produção) e atrapalha o redeploy.
-- **O `web` sobe mesmo se o `api` estiver fora.** O nginx resolve o endereço do
-  `api` **por requisição**, via DNS interno do Docker, em vez de no start (ver o
+- **O `frontend` sobe mesmo se o `backend` estiver fora.** O nginx resolve o endereço do
+  `backend` **por requisição**, via DNS interno do Docker, em vez de no start (ver o
   comentário em [`docker/nginx.conf`](docker/nginx.conf)). Com resolução no
-  start, o nginx se recusa a subir quando o `api` ainda não existe e guarda o IP
-  antigo quando o `api` é recriado — e todo redeploy recria containers. Com a
+  start, o nginx se recusa a subir quando o `backend` ainda não existe e guarda o IP
+  antigo quando o `backend` é recriado — e todo redeploy recria containers. Com a
   resolução diferida, `/api/` responde 502 enquanto o backend não está de pé e
   volta sozinho quando ele sobe.
-- **O `api` monta o volume do snapshot com escrita.** Ele dispara o ETL em
+- **O `backend` monta o volume do snapshot com escrita.** Ele dispara o ETL em
   segundo plano quando alguém mexe no catálogo de fontes, e é o ETL que escreve
   ali. Montar como somente-leitura faz essa atualização sob demanda falhar
   silenciosamente.

@@ -10,6 +10,11 @@
 // O token é enviado uma vez e nunca volta do servidor: a tela mostra só a
 // dica ("dhub_…6T97"). Por isso, ao editar, deixar o campo de token vazio
 // mantém o token que já está salvo.
+//
+// Cada fonte escolhe COMO é lida (ReadModeChoice): direto no Data Hub — o
+// padrão das novas, sem cópia nenhuma — ou cópia local, o jeito de antes. Na
+// leitura direta não existe agenda de atualização: os painéis consultam o
+// Data Hub na hora.
 import { useEffect, useRef, useState } from 'react'
 import {
   Waypoints, Plus, Pencil, Trash2, Loader2, AlertTriangle, RefreshCw, FolderCog, X, Play, KeyRound,
@@ -21,11 +26,12 @@ import { ModalPortal } from '@/components/ui/ModalPortal'
 import { useAuthStore } from '@/store/authStore'
 import type { Folder } from '@/features/workspace/types'
 import { Toggle, RefreshControl, FolderControl, type RefreshPatch } from './SourceControls'
+import { ReadModeChoice, DirectQueryStatus } from './ReadModeChoice'
 import {
   fetchLakehouseSources, createLakehouseSource, updateLakehouseSource, deleteLakehouseSource,
   setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, syncLakehouseSource,
   testLakehouseSource, fetchLakehouseSourceUsage, waitForSourceColumns, builderKey,
-  ApiError, type LakehouseSource, type LakehousePreview,
+  ApiError, type LakehouseSource, type LakehousePreview, type ReadMode,
 } from './lakehouseSourceApi'
 
 const inputCls = 'w-full rounded-lg border border-app-border bg-app-surface px-2.5 py-1.5 text-xs text-gray-200 outline-none focus:border-brand-blue/50'
@@ -56,6 +62,7 @@ function PreviewTable({ preview }: { preview: LakehousePreview }) {
           </tbody>
         </table>
       )}
+      {preview.direct && <DirectQueryStatus direct={preview.direct} />}
     </div>
   )
 }
@@ -73,6 +80,7 @@ function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? defaultBaseUrl)
   const [datasetSlug, setDatasetSlug] = useState(initial?.datasetSlug ?? '')
   const [token, setToken] = useState('')
+  const [readMode, setReadMode] = useState<ReadMode>(initial?.readMode ?? 'direct')
   const [testing, setTesting] = useState(false)
   const [preview, setPreview] = useState<LakehousePreview | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
@@ -121,7 +129,7 @@ function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
     if (!canSave) return
     setSaving(true); setSaveError(null)
     try {
-      const payload = { label, baseUrl, datasetSlug, ...(token.trim() ? { token: token.trim() } : {}) }
+      const payload = { label, baseUrl, datasetSlug, readMode, ...(token.trim() ? { token: token.trim() } : {}) }
       const saved = isEdit ? await updateLakehouseSource(initial.id, payload) : await createLakehouseSource(payload)
       onSaved(saved)
     } catch (e) {
@@ -177,6 +185,11 @@ function LakehouseSourceModal({ initial, defaultBaseUrl, onSaved, onClose }: {
             </span>
           </label>
 
+          <div>
+            <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Como ler esta fonte</span>
+            <div className="mt-1"><ReadModeChoice value={readMode} onChange={setReadMode} /></div>
+          </div>
+
           <div className="rounded-lg border border-app-border p-3">
             <button onClick={runTest} disabled={testing || !canTest} className="flex items-center gap-1.5 text-[11px] font-semibold text-brand-blue hover:text-brand-blueLight disabled:opacity-40">
               {testing ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />} Testar conexão
@@ -216,12 +229,17 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
   const [open, setOpen] = useState(false)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState<string | null>(null)
+  const direct = source.readMode === 'direct'
+  // Cópia cortada no teto de linhas: o Data Hub informou mais do que veio.
+  const cut = !direct && source.rowTotal != null && source.rowCount != null && source.rowTotal > source.rowCount
 
   const sync = async () => {
     setSyncing(true); setSyncMsg(null)
     try {
       await syncLakehouseSource(source.id)
-      setSyncMsg('Busca iniciada em segundo plano — as linhas novas aparecem no Builder em instantes.')
+      setSyncMsg(direct
+        ? 'Pronto — a próxima abertura dos painéis já consulta o Data Hub de novo, sem esperar o cache de 1 minuto.'
+        : 'Busca iniciada em segundo plano — as linhas novas aparecem no Builder em instantes.')
       // O PATCH só dispara o ETL; quem espera ele terminar (e recarrega o
       // dicionário desta mesma tela) é o card pai.
       onSynced()
@@ -245,8 +263,9 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
           <p className="text-[10px] text-gray-500 mt-0.5 font-mono">
             {source.datasetSlug}
             {!source.enabled && <span className="text-risk-critical"> · desativada</span>}
-            {source.enabled && <span> · {source.refreshMode === 'realtime' ? 'tempo real' : `a cada ${source.refreshMinutes}min`}</span>}
-            {source.rowCount != null && <span> · {source.rowCount.toLocaleString('pt-BR')} linhas</span>}
+            {source.enabled && !direct && <span> · {source.refreshMode === 'realtime' ? 'tempo real' : `a cada ${source.refreshMinutes}min`}</span>}
+            {source.rowCount != null && <span> · {source.rowCount.toLocaleString('pt-BR')} linhas{direct ? ' no Data Hub' : ''}</span>}
+            {cut && <span className="text-risk-medium"> · cópia cortada (o Data Hub tem {source.rowTotal!.toLocaleString('pt-BR')})</span>}
           </p>
         </button>
         {source.lastError && (
@@ -257,8 +276,12 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
             <AlertTriangle size={10} /> falhou
           </span>
         )}
-        <span className="text-[10px] font-semibold px-2 py-1 rounded shrink-0 flex items-center gap-1" style={{ color: '#a855f7', background: '#a855f715' }}>
-          <Waypoints size={10} /> Data Hub
+        <span
+          className="text-[10px] font-semibold px-2 py-1 rounded shrink-0 flex items-center gap-1"
+          style={{ color: '#a855f7', background: '#a855f715' }}
+          title={direct ? 'Leitura direta: os painéis consultam o Data Hub na hora, nada é copiado' : 'Cópia local: a tabela é copiada para cá a cada atualização'}
+        >
+          <Waypoints size={10} /> Data Hub · {direct ? 'direta' : 'cópia'}
         </span>
         {source.folderIds && (
           <span
@@ -283,7 +306,15 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
               Última busca falhou{source.lastErrorAt ? ` em ${new Date(source.lastErrorAt).toLocaleString('pt-BR')}` : ''}: {source.lastError}
             </p>
           )}
-          <RefreshControl source={source} noun="fonte" onSave={onSaveRefresh} />
+          {direct ? (
+            <p className="text-[10px] text-gray-400 leading-snug">
+              <span className="font-semibold text-gray-300">Leitura direta</span> — cada painel consulta o Data Hub na hora e
+              guarda o resultado por 1 minuto; não há cópia para agendar. De tempos em tempos o sistema só confere que o Data
+              Hub responde e atualiza o total de linhas.
+            </p>
+          ) : (
+            <RefreshControl source={source} noun="fonte" onSave={onSaveRefresh} />
+          )}
           {isAdmin && (
             <FolderControl
               source={source}
@@ -295,7 +326,7 @@ function SourceRow({ source, isAdmin, canManage, allFolders, onEdit, onDelete, o
           )}
           <div className="space-y-1.5">
             <button onClick={sync} disabled={syncing} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-app-border text-[11px] font-semibold text-gray-300 hover:border-brand-blue/50 hover:text-brand-blue disabled:opacity-50">
-              {syncing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Sincronizar agora
+              {syncing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} {direct ? 'Atualizar agora' : 'Sincronizar agora'}
             </button>
             {syncMsg && <p className="text-[10px] text-gray-400">{syncMsg}</p>}
           </div>
@@ -330,7 +361,7 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
   // Enquanto o ETL busca as linhas da fonte que acabou de ser mexida. Sem isso
   // a tela ficava muda nesses segundos e parecia que nada tinha acontecido —
   // que foi o que levou a apagar e recadastrar a fonte achando que quebrou.
-  const [awaitingEtl, setAwaitingEtl] = useState<string | null>(null)
+  const [awaitingEtl, setAwaitingEtl] = useState<{ label: string; direct: boolean } | null>(null)
   // A espera pelo ETL dura até 3 min; se a pessoa sair da tela nesse meio, não
   // há mais card pra atualizar — e a sondagem precisa parar junto.
   //
@@ -347,8 +378,8 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
 
   // Espera o snapshot alcançar a mudança e só então recarrega a lista e avisa
   // a tela. `gone` = a fonte foi removida (aí o que se espera é ela sumir).
-  const awaitEtl = async (id: string, label: string, gone = false) => {
-    setAwaitingEtl(label)
+  const awaitEtl = async (id: string, label: string, gone = false, direct = false) => {
+    setAwaitingEtl({ label, direct })
     try {
       await waitForSourceColumns(builderKey(id), { gone, isCancelled: () => unmounted.current })
     } finally {
@@ -418,7 +449,8 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
 
       <p className="text-[10px] text-gray-500">
         Consome datasets publicados no Data Hub pela API pública dele, em vez de bater direto no banco de origem. Cada
-        fonte leva o dataset e um token de acesso — o token fica cifrado no servidor e nunca é exibido de volta.
+        fonte leva o dataset e um token de acesso — o token fica cifrado no servidor e nunca é exibido de volta. Na leitura
+        direta (o padrão), os painéis consultam o Data Hub na hora e a tabela não é copiada para cá, seja qual for o tamanho.
       </p>
 
       {loading && !sources && (
@@ -447,7 +479,7 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
             onToggleEnabled={(enabled) => toggleEnabled(s.id, enabled)}
             onSaveRefresh={async (refresh) => { replace(await setLakehouseRefresh(s.id, refresh)) }}
             onSaveFolders={async (folderIds) => { replace(await setLakehouseFolders(s.id, folderIds)) }}
-            onSynced={() => { void awaitEtl(s.id, s.label) }}
+            onSynced={() => { void awaitEtl(s.id, s.label, false, s.readMode === 'direct') }}
           />
         ))}
       </div>
@@ -455,14 +487,16 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
       {awaitingEtl && (
         <p className="flex items-center justify-center gap-1.5 text-[11px] text-brand-cyan">
           <Loader2 size={11} className="animate-spin shrink-0" />
-          Buscando as linhas de "{awaitingEtl}" no Data Hub — as colunas aparecem aqui e no Builder assim que terminar.
+          {awaitingEtl.direct
+            ? `Conectando "${awaitingEtl.label}" ao Data Hub — as colunas aparecem aqui e no Builder em instantes.`
+            : `Buscando as linhas de "${awaitingEtl.label}" no Data Hub — as colunas aparecem aqui e no Builder assim que terminar.`}
         </p>
       )}
 
       {!awaitingEtl && sources && sources.length > 0 && (
         <p className="text-[10px] text-gray-500 text-center">
-          Ao cadastrar, editar ou remover uma fonte, o snapshot é atualizado em segundo plano — as colunas aparecem no
-          editor de widgets do Builder em pouco tempo.
+          Ao cadastrar, editar ou remover uma fonte, as colunas aparecem no editor de widgets do Builder em pouco tempo —
+          na hora, na leitura direta; depois da cópia, na cópia local.
         </p>
       )}
 
@@ -473,7 +507,7 @@ export function LakehouseSourcesCard({ allFolders, onSourcesChanged }: {
           onSaved={(saved) => {
             setEditorOpen({ open: false, source: null })
             setReloadKey((k) => k + 1)
-            void awaitEtl(saved.id, saved.label)
+            void awaitEtl(saved.id, saved.label, false, saved.readMode === 'direct')
           }}
           onClose={() => setEditorOpen({ open: false, source: null })}
         />

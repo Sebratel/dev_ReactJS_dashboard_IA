@@ -11,9 +11,9 @@ import { cn } from '@/utils/cn'
 import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { fetchUsers } from '@/features/access/accessApi'
-import { fetchFolder, createFolder, createDashboard, updateDashboard, deleteDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
+import { fetchFolder, createFolder, createDashboard, updateDashboard, duplicateDashboard, deleteDashboard, deleteFolder, setFolderAccess, setFolderManagers, ApiError } from './workspaceApi'
 import type { Folder, WorkspaceTreeDashboard } from './types'
-import { AccessControl, ManagersControl, type KnownUsers } from './FolderPeopleControls'
+import { FolderPeople, type KnownUsers } from './FolderPeopleControls'
 import { DashboardRow } from './DashboardRow'
 import { inputCls } from './folderStyles'
 
@@ -32,9 +32,10 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
   const [creatingDashboard, setCreatingDashboard] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deletingDashboardId, setDeletingDashboardId] = useState<string | null>(null)
+  const [duplicatingDashboardId, setDuplicatingDashboardId] = useState<string | null>(null)
   const [dashboardToDelete, setDashboardToDelete] = useState<WorkspaceTreeDashboard | null>(null)
-  // Quem já acessou o sistema — de onde saem as pessoas de "Acesso à pasta" e
-  // "Gerentes". A lista é admin-only, como as duas seções.
+  // Quem já acessou o sistema — de onde saem as pessoas da pasta (acesso e
+  // gerentes). A lista é admin-only, como a seção.
   const [known, setKnown] = useState<KnownUsers>({ users: null, error: null })
 
   const treeFolder = currentId ? treeFolders?.find((f) => f.id === currentId) ?? null : null
@@ -83,18 +84,26 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
     }
   }
 
-  const saveAccess = async (accessEmails: string[] | null) => {
+  // Acesso e gerentes num "Salvar" só — cada lista vai pela própria rota, e
+  // só a que mudou. Se a 2ª falhar, a 1ª já fica valendo (e a tela mostra).
+  const savePeople = async ({ accessEmails, managers }: { accessEmails: string[] | null; managers: string[] }) => {
     if (!fullFolder) return
-    const saved = await setFolderAccess(fullFolder.id, accessEmails)
-    setFullFolder({ ...fullFolder, accessEmails: saved.accessEmails })
-    refreshWorkspace()
-  }
-
-  const saveManagers = async (managers: string[]) => {
-    if (!fullFolder) return
-    const saved = await setFolderManagers(fullFolder.id, managers)
-    setFullFolder({ ...fullFolder, managers: saved.managers })
-    refreshWorkspace()
+    const sameList = (a: string[] | null, b: string[] | null) =>
+      a === b || (!!a && !!b && a.length === b.length && a.every((x) => b.includes(x)))
+    let next = fullFolder
+    try {
+      if (!sameList(accessEmails, fullFolder.accessEmails)) {
+        const saved = await setFolderAccess(fullFolder.id, accessEmails)
+        next = { ...next, accessEmails: saved.accessEmails }
+      }
+      if (!sameList(managers, fullFolder.managers)) {
+        const saved = await setFolderManagers(fullFolder.id, managers)
+        next = { ...next, managers: saved.managers }
+      }
+    } finally {
+      setFullFolder(next)
+      refreshWorkspace()
+    }
   }
 
   const addDashboard = async () => {
@@ -126,6 +135,21 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
     await refreshWorkspace()
   }
 
+  // A cópia entra logo abaixo, na lista e no menu lateral.
+  const duplicateDash = async (dashboard: WorkspaceTreeDashboard) => {
+    if (!currentId) return
+    setDuplicatingDashboardId(dashboard.id)
+    try {
+      const copy = await duplicateDashboard(currentId, dashboard.id)
+      if (fullFolder) setFullFolder({ ...fullFolder, dashboards: [...fullFolder.dashboards, copy] })
+      await refreshWorkspace()
+    } catch (e) {
+      alert(e instanceof ApiError ? e.message : 'Falha ao duplicar a dashboard.')
+    } finally {
+      setDuplicatingDashboardId(null)
+    }
+  }
+
   const confirmDeleteDashboard = async () => {
     if (!currentId || !dashboardToDelete) return
     setDeletingDashboardId(dashboardToDelete.id)
@@ -155,7 +179,7 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
   return (
     <ModalPortal>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
-        <div className="w-full max-w-md max-h-[85vh] overflow-auto rounded-2xl border border-app-border bg-app-card shadow-card-lg">
+        <div className="w-full max-w-lg max-h-[85vh] overflow-auto rounded-2xl border border-app-border bg-app-card shadow-card-lg">
           <div className="flex items-center justify-between px-5 py-3.5 border-b border-app-border sticky top-0 bg-app-card">
             <h2 className="text-sm font-bold text-gray-100">{currentId ? 'Configurações da pasta' : 'Nova pasta'}</h2>
             <button onClick={onClose} className="h-7 w-7 flex items-center justify-center rounded-lg text-gray-500 hover:text-gray-200"><X size={14} /></button>
@@ -191,8 +215,7 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
 
                 {isAdmin && fullFolder && (
                   <>
-                    <AccessControl folder={fullFolder} known={known} onSave={saveAccess} />
-                    <ManagersControl folder={fullFolder} known={known} onSave={saveManagers} />
+                    <FolderPeople key={fullFolder.id} folder={fullFolder} known={known} onSave={savePeople} />
                   </>
                 )}
 
@@ -205,7 +228,9 @@ export function FolderSettingsModal({ folderId, onClose }: { folderId: string | 
                           key={d.id}
                           dashboard={d}
                           deleting={deletingDashboardId === d.id}
+                          duplicating={duplicatingDashboardId === d.id}
                           onRename={(name) => renameDashboard(d, name)}
+                          onDuplicate={() => void duplicateDash(d)}
                           onDelete={() => setDashboardToDelete(d)}
                         />
                       ))}

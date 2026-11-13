@@ -13,6 +13,7 @@
 // usado em accessLog.mjs/sheetSources.mjs — lista pequena
 // (um admin escreve à mão), sem necessidade de nada mais elaborado.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 
@@ -54,7 +55,7 @@ function load() {
     const list = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[field-dictionary] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[field-dictionary] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }

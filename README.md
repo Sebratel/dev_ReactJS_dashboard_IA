@@ -2,7 +2,8 @@
 
 Ferramenta interna onde a **própria área monta as telas**: escolhe a fonte, o
 tipo de gráfico, os campos, os filtros e a formatação — ou descreve em português
-o que precisa ver, e a IA propõe os widgets para aprovação. **React 18 + Vite +
+o que precisa ver, e a IA monta medidas e widgets que já entram salvos (com
+"Desfazer"). **React 18 + Vite +
 Recharts** no front, **Express rodado por tsx** no servidor, sem banco de dados.
 
 O assunto não é um relatório específico. É a **dependência de desenvolvedor**:
@@ -11,12 +12,14 @@ uma barra passava por um deploy. Aqui a tela é um documento editável, com
 permissão por pasta, dashboard e guia.
 
 > **Este repositório versiona `data/` e `public/installData.data`** — decisão
-> explícita registrada em [.gitignore](.gitignore), ciente de que põe segredo e
-> dado real da empresa no histórico. Isso inclui `data/.secret-key` (a chave
-> AES que decifra os tokens do Data Hub e as sessões de login),
-> `data/sessions.json` e o log de auditoria. As duas únicas exceções são
-> `data/aiConfig.json` — a chave de API cifrada mais a chave que a decifra no
-> mesmo repositório equivalem a publicar a credencial em claro — e o cache de
+> explícita registrada em [.gitignore](.gitignore), ciente de que põe dado real
+> da empresa no histórico. As exceções são os **segredos**: `data/.secret-key`
+> (a chave AES que decifra os tokens do Data Hub e as sessões de login),
+> `data/lakehouseSources.json` (o token cifrado do Data Hub),
+> `data/sessions.json` (o id da sessão é o próprio cookie de login) e
+> `data/aiConfig.json` — cifrado mais a chave que o decifra, no mesmo
+> repositório, equivale a publicar a credencial em claro. Saíram do git em
+> 18/10/2026 (achado FRN-01 do comitê). Também fica fora o cache de
 > certificados públicos do Google.
 >
 > `node_modules/` também é versionado, e isso tem consequência de projeto: cada
@@ -109,11 +112,12 @@ o `tsc` do `npm run build` checa só o TypeScript do front. Ele precisa de `tsx`
 
 ## De onde vem o dado
 
-Por dois caminhos, e só dois:
+Por dois caminhos, e só dois — e o do Data Hub tem dois modos:
 
-| Fonte | Chave | Como é buscada | Teto |
+| Fonte | Chave | Como é lida | Teto |
 |---|---|---|---|
-| Dataset do **Data Hub** (lakehouse) | `dhub:<id>` | ETL em segundo plano, paginado | 500.000 linhas |
+| Dataset do **Data Hub**, leitura **direta** (padrão) | `dhub:<id>` | cada widget é uma consulta agregada no Data Hub, na hora | nenhum na tabela; 10.000 linhas por resposta |
+| Dataset do **Data Hub**, **cópia local** | `dhub:<id>` | ETL em segundo plano, paginado, para o snapshot | 500.000 linhas e 100 MB |
 | **Planilha do Google** | `sheet:<id>` | dentro da requisição, com o token de quem está logado | 20.000 linhas |
 
 **O app não fala com banco de dados.** Não tem driver, não tem credencial, não
@@ -122,11 +126,53 @@ Postgres do ERP e no MariaDB; manter os dois caminhos consumia duas plataformas
 grandes pela mesma informação, e o lakehouse existe justamente para ser o
 barramento. Dado novo no dashboard se resolve publicando o dataset no Data Hub.
 
+### Leitura direta: o Data Hub agrega, nada é copiado
+
+O Data Hub já é o lake (Parquet + DuckDB). Na leitura direta — o padrão de toda
+fonte cadastrada a partir de 01/10/2026 — o app não guarda linha nenhuma: cada
+widget vira um `QueryDef` enviado a `POST /api/public/v1/datasets/<slug>/query`
+([server/directWidgetQuery.mjs](server/directWidgetQuery.mjs)), o DuckDB de lá
+agrupa e agrega, e só o resultado volta. Um gráfico por mês de uma tabela de 1,8
+milhão de linhas atravessa a rede em poucos KB. Foi o que destravou tabela grande
+ou larga: na cópia, 287 mil linhas × 154 colunas eram ~1,5 GB de texto, que
+derrubavam o processo do ETL sem erro em lugar nenhum.
+
+- **A saída é a mesma do motor em memória** — as regras de rótulo, hierarquia de
+  datas, top N, legenda, matriz e tabela são as de
+  [server/widgetQuery.mjs](server/widgetQuery.mjs), reaproveitadas; o que muda é
+  quem agrega. `npm run test:direct` roda 42 widgets nos dois modos e compara.
+- **Relação com outra fonte funciona** como filtro (semi-join pelas chaves) e
+  como campo (eixo, legenda, medida, coluna): o Data Hub agrupa também pela chave
+  da relação e a junção acontece aqui — desde que caiba em 10 mil grupos.
+  Passou disso, o widget diz o que fazer em vez de mostrar número incompleto.
+- **Cache de 60 s** por consulta, a mesma consulta em andamento é compartilhada e
+  no máximo 6 vão ao Data Hub ao mesmo tempo
+  ([server/datahubQuery.mjs](server/datahubQuery.mjs)). Editar a fonte ou clicar
+  em "Atualizar agora" descarta o cache dela.
+- **Exige o Data Hub com a consulta pública** (commit `3cea3c6` "API publica: consulta agregada pelo token", na branch `staging` de `Sebratel/dev_DataHub_ReactJS`:
+  rota `/query`, período em `groupBy`, contagem de linhas, `orNull`,
+  `withTotal`). Sem ela, o cadastro avisa e a fonte pode ficar em cópia local.
+- O ETL não copia fonte direta: na vez dela, só confere que o Data Hub responde
+  e anota o total de linhas, que é o que Configurações mostra.
+
+Diferenças para a cópia, todas a favor do que se espera de BI: média ignora
+campo vazio (a cópia o contava como zero); "Contagem de X" conta texto vazio
+como preenchido; contagem distinta sem campo conta linhas; na tabela paginada lá,
+o vazio vai para o fim e empate na coluna clicada é desfeito pelas demais.
+
+### Cópia local
+
 O ETL ([scripts/fetch-install.mjs](scripts/fetch-install.mjs)) lê o catálogo,
-decifra o token de cada fonte, pagina a API pública do Data Hub e grava **tudo
-num arquivo único gzip**, `public/installData.data` — o snapshot. A API carrega
-esse arquivo inteiro em memória e o recarrega sozinha quando o `mtime` muda, sem
-precisar de restart ([server/dataset.mjs](server/dataset.mjs)).
+decifra o token de cada fonte copiada, pagina a API pública do Data Hub e grava
+**tudo num arquivo único gzip**, `public/installData.data` — o snapshot. A API
+carrega esse arquivo inteiro em memória e o recarrega sozinha quando o `mtime`
+muda, sem precisar de restart ([server/dataset.mjs](server/dataset.mjs)).
+
+Uma fonte copiada que não cabe (`DHUB_COPY_MAX_MB`, padrão 100 MB de JSON,
+estimado pela 1ª página antes de baixar o resto) vira **erro na própria fonte**,
+com a sugestão de passar para a leitura direta, e segue a agenda dela. Antes,
+ela derrubava o ciclo inteiro na gravação: nada era registrado, as fontes
+pequenas paravam de atualizar junto, e tudo era baixado de novo a cada 2 minutos.
 
 ### O fim da paginação vem do `total`, nunca do tamanho da página
 
@@ -172,13 +218,13 @@ lixo silenciosamente.
 
 A chave vem de `SECRETS_KEY` ou, faltando ela, de 32 bytes aleatórios gerados em
 `data/.secret-key` na primeira subida. A gravação usa flag `wx` e relê o arquivo
-se falhar, porque `api` e `etl` podem subir ao mesmo tempo e tentar gerar a chave
+se falhar, porque `backend` e `scheduler` podem subir ao mesmo tempo e tentar gerar a chave
 juntos.
 
 **Trocar `SECRETS_KEY` desloga todo mundo** (as sessões salvas viram ilegíveis e
 são tratadas como expiradas, não como erro), invalida os tokens do Data Hub já
 cadastrados — que precisam ser recadastrados na tela — e torna a credencial de IA
-ilegível. E ela precisa ser **idêntica** nos serviços `api` e `etl`, senão um não
+ilegível. E ela precisa ser **idêntica** nos serviços `backend` e `scheduler`, senão um não
 decifra o que o outro cifrou.
 
 O token do Data Hub vai no header `X-Api-Token`, **nunca na query string**, para
@@ -314,6 +360,29 @@ Duas limitações declaradas:
 Relação apontando para fonte removida aparece em âmbar na lista. **Relação
 faltando não avisa nada** — o widget simplesmente não reage ao filtro.
 
+### Filtro por clique
+
+Clicar numa barra, fatia, rótulo do eixo, célula de tabela ou linha/coluna de
+matriz filtra a guia inteira por aquele valor — o filtro cruzado do Power BI, o
+mesmo da Agenda do Dia: o widget clicado não se filtra (acende o item e esmaece
+o resto), Ctrl+clique soma, clicar fora ou Esc limpa, e um balão no rodapé diz
+o que está filtrando. Só fora do modo edição.
+
+Na agenda, todo visual lê a mesma lista de linhas no navegador. Aqui cada widget
+é uma consulta, de fontes diferentes, com medidas nomeadas e relações — então o
+clique **vira filtro da guia**, o mesmo `{ filter, values }` dos filtros do topo
+([clickFilter.ts](src/features/builder/clickFilter.ts)). Com isso, relação
+(semi-join pela chave), medida nomeada (inclusive fórmula, com o aviso de
+"filtro parcial") e leitura direta já funcionam sem código novo no servidor. O
+servidor só passou a devolver a chave crua do ponto (`key`) quando o rótulo é
+outro — numa hierarquia de datas, "Março" não volta a ser data. Campo de outra
+fonte (`fonte.campo`) vira filtro naquela fonte, e a relação o traz de volta.
+
+O preço é o que um filtro de guia expressa: campo a campo, "está em" ou "entre
+datas". Ctrl+clique em duas células de matriz (Ana às 8h, Bruno às 9h) vira
+"Ana ou Bruno" e "8h ou 9h"; vários meses viram o período do primeiro ao
+último. Histograma e cartão não filtram.
+
 ### A grade tem 24 colunas porque o piso é 1 unidade
 
 O piso de redimensionar de qualquer widget cai sempre em uma unidade da grade.
@@ -367,6 +436,64 @@ olhando, não da dashboard: os filtros ativos escolhidos na barra e a ordenaçã
 por clique no cabeçalho de Tabela/Matriz. Cada pessoa ordena do próprio jeito
 sem afetar ninguém — e sem precisar de permissão de edição.
 
+### Nada some sem aviso
+
+Os problemas mais caros deste app foram os **invisíveis**: o trabalho de alguém
+sumia, ou um gerente não conseguia editar, e nada na tela dizia por quê. Cada
+causa conhecida agora aparece ou é barrada:
+
+| Causa | O que acontece agora |
+|---|---|
+| aba do navegador aberta desde antes de um redeploy (código velho) | aviso flutuante "Saiu uma versão nova do app" ([useNewVersion.ts](src/hooks/useNewVersion.ts) compara o script principal do `index.html` com o carregado), e o servidor **recusa** o salvar de página antiga (409 `client_outdated`) em vez de adivinhar — era a página antiga que regravava a lista inteira de guias e apagava o trabalho dos outros |
+| arquivo de tela da versão antiga sumiu depois do redeploy | `vite:preloadError` recarrega a página uma vez, em vez de deixar a tela em branco |
+| permissão mudou com a página aberta (virou gerente, ganhou/perdeu edição) | a consulta de 15 s traz as permissões de agora (`editable`, `canManage`): fora do modo edição a tela se atualiza; no modo edição, avisa e atualiza ao sair |
+| saiu da dashboard (menu, F5, fechar a aba) com alteração não salva | pergunta antes ("Sair sem salvar?") |
+| o trabalho "sumiu" porque outra pessoa salvou depois | cada guia guarda quem gravou por último e quando; o modo edição mostra "Última gravação desta guia: *Fulano*, hoje às 14:32", e a recusa por cópia velha diz o nome |
+| e-mail na lista de acesso ou de gerentes diferente do login da pessoa | a lista "Pessoas da pasta" põe esse e-mail no topo, marcado "nunca entrou", e explica: se a pessoa já usa o app, o e-mail está errado e ela fica sem o acesso |
+
+### A IA é a exceção: o que ela entrega já entra salvo
+
+Aprovar cartão por cartão e ainda clicar em "Salvar" fazia quem usava a IA achar
+que estava salvo — e perder. Agora, quando a resposta termina, o que ela
+entregou é gravado na hora ([useAiAutoSave.ts](src/features/builder/useAiAutoSave.ts)):
+primeiro as medidas, depois os widgets (que podem usá-las), na guia do pedido. A
+gravação leva **só** isso: o rascunho manual da pessoa continua rascunho. Cada
+resposta mostra onde entrou e tem **Desfazer**, que tira os widgets, as medidas
+novas, volta as medidas ajustadas e remove a guia que nasceu vazia por causa
+dela. Guia bloqueada por outra pessoa, ou medida que só o gerente pode alterar:
+o cartão diz por quê e oferece "Tentar de novo".
+
+As medidas são gravadas **uma a uma** (`PUT …/dashboards/:did/measures`),
+nunca a lista inteira — inclusive no "Salvar" manual, que manda só o que mudou.
+Quem só edita uma guia cria medida nova e remove uma sem uso; alterar uma medida
+que já existe é do gerente da pasta (ela vale pra dashboard inteira).
+
+### Uma guia, um editor por vez
+
+Enquanto alguém está no modo edição de uma guia, ela fica **bloqueada para os
+outros** — e só ela: as outras guias da mesma dashboard continuam livres, que é
+o caso de um gerente com uma guia por supervisor, todos mexendo ao mesmo tempo.
+Quem abre uma guia bloqueada vê o cadeado na aba e o aviso "*Fulano* está
+editando esta guia", e não consegue editar até ela ficar livre; a tela pega o
+bloqueio sozinha quando isso acontece.
+
+O bloqueio vive **em memória** na API ([server/tabLocks.mjs](server/tabLocks.mjs))
+e é da **janela**, não só do e-mail: a tela renova a cada 30 s, e quem fecha a
+aba, perde a rede ou deixa a tela parada 20 minutos perde o bloqueio sozinho em
+até 2 minutos (`TAB_LOCK_TTL_SECONDS`). Não existe bloqueio esquecido para um
+administrador destravar. A API precisa rodar numa instância só — o que já era
+verdade por causa da memória da IA.
+
+O bloqueio é a parte visível; a garantia está no salvar. Antes, salvar
+substituía **todas** as guias pela cópia que a tela tinha aberto — um gerente
+que abriu a dashboard às 9h apagava, ao salvar às 10h, o que um supervisor
+gravou às 9h30. Agora o Builder manda só as guias que mudou
+(`changedTabIds`/`removedTabIds`), o servidor grava guia por guia e recusa
+(409, dizendo quem) mudar ou remover uma guia que outra pessoa está editando.
+Cada guia tem uma versão (`rev`): gravar uma guia a partir de uma cópia
+desatualizada também é recusado. E quem só está olhando recebe a versão nova de
+uma guia salva por outra pessoa em até 15 s, sem F5.
+
 ---
 
 ## Montagem com IA
@@ -413,7 +540,7 @@ preenchido.
 As duas únicas variáveis de IA que sobraram são da **leitura de gráfico**, não da
 montagem, porque nunca tiveram tela: `AI_INSIGHT_EFFORT` (padrão `medium`) e
 `AI_INSIGHT_MAX_TOKENS` (padrão 1200). Nenhuma das duas está no
-[docker-compose.yml](docker-compose.yml) — em produção rodam sempre no padrão.
+[docker-compose.portainer.yml](docker-compose.portainer.yml) — em produção rodam sempre no padrão.
 
 Padrões de fábrica: esforço `high`, teto de 16.000 tokens, 14 idas por turno,
 orçamento de US$ 5 por usuário por dia. O campo **modelo nasce vazio, inclusive
@@ -441,9 +568,19 @@ leitura, o modelo vê o resultado **já agregado** que o gráfico desenha.
 | Trava | O que impede |
 |---|---|
 | validação contra o catálogo real | campo ou fonte inexistente volta como erro e o modelo corrige na mesma conversa, em vez de gravar lixo |
-| posição x/y fora do schema | o cliente calcula com `findFreeSpot` ao aprovar — o modelo nunca sobrepõe o que já existe |
-| nada é gravado sozinho | a proposta vira rascunho só depois de "Adicionar à guia", e ainda depende do "Salvar" |
-| fontes da conversa | `field_values` só alcança as fontes que a pessoa selecionou; turno de conversa de outro e-mail é recusado |
+| posição x/y fora do schema | o cliente calcula com `findFreeSpot` ao salvar — o modelo nunca sobrepõe o que já existe |
+| entra salvo, mas só o que ela entregou | ao fim da resposta, o navegador grava as medidas (uma a uma) e depois os widgets, na guia do pedido — sem levar junto o rascunho da pessoa; cada resposta tem "Desfazer" |
+| fontes da conversa | só as fontes liberadas para a pasta, marcadas no painel — dá para pôr ou tirar no meio da conversa, e vale a partir da mensagem seguinte; `field_values` só alcança as marcadas; turno de conversa de outro e-mail é recusado |
+| ajustar um widget que já existe ("Ajustar com IA") | `update_widget` recebe só o que muda (`changes`) e o que sai (`remove`), aplicado por [applyWidgetPatch](server/aiWidgetSchema.mjs): o resto do widget — formatação, leitura fixada, posição — passa intacto, e o id e o lugar na guia ficam. Campo que o widget já usava vale mesmo fora do catálogo (fonte relacionada); campo novo tem de estar nele. Sem widget escolhido, a chamada volta como erro |
+| o que entregar (passo 4 do painel) | com a entrega restrita (tabelas, gráficos, cards), `propose_widgets` recusa tipo não marcado (inclusive texto) — volta como erro e o modelo refaz na mesma resposta. Medidas nomeadas ficam fora da restrição: o modelo cria as que a análise pedir em qualquer escolha ([server/aiRequestOptions.mjs](server/aiRequestOptions.mjs)) |
+
+O **nível de personalização** (passo 3: Mínimo, Médio — o padrão — ou Alto) e a
+entrega escolhida vão em cada `POST …/messages` como `options` e viram um bloco
+próprio do prompt de sistema **a cada turno**, depois dos blocos com cache — a
+pessoa pode mudar entre um pedido e outro sem estragar o cache. A personalização
+fica só no prompt (aparência não quebra nada); a entrega é cobrada nas
+ferramentas, porque "pedi só tabela e veio card" é o tipo de coisa que a pessoa
+percebe na hora.
 
 Nada aplicado sozinho é deliberado: **o modelo pode interpretar mal um pedido
 ambíguo**.
@@ -585,7 +722,7 @@ acesso à pasta **não é um atalho**: o servidor recusa a gravação dizendo
 mostra só membros daquela pasta — um gerente nunca precisa de visibilidade sobre
 gente de fora do próprio setor.
 
-Das **67 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
+Das **70 rotas** de [server/index.mjs](server/index.mjs), apenas três não passam
 por `requireAuth()`: as duas de login/logout e o `/api/health`. As checagens do
 React Router são **só UX** — o comentário no código diz isso com todas as
 letras. Esconder o link nunca foi controle de acesso.
@@ -670,7 +807,7 @@ nativa e, onde ela não existe ou não responde em 1,5 s, cobre a janela por CSS
 > `assetFileNames` do [vite.config.ts](vite.config.ts) renomeia.
 >
 > **`pdfjs-dist` está em `devDependencies`, de propósito.** O Vite o empacota no
-> build da imagem `web`; a imagem `api` roda `npm ci --omit=dev` e não precisa
+> build da imagem `frontend`; a imagem `backend` roda `npm ci --omit=dev` e não precisa
 > dele — nem da dependência opcional dele, `@napi-rs/canvas`, um binário nativo de
 > ~37 MB (que por isso também fica fora do `node_modules/` versionado, ver
 > `.gitignore`).
@@ -688,9 +825,9 @@ deploy, rodando `npm ci` + `vite build` dentro dele:
 
 | Serviço | O que é | Porta |
 |---|---|---|
-| `web` | nginx servindo a SPA + proxy de `/api/` | `${WEB_PORT}:80` — a única publicada |
-| `api` | Express rodado por `tsx` | 8788, só na rede interna |
-| `etl` | **a mesma imagem do `api`**, com o comando trocado para o agendador | nenhuma |
+| `frontend` | nginx servindo a SPA + proxy de `/api/` | `${WEB_PORT}:80` — a única publicada |
+| `backend` | Express rodado por `tsx` | 8788, só na rede interna |
+| `scheduler` | **a mesma imagem do `backend`**, com o comando trocado para o agendador | nenhuma |
 
 ```bash
 docker compose up -d --build
@@ -702,9 +839,9 @@ docker compose up -d --build
 |---|---|---|
 | **Login (BUILD)** | `VITE_FIREBASE_API_KEY` `VITE_FIREBASE_AUTH_DOMAIN` `VITE_FIREBASE_PROJECT_ID` `VITE_FIREBASE_APP_ID` | **sim — e exigem rebuild** |
 | Login (runtime) | `FIREBASE_PROJECT_ID` (derivado do `VITE_` no compose) `ALLOWED_DOMAIN` `ADMIN_EMAILS` `SESSION_TTL_DAYS` | sim |
-| Cifra | `SECRETS_KEY` | não — gerada sozinha, mas **idêntica em `api` e `etl`** |
+| Cifra | `SECRETS_KEY` | não — gerada sozinha, mas **idêntica em `backend` e `scheduler`** |
 | Publicação | `WEB_PORT` | **sim — o deploy para sem ela** |
-| Data Hub | `DHUB_BASE_URL` `DHUB_PAGE_SIZE` `DHUB_MAX_ROWS` `DHUB_TIMEOUT_MS` | não |
+| Data Hub | `DHUB_BASE_URL` `DHUB_PAGE_SIZE` `DHUB_MAX_ROWS` `DHUB_TIMEOUT_MS` `DHUB_COPY_MAX_MB` `DHUB_QUERY_CACHE_SECONDS` `DHUB_QUERY_CONCURRENCY` `DHUB_QUERY_TIMEOUT_MS` | não |
 | ETL | `ETL_BASE_INTERVAL_MINUTES` `ETL_RUN_ON_START` | não |
 
 **As `VITE_*` são gravadas dentro do bundle pelo Vite, em tempo de build.**
@@ -725,53 +862,49 @@ problema de rede, sendo variável faltando. Hoje o deploy para e diz o que defin
 
 ### Os dois volumes vão nos dois serviços
 
-`snapshot` em `/snapshot` e `data` em `/app/data`, montados em `api` **e** `etl`
-ao mesmo tempo. Separá-los quebra tudo em silêncio: o `etl` não vê as fontes
+`snapshot` em `/snapshot` e `data` em `/app/data`, montados em `backend` **e** `scheduler`
+ao mesmo tempo. Separá-los quebra tudo em silêncio: o `scheduler` não vê as fontes
 cadastradas pela tela, grava um snapshot vazio, e os tokens do Data Hub ficam
 indecifráveis do lado dele. Os containers continuam saudáveis e o Builder fica
 sem dado.
 
-Pelo mesmo motivo o `api` monta `/snapshot` **com escrita**: é ele quem dispara o
+Pelo mesmo motivo o `backend` monta `/snapshot` **com escrita**: é ele quem dispara o
 ETL sob demanda quando alguém mexe no catálogo de fontes. Montar como
 somente-leitura faz essa atualização falhar silenciosamente.
 
-O nginx resolve o endereço do `api` **por requisição**, via DNS interno do Docker,
+O nginx resolve o endereço do `backend` **por requisição**, via DNS interno do Docker,
 e não no start. Com host literal em `proxy_pass`, o nginx se recusa a subir quando
-o `api` ainda não existe e guarda o IP para sempre — e todo redeploy da stack
-recria os containers. Com a resolução diferida, o `web` sobe mesmo com o backend
+o `backend` ainda não existe e guarda o IP para sempre — e todo redeploy da stack
+recria os containers. Com a resolução diferida, o `frontend` sobe mesmo com o backend
 fora, `/api/` responde 502 e volta sozinho.
 
 ### Detalhes que já morderam
 
-- **`web` depende do `api` saudável** (`condition: service_healthy`). Se o `api`
-  entrar em crash loop, o `web` não inicia — nem a tela de login aparece.
-- **O `etl` herda o healthcheck da imagem**, que bate em `:8788/api/health`, e o
-  processo do agendador nunca abre porta nenhuma. Ele tende a aparecer como
-  `unhealthy` permanentemente. Nada depende da saúde dele, então a stack funciona
-  — mas o painel mente. O [DEPLOY-PORTAINER.md](DEPLOY-PORTAINER.md) afirma o
-  contrário; confira em campo antes de acreditar em qualquer um dos dois.
-- **Dois nomes de variável para o mesmo arquivo**: o `api` lê `SNAPSHOT_PATH`, o
-  `etl` escreve em `SNAPSHOT_OUT`, e cada uma só existia no seu próprio serviço.
+- **`frontend` depende do `backend` saudável** (`condition: service_healthy`). Se o `backend`
+  entrar em crash loop, o `frontend` não inicia — nem a tela de login aparece.
+- **O `scheduler` tem healthcheck próprio** no compose (`pgrep -f etl-scheduler`): o da imagem bate em `:8788/api/health` e o agendador nunca abre porta, o que o deixava `unhealthy` para sempre — e faria o `up --wait` do CI reprovar a stack.
+- **Dois nomes de variável para o mesmo arquivo**: o `backend` lê `SNAPSHOT_PATH`, o
+  `scheduler` escreve em `SNAPSHOT_OUT`, e cada uma só existia no seu próprio serviço.
   Acontece que **o ETL também roda disparado pela API**, com o ambiente do
-  container do `api` — onde `SNAPSHOT_OUT` não existe. Ele caía no padrão
-  `./public/installData.data` dentro do container do `api`, caminho que ninguém
+  container do `backend` — onde `SNAPSHOT_OUT` não existe. Ele caía no padrão
+  `./public/installData.data` dentro do container do `backend`, caminho que ninguém
   lê, enquanto a API seguia lendo `/snapshot/installData.data`. A fonte era
   buscada de verdade, o snapshot era gravado de verdade, e os dois nunca se
-  encontravam; a fonte só aparecia quando o serviço `etl` separado rodasse — com
+  encontravam; a fonte só aparecia quando o serviço `scheduler` separado rodasse — com
   agendamento de 60 minutos, até uma hora depois. Pior, **a contagem de linhas na
   tela era pista falsa**: ela vem do registro da fonte, não do snapshot, então
   dava para ver "185.564 linhas" com o snapshot vazio daquela fonte. Corrigido em
   14/09/2026: o destino agora é `SNAPSHOT_OUT || SNAPSHOT_PATH ||
   ./public/installData.data`.
 - **`API_PORT` no compose é o literal 8788**, não `${API_PORT}`. Definir a
-  variável na tela da stack não muda a porta; o nginx também tem `api:8788` fixo.
+  variável na tela da stack não muda a porta; o nginx também tem `backend:8788` fixo.
 - **`ADMIN_EMAILS` vazio não deixa a instalação sem admin** — há 7 e-mails
   embutidos como bootstrap. Quem espera que "vazio = ninguém é admin" vai se
   surpreender. O contrário também: com um admin já salvo, pôr um e-mail em
   `ADMIN_EMAILS` não o torna admin — ele entra como Padrão e é promovido na aba
   Acessos.
-- Heap limitado de propósito (`--max-old-space-size` 1024 no `api`, 2048 no
-  `etl`): o processo carrega o snapshot inteiro em memória, e sem teto um dataset
+- Heap limitado de propósito (`--max-old-space-size` 1024 no `backend`, 2048 no
+  `scheduler`): o processo carrega o snapshot inteiro em memória, e sem teto um dataset
   grande derruba o container por OOM do host em vez de falhar só a consulta.
 - Log `json-file` capado em 10m × 3 nos três serviços — este serviço registra uma
   linha por ida ao modelo, e sem isso o log enche o disco do host.
@@ -829,13 +962,38 @@ aviso.
 
 ```bash
 npm run test:auth     # 21 casos — verificação do ID token do Firebase
-npm run test:ai       # 73 casos — adaptadores dos três provedores e a retomada de conversa
+npm run test:ai       # 95 casos — adaptadores dos três provedores, a retomada de conversa, as preferências do pedido e o ajuste de um widget
 npm run test:access   # 32 casos — papel no primeiro acesso, manual pendente, pedidos de acesso
+npm run test:direct   # 125 casos — leitura direta no Data Hub × cópia local, filtro por clique nos dois modos, tráfego e ETL
+npm run test:locks    # 63 casos — bloqueio por guia, gravação guia por guia, página antiga barrada, medidas uma a uma, duplicar dashboard
+npm run test:click    # 43 casos — lógica do filtro por clique: condições, Ctrl, quem se filtra, o que acende
 ```
 
 Nenhum deles toca na rede nem gasta dinheiro. O **test:access** grava só numa
 pasta temporária (users.json, auditoria, pedidos e workspace próprios) e usa
-e-mails fictícios.
+e-mails fictícios. O **test:locks** também: prova que duas pessoas editam guias
+diferentes ao mesmo tempo mas não a mesma, que o bloqueio vence sozinho, e que o
+que um supervisor salvou não some quando o gerente salva com a cópia antiga.
+
+O **test:direct** cadastra a MESMA tabela (2.400 linhas inventadas) duas vezes,
+uma em cópia local e outra em leitura direta, e exige que 42 widgets — barras,
+séries por mês e por hierarquia de datas, várias medidas, combo, legenda, KPI,
+medidas nomeadas e fórmula, tabela paginada, matriz com subtotais, dispersão,
+histograma, relação como filtro e como campo — deem o mesmo resultado nos dois.
+O Data Hub é um servidor falso em `127.0.0.1` que implementa a consulta pública
+com a semântica do compilador de lá e as conversões do DuckDB que mudam
+resultado (contagem como texto, nulos por último). Prova também que a leitura
+direta não baixa linha bruta, que o ETL não copia fonte direta e que uma cópia
+grande demais vira erro na própria fonte sem congelar as outras. Roda em UTC: no
+fuso local, o filtro de período da cópia escorrega 3 horas na virada do dia
+(defeito antigo da cópia; a direta compara a data como está escrita).
+
+No mesmo cenário, o **filtro por clique** é conferido nos dois modos: o widget
+filtrado pelo clique tem de dar o MESMO número que o item clicado mostrava —
+por cidade, por mês, por hierarquia de datas, por região (campo de Bases, que
+volta pela relação), por célula de matriz, com Ctrl+clique e com medidas
+nomeadas simples e fórmula. O **test:click** cobre a parte sem servidor:
+condições, seleção com e sem Ctrl, quem recebe o filtro e o que fica aceso.
 
 O **test:auth** é código de autenticação, e por isso não se contenta em provar que
 um token bom passa: 18 dos 21 casos provam que os **ruins param**, um a um —

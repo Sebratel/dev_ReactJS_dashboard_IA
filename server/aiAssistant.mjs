@@ -24,15 +24,23 @@
 // catálogo REAL antes de chegar na tela. Campo inexistente volta como erro
 // pro modelo, que corrige na mesma conversa.
 //
-// COMO ISSO NÃO GRAVA NADA SOZINHO: o assistente só PROPÕE. Quem aplica na
-// guia é o usuário, clicando em aprovar — e daí em diante é um rascunho
-// normal do Builder, que ainda depende do "Salvar".
+// O QUE ELE GRAVA: o assistente só entrega widgets e medidas pelas
+// ferramentas (nunca escreve no workspace daqui). Quem grava é o navegador,
+// assim que o turno termina: primeiro as medidas, depois os widgets, cada um
+// salvo direto no servidor sem levar junto o rascunho da pessoa — e cada
+// entrega tem "Desfazer" no painel (ver useAiAutoSave.ts). Antes era preciso
+// aprovar cartão por cartão e ainda clicar em "Salvar".
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { randomUUID } from 'node:crypto'
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource } from './sheetSources.mjs'
 import { listSourceDefs, runWidgetQuery, runFieldValues, resolveMeasure, withSheetSources } from './widgetQuery.mjs'
-import { WIDGET_SCHEMA, PROPOSE_TOOL_SCHEMA, validateWidget, normalizeWidget } from './aiWidgetSchema.mjs'
+import {
+  WIDGET_SCHEMA, PROPOSE_TOOL_SCHEMA, UPDATE_WIDGET_TOOL_SCHEMA,
+  validateWidget, normalizeWidget, applyWidgetPatch,
+} from './aiWidgetSchema.mjs'
+import { normalizeRequestOptions, allowedWidgetTypes, requestOptionsText, deliverLabel } from './aiRequestOptions.mjs'
 import {
   PROPOSE_MEASURES_TOOL_SCHEMA, validateMeasureBatch, normalizeMeasureBatch,
   UPDATE_MEASURES_TOOL_SCHEMA, validateMeasureUpdates, normalizeMeasureUpdates,
@@ -211,6 +219,7 @@ Como trabalhar:
 - Use SOMENTE as fontes e os campos listados no catálogo. Nunca invente nome de campo nem de fonte.
 - Quando o pedido for vago ("principais indicadores"), escolha um conjunto pequeno e bem pensado — 4 a 6 widgets que respondam as perguntas óbvias daquele assunto — em vez de despejar tudo. Comece por um ou dois KPIs, depois quebras por dimensão relevante e uma série temporal se houver campo de data. Se o assunto tiver uma TAXA/PERCENTUAL/COMPARATIVO óbvio (taxa de reincidência, % de conclusão, crescimento vs. mesmo período do ano anterior), pelo menos um dos KPIs deveria ser esse — não só contagens brutas — mesmo que o pedido não tenha usado a palavra "cálculo" ou "medida"; monte-o como medida nomeada (ver abaixo), que é a ferramenta certa pra isso, exatamente como você já escolhe entre bar/line/kpi sem o pedido especificar o tipo de gráfico.
 - Prefira o bucket de data mais largo que ainda faça sentido pra série ('year:'/'quarter:'/'month:' antes de 'day:') — 'month:<campo>' a 'day:<campo>' quando cobrir muitos meses, por exemplo. Pra pedidos do tipo "por ano e mês" ou "com essa hierarquia de datas", combine 2+ buckets do MESMO campo em dimensions/matrixRows/matrixColumns na ordem year→quarter→month→day (ex. ['year:Data','month:Data']) — o motor rotula e ordena cronologicamente sozinho.
+- Widgets do mesmo assunto têm o mesmo recorte: um filtro fixo (widgetFilters) só entra quando o pedido pede aquele recorte; se entrar, vai em todos os widgets do mesmo assunto e o subtitle diz qual é. Uma pizza e umas barras da mesma coisa, uma filtrada e a outra não, mostram números diferentes e parecem um erro.
 - Chame propose_widgets UMA vez, no fim, com tudo que você decidiu montar.
 
 Medidas nomeadas são a MESMA caixa de ferramentas dos widgets comuns, não um recurso à parte só pra quando alguém pede "um cálculo" explicitamente — considere-as em QUALQUER pedido, inclusive numa dashboard nova e num pedido vago (ver bullet acima), sempre que o resultado certo precisar de período relativo a agora, filtro fixo por categoria, ou combinar dois números numa conta (comparativo entre períodos, taxa, percentual — inclusive cruzando fontes diferentes). Filtro e dimensão de widget não têm nenhum desses conceitos — forçar por lá dá um número errado, ou algo impossível de expressar. Use propose_measures nesses casos:
@@ -230,7 +239,7 @@ Comunicação: seja direto e breve. Uma ou duas frases dizendo o que montou e po
 Escopo: entregue o que foi pedido, no tamanho que foi pedido. Se o pedido for ambíguo, resolva como um colega experiente resolveria e siga; só pergunte quando leituras diferentes levariam a dashboards materialmente diferentes. Não acrescente widgets que ninguém pediu.
 
 Aparência: o schema te dá acesso a TUDO que o editor manual permite ajustar na aba Formato — cor, paleta de série, fundo do card (e opacidade), opacidade das colunas/linhas/fatias, cor dos ícones, linhas de grade, sombra/brilho/piscar estáticos, formatação de texto completa (título, subtítulo, eixo X, eixo Y, legenda, linhas/colunas da matriz — fonte, negrito/itálico/sublinhado, cor, opacidade, fundo), rótulos de dado (geral e por série), formatação de tabela, tamanho do card (w/h) e meta/alertas (conditionalRules).
-Regra única para TODOS esses campos: por padrão, NÃO preencha nenhum — omita, e os widgets nascem com a aparência padrão do app/tema da guia. Isso é o comportamento certo quando ninguém pediu nada sobre visual, e widgets "no mesmo padrão" não é um defeito nesse caso.
+Regra única para TODOS esses campos (vale no nível de personalização MÍNIMO; os níveis MÉDIO e ALTO, escolhidos pela pessoa no painel, vêm no bloco "Preferências DESTE pedido" e mandam no lugar desta regra): por padrão, NÃO preencha nenhum — omita, e os widgets nascem com a aparência padrão do app/tema da guia. Isso é o comportamento certo quando ninguém pediu nada sobre visual, e widgets "no mesmo padrão" não é um defeito nesse caso.
 Só preencha quando a pessoa pedir, no mesmo turno ou num turno anterior da conversa, algo sobre cor, visual, design, tamanho, formatação ou variedade/diversidade entre os widgets (ex.: "cores diferentes", "cada gráfico com um estilo", "deixa mais bonito", "títulos maiores", "tamanhos variados", "alerta quando passar de X"). Quando pedirem, use o quanto do toolkit fizer sentido pro pedido — não se limite a só cor se a pessoa pediu "personalizar" de forma ampla:
 - Varie de verdade entre os widgets propostos — não repita a mesma cor/tamanho/formatação em todos; isso derrota o pedido.
 - Em gráfico com várias categorias/série (pizza, funil, dispersão, barra sem legenda), prefira \`palette\` (3+ cores bem distintas entre si, não um degradê) a um \`color\` só.
@@ -312,7 +321,7 @@ function buildTools() {
     {
       name: 'propose_widgets',
       description:
-        'Entrega os widgets para o usuário aprovar. Chame exatamente uma vez, no fim do seu raciocínio, com todos os widgets que você decidiu montar. Nada é gravado na dashboard por esta chamada: o usuário revê e decide.',
+        'Entrega os widgets montados. Chame exatamente uma vez, no fim do seu raciocínio, com todos os widgets que você decidiu montar. Eles entram na guia e são SALVOS na hora, sem o usuário precisar aprovar — ele pode desfazer. Por isso só entregue widgets testados e coerentes com o pedido.',
       input_schema: PROPOSE_TOOL_SCHEMA,
     },
     {
@@ -334,16 +343,62 @@ function buildTools() {
     {
       name: 'propose_measures',
       description:
-        'Entrega uma ou mais medidas nomeadas NOVAS para o usuário aprovar (ver instruções sobre quando usar isto em vez de measure/measures inline). Pode ser chamada mais de uma vez no mesmo turno se fizer sentido, mas o comum é uma vez só, com o lote inteiro (ex. "atual", "anterior" e "comparativo" juntos). SEMPRE cria uma medida NOVA — se o nome já existir nesta dashboard, ela é salva com um sufixo ("Nome (2)") em vez de editar a original. Se a intenção do pedido for mudar algo numa medida que JÁ existe (não criar uma parecida), use update_measures, nunca isto. Nada é gravado na dashboard por esta chamada: o usuário revê e decide. A resposta traz o id e o nome FINAL (já com sufixo, se houve colisão) de cada medida — use-o depois num measureRef, nunca invente um id.',
+        'Entrega uma ou mais medidas nomeadas NOVAS para o usuário aprovar (ver instruções sobre quando usar isto em vez de measure/measures inline). Pode ser chamada mais de uma vez no mesmo turno se fizer sentido, mas o comum é uma vez só, com o lote inteiro (ex. "atual", "anterior" e "comparativo" juntos). SEMPRE cria uma medida NOVA — se o nome já existir nesta dashboard, ela é salva com um sufixo ("Nome (2)") em vez de editar a original. Se a intenção do pedido for mudar algo numa medida que JÁ existe (não criar uma parecida), use update_measures, nunca isto. As medidas entram na tabela de medidas e são SALVAS na hora, antes dos widgets — o usuário pode desfazer. A resposta traz o id e o nome FINAL (já com sufixo, se houve colisão) de cada medida — use-o depois num measureRef, nunca invente um id.',
       input_schema: PROPOSE_MEASURES_TOOL_SCHEMA,
     },
     {
       name: 'update_measures',
       description:
-        'Aplica um ajuste (patch) numa ou mais medidas JÁ EXISTENTES nesta dashboard, encontradas por id (ver catálogo de medidas do prompt) — ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida pra incluir também Cancelado", "renomeia essa medida". Só os campos informados no patch mudam; o resto continua igual. Use isto sempre que o pedido descrever uma mudança em cima de algo que JÁ aparece no catálogo de medidas — chamar propose_measures nesse caso cria uma medida NOVA parecida ("Nome (2)") em vez de editar a original, o que quase nunca é a intenção. Nada é gravado sozinho: o usuário revê e aprova, como qualquer proposta.',
+        'Aplica um ajuste (patch) numa ou mais medidas JÁ EXISTENTES nesta dashboard, encontradas por id (ver catálogo de medidas do prompt) — ex. "marca a Taxa de encerramento como percentual", "muda o filtro dessa medida pra incluir também Cancelado", "renomeia essa medida". Só os campos informados no patch mudam; o resto continua igual. Use isto sempre que o pedido descrever uma mudança em cima de algo que JÁ aparece no catálogo de medidas — chamar propose_measures nesse caso cria uma medida NOVA parecida ("Nome (2)") em vez de editar a original, o que quase nunca é a intenção. A atualização é aplicada e SALVA na hora — o usuário pode desfazer.',
       input_schema: UPDATE_MEASURES_TOOL_SCHEMA,
     },
+    {
+      // Sempre na lista (mesmo sem widget escolhido): as ferramentas fazem
+      // parte do prefixo cacheado, e uma lista que muda de turno pra turno o
+      // invalidaria. Sem widget escolhido, a chamada só volta como erro.
+      name: 'update_widget',
+      description:
+        'Ajusta o widget que a pessoa ESCOLHEU (bloco "Widget escolhido" do prompt — só existe quando ela clicou em "Ajustar com IA" num widget). Mande em `changes` só o que muda e em `remove` o que sai; o resto do widget fica como está. O ajuste é aplicado e SALVO na hora, no mesmo lugar da guia — a pessoa pode desfazer. Para um widget a MAIS, use propose_widgets.',
+      input_schema: UPDATE_WIDGET_TOOL_SCHEMA,
+    },
   ]
+}
+
+// O widget em que a pessoa clicou "Ajustar com IA", e os outros da mesma
+// guia — esses só para comparar (o caso que motivou: uma pizza e umas barras
+// da mesma coisa, 79 × 80, e a diferença era um filtro fixo só na pizza).
+// Vem do navegador a cada envio; o tamanho é limitado porque cada caractere
+// é token cobrado.
+const TARGET_MAX_CHARS = 6000
+const OTHERS_MAX_CHARS = 8000
+const SUMMARY_KEYS = ['id', 'type', 'title', 'subtitle', 'source', 'dimensions', 'legendDimension', 'measure', 'measures', 'measuresLine', 'widgetFilters', 'columns', 'matrixRows', 'matrixColumns', 'matrixValue', 'limit', 'sort']
+
+export function sanitizeTarget(raw) {
+  const w = raw?.widget
+  if (!w || typeof w !== 'object' || typeof w.id !== 'string' || typeof w.type !== 'string') return null
+  if (JSON.stringify(w).length > TARGET_MAX_CHARS * 4) return null
+  const others = (Array.isArray(raw.others) ? raw.others : [])
+    .filter((o) => o && typeof o === 'object' && typeof o.id === 'string' && o.id !== w.id)
+    .slice(0, 30)
+    .map((o) => Object.fromEntries(SUMMARY_KEYS.filter((k) => o[k] !== undefined).map((k) => [k, o[k]])))
+  return { widget: w, others }
+}
+
+function targetText(target) {
+  const clip = (s, max) => (s.length > max ? `${s.slice(0, max)} …(cortado)` : s)
+  const { layout: _layout, insight: _insight, ...shown } = target.widget
+  const others = target.others.length
+    ? target.others.map((o) => `  - ${clip(JSON.stringify(o), 900)}`).join('\n')
+    : '  (nenhum)'
+  return [
+    'Pedido sobre UM widget específico: a pessoa clicou em "Ajustar com IA" neste widget, e o que ela escrever é sobre ele.',
+    `Widget escolhido (configuração atual): ${clip(JSON.stringify(shown), TARGET_MAX_CHARS)}`,
+    `Outros widgets da mesma guia — só para comparar, NÃO os altere:\n${clip(others, OTHERS_MAX_CHARS)}`,
+    'Como agir:',
+    '- Ajuste-o com update_widget (só o que muda). Não crie um widget novo com propose_widgets, a não ser que a pessoa peça um widget a mais.',
+    '- Se a pergunta for por que um número difere do de outro widget, compare as configurações (filtros fixos, medida e agregação, campo, Top N, nível de data) e diga a diferença em uma frase. Mude só o que a pessoa pediu — ou, se ela pediu para "corrigir"/"deixar igual", o que causa a diferença.',
+    '- Mantenha título e subtítulo coerentes com o que o widget passa a mostrar (um filtro fixo novo aparece no subtítulo; um que saiu, sai do subtítulo).',
+  ].join('\n')
 }
 
 // ─── Execução das ferramentas ──────────────────────────────────────────
@@ -380,6 +435,15 @@ async function runTool(name, input, ctx) {
   if (name === 'propose_widgets') {
     const list = Array.isArray(input.widgets) ? input.widgets : []
     if (list.length === 0) return { isError: true, text: 'Nenhum widget na proposta.' }
+    // A escolha "o que entregar" do painel (ver aiRequestOptions.mjs) — limita
+    // só o tipo de widget; medidas nomeadas seguem livres.
+    const allowed = allowedWidgetTypes(ctx.options)
+    if (allowed) {
+      const outside = list.filter((w) => !allowed.has(w?.type)).map((w) => `"${w?.title ?? '?'}" (${w?.type})`)
+      if (outside.length) {
+        return { isError: true, text: `A pessoa pediu só ${deliverLabel(ctx.options)} neste pedido — tipos permitidos: ${[...allowed].join(', ')}. Troque ou tire: ${outside.join('; ')}. Chame propose_widgets de novo.` }
+      }
+    }
     const problems = []
     list.forEach((w, i) => {
       const errors = validateWidget(w, ctx.sources)
@@ -394,7 +458,24 @@ async function runTool(name, input, ctx) {
     // pelo texto da resposta — o front recebe JSON pronto pra renderizar.
     ctx.emit({ type: 'widgets', widgets, summary: String(input.summary ?? '') })
     ctx.proposed += 1
-    return { text: `${widgets.length} widget(s) enviados para aprovação do usuário. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
+    return { text: `${widgets.length} widget(s) entregues: entram na guia e são salvos automaticamente. Não repita o conteúdo deles na sua resposta — a pessoa já os está vendo.` }
+  }
+
+  if (name === 'update_widget') {
+    const target = ctx.target
+    if (!target) {
+      return { isError: true, text: 'Não há widget escolhido neste pedido — update_widget só vale quando a pessoa clica em "Ajustar com IA" num widget. Para montar widgets, use propose_widgets.' }
+    }
+    const out = applyWidgetPatch(target.widget, input, ctx.sources)
+    if (out.errors) {
+      return { isError: true, text: `Corrija e chame update_widget de novo:\n${out.errors.map((e) => `- ${e}`).join('\n')}` }
+    }
+    const { widget } = out
+    ctx.emit({ type: 'widgetUpdate', widgetId: widget.id, widget, summary: String(input.summary ?? '') })
+    // Uma segunda chamada no mesmo turno parte do que acabou de ser ajustado.
+    ctx.target = { ...target, widget }
+    ctx.proposed += 1
+    return { text: `Widget "${widget.title}" ajustado e salvo. Diga em uma frase o que mudou — a pessoa já está vendo o widget.` }
   }
 
   if (name === 'preview_measure' || name === 'propose_measures') {
@@ -421,10 +502,10 @@ async function runTool(name, input, ctx) {
         sourceRowsCache: new Map(), resolvedScalarCache: new Map(), visiting: new Set(),
       }
       try {
-        const result = resolveMeasure(target.id, mctx)
+        const result = await resolveMeasure(target.id, mctx)
         const resolvedRefs = {}
         if (target.kind === 'formula') {
-          for (const [alias, refId] of Object.entries(target.refs)) resolvedRefs[alias] = resolveMeasure(refId, mctx).value
+          for (const [alias, refId] of Object.entries(target.refs)) resolvedRefs[alias] = (await resolveMeasure(refId, mctx)).value
         }
         return { text: JSON.stringify({ value: result.value, resolvedRefs: Object.keys(resolvedRefs).length ? resolvedRefs : undefined }) }
       } catch (e) {
@@ -442,7 +523,7 @@ async function runTool(name, input, ctx) {
     ctx.dashboardMeasures = [...ctx.dashboardMeasures, ...normalized]
     ctx.proposed += 1
     const idList = normalized.map((m) => `"${m.name}" = ${m.id}`).join(', ')
-    return { text: `${normalized.length} medida(s) enviada(s) para aprovação do usuário. IDs pra usar em measureRef: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+    return { text: `${normalized.length} medida(s) entregue(s): entram na tabela de medidas e são salvas automaticamente. IDs pra usar em measureRef: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
   }
 
   if (name === 'update_measures') {
@@ -465,7 +546,7 @@ async function runTool(name, input, ctx) {
     ctx.dashboardMeasures = [...ctx.dashboardMeasures.filter((m) => !updatedIds.has(m.id)), ...updated]
     ctx.proposed += 1
     const idList = updated.map((m) => `"${m.name}" = ${m.id}`).join(', ')
-    return { text: `${updated.length} medida(s) atualizada(s), enviada(s) para aprovação do usuário: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
+    return { text: `${updated.length} medida(s) atualizada(s), aplicadas e salvas automaticamente: ${idList}. Não repita o conteúdo delas na sua resposta — a pessoa já as está vendo.` }
   }
 
   return { isError: true, text: `Ferramenta desconhecida: ${name}` }
@@ -494,7 +575,14 @@ export async function startConversation({ email, folderId, sourceKeys, accessTok
 
 // Roda um turno da conversa, emitindo eventos conforme acontecem. `emit` é o
 // canal SSE pro navegador; a função só retorna quando o turno acabou.
-export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [] }) {
+// `sourceKeys`: as fontes marcadas no painel neste envio. A pessoa pode pôr ou
+// tirar fonte no meio da conversa — só valem as que a pasta libera
+// (listSourceDefs já filtra), e a troca entra no histórico como aviso, pro
+// modelo não seguir propondo com a fonte que saiu.
+// `options`: as preferências deste pedido (personalização e o que entregar —
+// ver aiRequestOptions.mjs). `target`: o widget em que a pessoa clicou
+// "Ajustar com IA", e os outros da guia (ver sanitizeTarget/targetText).
+export async function runTurn({ conversationId, email, userText, accessToken, emit, dashboardMeasures = [], sourceKeys, options, target }) {
   const conv = conversations.get(conversationId)
   if (!conv) throw new Error('Esta conversa expirou. Comece uma nova.')
   if (conv.email !== email) throw new Error('Esta conversa pertence a outro usuário.')
@@ -504,10 +592,29 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   // pelo ETL no meio da conversa, e é mais barato relê-lo do snapshot em
   // memória do que arriscar propor um campo que deixou de existir.
   const all = await listSourceDefs(conv.folderId, accessToken)
+  let sourcesNote = null
+  if (Array.isArray(sourceKeys) && sourceKeys.length > 0) {
+    const wanted = all.filter((s) => sourceKeys.includes(s.key)).map((s) => s.key)
+    if (wanted.length === 0) throw new Error('Nenhuma das fontes marcadas está liberada para esta pasta.')
+    const before = new Set(conv.sourceKeys)
+    if (wanted.length !== before.size || wanted.some((k) => !before.has(k))) {
+      const label = (k) => all.find((s) => s.key === k)?.label ?? k
+      const added = wanted.filter((k) => !before.has(k)).map(label)
+      const removed = conv.sourceKeys.filter((k) => !wanted.includes(k)).map(label)
+      conv.sourceKeys = wanted
+      sourcesNote = [
+        'As fontes desta conversa mudaram a pedido do usuário.',
+        added.length ? `Entraram: ${added.join(', ')}.` : '',
+        removed.length ? `Saíram: ${removed.join(', ')} — o que já foi montado com elas continua na dashboard, mas não proponha nada novo com essas fontes.` : '',
+        'O catálogo do sistema já mostra só as fontes atuais.',
+      ].filter(Boolean).join(' ')
+    }
+  }
   const sources = all.filter((s) => conv.sourceKeys.includes(s.key))
   if (sources.length === 0) throw new Error('As fontes desta conversa não estão mais disponíveis.')
 
   conv.lastUsedAt = Date.now()
+  if (sourcesNote) conv.messages.push({ role: 'system', content: sourcesNote })
   conv.messages.push({ role: 'user', content: userText })
 
   //  conta as propostas aceitas no turno — é o que decide se um
@@ -515,7 +622,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
   // acumula propose_measures dentro do MESMO turno (ver runTool) — permite
   // uma fórmula do turno referenciar, por nome, uma medida proposta poucas
   // idas antes, no mesmo turno, sem precisar já estar salva de verdade.
-  const ctx = { sources, accessToken, emit, proposed: 0, dashboardMeasures: [...dashboardMeasures] }
+  const ctx = { sources, accessToken, emit, proposed: 0, dashboardMeasures: [...dashboardMeasures], options: normalizeRequestOptions(options), target: sanitizeTarget(target) }
   const tools = buildTools()
   const system = [
     { type: 'text', text: INSTRUCTIONS },
@@ -527,6 +634,11 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
     // vez que alguém aprova uma medida.
     { type: 'text', text: catalogText(sources), cache_control: { type: 'ephemeral' } },
     { type: 'text', text: measuresText(ctx.dashboardMeasures) },
+    // Preferências deste pedido (passos 3 e 4 do painel) — também mudam a cada
+    // turno, então ficam fora do prefixo cacheado, como as medidas.
+    { type: 'text', text: requestOptionsText(ctx.options) },
+    // O widget escolhido para ajustar — também muda a cada turno.
+    ...(ctx.target ? [{ type: 'text', text: targetText(ctx.target) }] : []),
   ]
 
   let totalUsd = 0
@@ -553,7 +665,9 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
     if (remaining === WRAP_UP_AT && ctx.proposed === 0) {
       conv.messages.push({
         role: 'system',
-        content: `Você tem poucas idas restantes neste turno. Pare de explorar e chame propose_widgets AGORA, com o melhor conjunto que você já consegue montar a partir do catálogo. É melhor entregar 3 widgets sólidos do que não entregar nada.`,
+        content: ctx.target
+          ? 'Você tem poucas idas restantes neste turno. Pare de explorar e chame update_widget AGORA com o ajuste pedido no widget escolhido.'
+          : `Você tem poucas idas restantes neste turno. Pare de explorar e chame propose_widgets AGORA, com o melhor conjunto que você já consegue montar a partir do catálogo. É melhor entregar 3 widgets sólidos do que não entregar nada.`,
       })
     }
 
@@ -575,7 +689,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       return finish()
     }
     if (turn.stopReason !== 'tool_use') {
-      console.log(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+      logger.info(`[ai] turno concluído em ${iteration + 1} ida(s) · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
       return finish()
     }
 
@@ -589,7 +703,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
       } catch (e) {
         out = { isError: true, text: e.message }
       }
-      console.log(`[ai] ida ${iteration + 1}/${maxIterations} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
+      logger.info(`[ai] ida ${iteration + 1}/${maxIterations} · ${call.name}${out.isError ? ' (erro: ' + out.text.split('\n')[0] + ')' : ''}`)
       results.push({
         type: 'tool_result', tool_use_id: call.id, content: out.text,
         ...(out.isError ? { is_error: true } : {}),
@@ -602,7 +716,7 @@ export async function runTurn({ conversationId, email, userText, accessToken, em
 
   // Estourou o orçamento. Se ele JÁ propôs algo, aquilo vale — o usuário
   // recebe os widgets em vez de perder o turno inteiro (e o dinheiro).
-  console.log(`[ai] orçamento de ${maxIterations} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
+  logger.info(`[ai] orçamento de ${maxIterations} idas esgotado · ${ctx.proposed} proposta(s) · US$ ${totalUsd.toFixed(4)}`)
   if (ctx.proposed === 0) {
     emit({
       type: 'error',

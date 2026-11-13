@@ -1,0 +1,253 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, staging]
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+
+# Menor privilégio: o CI só lê o repositório.
+permissions:
+  contents: read
+
+# Push novo cancela o run anterior da mesma branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validacoes:
+    name: Validações do compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nomes do compose por ambiente (name:, container_name, papéis dos serviços)
+        run: |
+          pip install pyyaml
+          env_alvo=staging
+          if [ "${{ github.base_ref || github.ref_name }}" = "main" ]; then env_alvo=production; fi
+          python3 .github/scripts/validate-compose.py \
+            --repo dev_ReactJS_dashboard_IA --env "$env_alvo" \
+            --exceptions .github/compose-exceptions.txt \
+            docker-compose.portainer.yml
+
+  # REGRA MANDATÓRIA (skill cicd-deploy-backend, regra 10): todo commit que sobe para um ambiente tem versão
+  # ESTRITAMENTE MAIOR que a que está nele. PR: compara com a branch de destino; push: com o commit anterior.
+  # Também confere package.json = package-lock.json = valor padrão ${APP_VERSION:-X.Y.Z} do compose (a tag da imagem
+  # que o Portainer mostra). Corrija com: npm run version:set -- X.Y.Z
+  versao:
+    name: Versão — maior que a do ambiente
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Versão (package.json, lock e compose) estritamente maior que a da base
+        env:
+          BASE_REF: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: python3 .github/scripts/validate-version.py
+
+  qualidade:
+    name: Qualidade e segurança — tipos, varredura, testes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # o mesmo das imagens Docker (node:22-alpine) — padrão da skill cicd-deploy-backend
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # Rápido e sem rede: segredo versionado, .env no git, AUTH_DISABLED ligado, Dockerfile/compose inseguro.
+      - name: Varredura estática de segurança
+        run: npm run security:scan
+
+      - name: Testes (IA, filtro por clique, login, acesso, leitura direta, bloqueio de guia)
+        run: |
+          npm run test:ai
+          npm run test:click
+          npm run test:auth
+          npm run test:access
+          npm run test:direct
+          npm run test:locks
+
+      # Sobe a API real com login de verdade e tenta o que um usuário malicioso tentaria.
+      - name: Testes de segurança da API
+        run: npm run test:security
+
+      - name: Build do frontend
+        run: npm run build
+        env:
+          VITE_FIREBASE_API_KEY: ci-nao-e-segredo
+          VITE_FIREBASE_AUTH_DOMAIN: ci.firebaseapp.com
+          VITE_FIREBASE_PROJECT_ID: ci-projeto
+          VITE_FIREBASE_APP_ID: ci-app
+
+      # [RECOMENDADO] começa como aviso; promova a bloqueante quando zerar o backlog.
+      - name: Auditoria de dependências (aviso)
+        run: npm audit --audit-level=high --omit=dev || echo "::warning::npm audit encontrou vulnerabilidades high+"
+
+  # Trivy: dependências (CVE), segredos e Dockerfile/compose (misconfig). HOJE SÓ RELATA — promova
+  # `exit-code` para '1' quando o backlog de CVE com correção zerar (senão o time aprende a ignorar o vermelho).
+  seguranca:
+    name: Segurança — dependências, segredos e imagem
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências, segredos e Dockerfile (relatório HIGH+CRITICAL)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          skip-dirs: node_modules,dist,loadtest
+          exit-code: '0'
+      - name: Construir a imagem da API para varrer
+        run: docker build -f Dockerfile.api -t backend:sec .
+      - name: Imagem — CVEs CRITICAL/HIGH com correção (relatório)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: backend:sec
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+
+  imagem:
+    name: Imagens Docker + smoke da stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: dev_reactjs_dashboard_ia-ci
+      # Valores descartáveis, válidos só dentro do runner. Os VITE_* entram no build do bundle (não são segredo).
+      VITE_FIREBASE_API_KEY: ci-nao-e-segredo
+      VITE_FIREBASE_AUTH_DOMAIN: ci.firebaseapp.com
+      VITE_FIREBASE_PROJECT_ID: ci-projeto
+      VITE_FIREBASE_APP_ID: ci-app
+      SECRETS_KEY: ci-descartavel-0123456789abcdef
+      WEB_PORT: '3011'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construir as imagens (as mesmas que o Portainer constrói)
+        run: docker compose -f docker-compose.portainer.yml build
+
+      # --wait espera o healthcheck, o mesmo critério que o Portainer usa
+      - name: Subir a stack
+        run: docker compose -f docker-compose.portainer.yml up -d --wait --wait-timeout 240
+
+      - name: Health da API responde ok
+        run: |
+          curl -fsS --retry 15 --retry-delay 3 --retry-connrefused \
+            http://localhost:3011/api/health -o health.json
+          grep -q '"status":"ok"' health.json || {
+            echo "::error::/api/health devolveu resposta inesperada:"; cat health.json; exit 1; }
+
+      - name: Frontend serve a SPA e o proxy /api/ alcança o backend
+        run: |
+          curl -fsS http://localhost:3011/ | grep -qi '<div id="root"' || {
+            echo "::error::frontend não serviu o index.html"; exit 1; }
+          curl -fsSI http://localhost:3011/ | grep -qi 'x-content-type-options: nosniff' || {
+            echo "::error::nginx sem os cabeçalhos de segurança"; exit 1; }
+          # rota autenticada sem cookie tem de responder 401 (e não 200 nem 502)
+          codigo=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3011/api/workspace/tree)
+          [ "$codigo" = "401" ] || { echo "::error::/api/workspace/tree sem sessão devolveu $codigo (esperado 401)"; exit 1; }
+
+      - name: Containers rodam sem root
+        run: |
+          for s in backend scheduler; do
+            u=$(docker compose -f docker-compose.portainer.yml exec -T "$s" id -u)
+            [ "$u" != "0" ] || { echo "::error::$s roda como root"; exit 1; }
+          done
+
+      - name: Logs da stack
+        if: failure()
+        run: docker compose -f docker-compose.portainer.yml logs --no-color --timestamps > compose-logs.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+
+      - name: Derrubar a stack
+        if: always()
+        run: docker compose -f docker-compose.portainer.yml down -v
+
+  # Carga de fumaça: sobe a API real (login de verdade, dataset sintético), roda o cenário `smoke` com os
+  # limites de aceite e as verificações de segurança sob carga, e derruba. Carga nominal/stress/spike/soak
+  # são manuais (carga.yml).
+  carga-smoke:
+    name: Carga — fumaça
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Cenário smoke
+        run: node loadtest/run.mjs smoke
+        env:
+          ROWS: '50000'
+      - name: Resultados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loadtest-smoke
+          path: loadtest/out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Check único para a proteção de branch. `if: always()` no job, senão ele é pulado quando
+  # um `needs` falha e o check nunca reporta.
+  ci-ok:
+    name: ci-ok
+    runs-on: ubuntu-latest
+    needs: [validacoes, versao, qualidade, seguranca, imagem, carga-smoke]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Resultado agregado
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "true" ]; then
+            echo "::error::Pelo menos um job não passou."; exit 1
+          fi
+          echo "Tudo verde."
+
+  # Deploy automático em STAGING: só depois do ci-ok e só em push na branch `staging`.
+  # Chama o webhook GitOps da stack no Portainer de staging, que faz pull da branch e rebuilda no host.
+  # A URL do webhook é segredo (quem a tem dispara deploy): fica só em
+  # Settings → Environments → staging → Secrets → PORTAINER_WEBHOOK_URL_STAGING.
+  # Produção (`main`) continua manual: "Pull and redeploy" no Portainer, depois de ci-ok + 1 aprovação.
+  deploy-staging:
+    name: Deploy — staging (Portainer)
+    runs-on: ubuntu-latest
+    needs: [ci-ok]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging' && needs.ci-ok.result == 'success'
+    timeout-minutes: 10
+    environment: staging
+    steps:
+      - name: Acionar o webhook da stack
+        env:
+          PORTAINER_WEBHOOK_URL_STAGING: ${{ secrets.PORTAINER_WEBHOOK_URL_STAGING }}
+        run: |
+          if [ -z "$PORTAINER_WEBHOOK_URL_STAGING" ]; then
+            echo "::error::Secret PORTAINER_WEBHOOK_URL_STAGING não configurado."; exit 1
+          fi
+          curl --fail --silent --show-error --retry 3 --retry-delay 5 -X POST "$PORTAINER_WEBHOOK_URL_STAGING"
+          echo "Webhook acionado: o Portainer está puxando a branch staging e rebuildando."

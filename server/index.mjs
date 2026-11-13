@@ -13,9 +13,10 @@
 // domínio restrito), adaptado para este projeto.
 // ─────────────────────────────────────────────────────────────────────────
 import 'dotenv/config'
+import { logger, requestLogger } from './logger.mjs'
 import express from 'express'
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { getStatus } from './dataset.mjs'
@@ -25,9 +26,10 @@ import {
 } from './sheetSources.mjs'
 import {
   listLakehouseSources, getLakehouseSource, createLakehouseSource, updateLakehouseSource, deleteLakehouseSource,
-  setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, resolveCredentials,
-  sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
+  setLakehouseEnabled, setLakehouseRefresh, setLakehouseFolders, previewDataset, testDirectQuery, resolveCredentials,
+  readModeOf, sourceKey as lakehouseSourceKey, DEFAULT_BASE_URL as DHUB_DEFAULT_BASE_URL,
 } from './lakehouseSources.mjs'
+import { forgetDirectSource } from './datahubQuery.mjs'
 import { listFieldDictionary, upsertFieldDictionaryEntry } from './fieldDictionary.mjs'
 import { isAiConfigured, usageFor, startConversation, runTurn, conversationStatus, endConversation } from './aiAssistant.mjs'
 import { aiConfigPublic, saveAiConfig, apiKeyFor } from './aiConfig.mjs'
@@ -39,8 +41,10 @@ import {
   getWorkspaceTreeForUser, getDashboardForUser, listFoldersFull, getFolderFull, listFolderCatalogForUser,
   createFolder, updateFolder, deleteFolder, setFolderAccess, grantFolderAccess, setFolderManagers, listFolderMembers,
   createDashboard, updateDashboard, deleteDashboard, saveDashboardFull, saveTabWidgets, setTabAccess,
-  findFoldersUsingQuery,
+  findFoldersUsingQuery, getTabForUser, TabConflictError,
+  saveDashboardMeasures, WorkspaceAccessError, duplicateDashboard, OutdatedClientError, getDashboardPulse,
 } from './workspace.mjs'
+import { acquireTabLock, releaseTabLock, blockingTabLock, listTabLocks, normalizeClientId } from './tabLocks.mjs'
 import {
   isAdmin, touchUser, listUsers, setUserRole, appendAuditLog, listAuditLog, ONLINE_THRESHOLD_MS,
   isManualPending, markManualSeen,
@@ -50,6 +54,13 @@ import {
   COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, validAccessToken,
 } from './sessions.mjs'
 import { verifyFirebaseIdToken, firebaseProjectId } from './firebaseToken.mjs'
+
+// Versão da aplicação: a do package.json (a mesma da tag da imagem e do label no Portainer).
+// APP_VERSION do ambiente só vale se alguém sobrescrever de propósito (o Dockerfile.api a define a
+// partir do compose, que é conferido contra o package.json pelo CI).
+const APP_VERSION = process.env.APP_VERSION && process.env.APP_VERSION !== '0.0.0'
+  ? process.env.APP_VERSION
+  : JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf8')).version
 
 const PORT = Number(process.env.API_PORT) || 8788
 const ALLOWED_DOMAIN = (process.env.ALLOWED_DOMAIN || 'sebratel.com.br').toLowerCase()
@@ -83,22 +94,41 @@ const AUTH_DISABLED_NAME = process.env.AUTH_DISABLED_NAME || AUTH_DISABLED_EMAIL
 // premissa falsa. Então para na subida, dizendo o que corrigir, em vez de
 // atender pela metade.
 if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
-  console.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
+  logger.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
   process.exit(1)
 }
 
 const app = express()
+// requestId + um log JSON por requisição (skill observabilidade-backend). Primeiro da cadeia: mede tudo.
+app.use(requestLogger())
 app.use(express.json({ limit: '2mb' }))
 
+app.disable('x-powered-by')
+
+// CORS: só origens que a própria instalação autoriza. Em produção o navegador e a
+// API são da MESMA origem (o nginx do frontend faz o proxy de /api/), então nenhuma
+// origem cruzada é necessária e a lista fica vazia. Antes o servidor devolvia
+// QUALQUER Origin em Access-Control-Allow-Origin junto com Allow-Credentials:true —
+// o que autoriza, por definição, qualquer site a ler respostas autenticadas de quem
+// está logado. CORS_ORIGINS (separadas por vírgula) é só para quem serve o front em
+// outro endereço (ex.: https://painel.exemplo.com.br).
+const CORS_ORIGINS = new Set(
+  (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim().replace(/\/$/, '')).filter(Boolean),
+)
+
 app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Cache-Control', 'no-store')
   const origin = req.headers.origin
-  if (origin) res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  // A sessão agora é um cookie, não um header Authorization — sem isto o
-  // navegador não envia o cookie em requisição de origem cruzada.
-  res.setHeader('Access-Control-Allow-Credentials', 'true')
+  if (origin && CORS_ORIGINS.has(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    // A sessão é um cookie, não um header Authorization — sem isto o navegador
+    // não envia o cookie em requisição de origem cruzada.
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
@@ -226,7 +256,7 @@ app.post('/api/auth/session', async (req, res) => {
   } catch (e) {
     // Só cai aqui por falha de INFRAESTRUTURA (primeira busca dos certificados
     // sem rede). Token inválido devolve null, não exceção.
-    console.error(`[auth] não foi possível validar o token: ${e.message}`)
+    logger.error(`[auth] não foi possível validar o token: ${e.message}`)
     return res.status(503).json({ error: 'Não foi possível validar o login agora. Tente de novo em instantes.' })
   }
   if (!claims) return res.status(401).json({ error: 'Login inválido ou expirado. Entre novamente.' })
@@ -332,7 +362,7 @@ let etlRunning = false
 // então ele não enxerga a fonte que acabou de ser cadastrada/editada. Descartar
 // o pedido deixava essa fonte fora do snapshot até o próximo ciclo agendado —
 // 60 min por padrão, e em dev não há scheduler nenhum rodando (só o serviço
-// `etl` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
+// `scheduler` do compose tem), ou seja: nunca. O sintoma era exatamente "cadastrei a
 // fonte, ela aparece em Configurações e as colunas não chegam em lugar nenhum".
 let etlPending = null
 // `forceIds`: fontes que o ciclo deve buscar mesmo fora da agenda — ações
@@ -347,7 +377,7 @@ function triggerEtlRefresh(reason, forceIds = []) {
       reason,
       forceIds: new Set([...(etlPending?.forceIds ?? []), ...forceIds]),
     }
-    console.log(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
+    logger.info(`[etl] ciclo em andamento — "${reason}" roda em seguida`)
     return
   }
   etlRunning = true
@@ -369,13 +399,13 @@ function triggerEtlRefresh(reason, forceIds = []) {
     }
   }
   child.on('exit', done)
-  child.on('error', (e) => { console.error(`[etl] falha ao disparar: ${e.message}`); done() })
-  console.log(`[etl] atualizando snapshot em segundo plano (${reason})`)
+  child.on('error', (e) => { logger.error(`[etl] falha ao disparar: ${e.message}`); done() })
+  logger.info(`[etl] atualizando snapshot em segundo plano (${reason})`)
 }
 
 // ─── Rotas ───────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, service: 'indicadores-sebratel-api', time: new Date().toISOString() })
+  res.json({ status: 'ok', ok: true, service: 'indicadores-sebratel-api', version: APP_VERSION, timestamp: new Date().toISOString() })
 })
 
 app.get('/api/dataset/status', requireAuth(), (_req, res) => {
@@ -520,7 +550,8 @@ app.patch('/api/sheet-sources/:id/refresh', requireAuth(), async (req, res) => {
 //
 // O token nunca volta pro navegador em nenhuma destas rotas — a UI recebe só
 // `tokenHint`. Quem precisa do token em claro é o ETL, que decifra na hora de
-// buscar (ver scripts/fetch-install.mjs).
+// buscar (ver scripts/fetch-install.mjs), e a leitura direta, que decifra a
+// cada consulta (server/datahubQuery.mjs).
 app.get('/api/lakehouse-sources', requireAuth(), requireAdmin(), (_req, res) => {
   res.json({ sources: listLakehouseSources(), defaultBaseUrl: DHUB_DEFAULT_BASE_URL })
 })
@@ -529,6 +560,8 @@ app.get('/api/lakehouse-sources', requireAuth(), requireAdmin(), (_req, res) => 
 // devolve total de linhas + colunas detectadas, pra pessoa confirmar que é o
 // dataset certo antes de criar a fonte. Também serve pra revalidar uma fonte
 // existente: sem `token` no corpo, reusa o token já cadastrado em `id`.
+// `direct` diz se a leitura direta funciona com essas credenciais — um Data Hub
+// sem a consulta pública ainda deixa a fonte funcionar, mas só como cópia.
 app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (req, res) => {
   try {
     const b = req.body || {}
@@ -539,7 +572,8 @@ app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (re
       baseUrl = baseUrl || saved.baseUrl
       datasetSlug = datasetSlug || saved.datasetSlug
     }
-    res.json(await previewDataset({ baseUrl, datasetSlug, token }))
+    const preview = await previewDataset({ baseUrl, datasetSlug, token })
+    res.json({ ...preview, direct: await testDirectQuery({ baseUrl, datasetSlug, token }) })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -547,20 +581,26 @@ app.post('/api/lakehouse-sources/test', requireAuth(), requireAdmin(), async (re
 
 // Cria e já valida contra o Data Hub — se o token não abrir o dataset, nada é
 // salvo e o erro real de lá volta pra tela (mesmo espírito de POST
-// /api/sheet-sources). Em seguida dispara o ETL, pra fonte já aparecer no
-// Builder sem esperar o próximo ciclo.
+// /api/sheet-sources). Na leitura direta, valida também a consulta: sem ela a
+// fonte seria salva e nenhum widget dela abriria. Em seguida dispara o ETL —
+// que copia a fonte (cópia local) ou só anota o total dela (direta).
 app.post('/api/lakehouse-sources', requireAuth(), requireAdmin(), async (req, res) => {
   const b = req.body || {}
+  const readMode = b.readMode === 'copy' ? 'copy' : 'direct'
   try {
     await previewDataset({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
   } catch (e) {
     return res.status(400).json({ error: e.message })
   }
+  if (readMode === 'direct') {
+    const direct = await testDirectQuery({ baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token })
+    if (!direct.available) return res.status(400).json({ error: direct.error })
+  }
   try {
     const entry = createLakehouseSource({
-      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, enabled: b.enabled,
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, enabled: b.enabled, readMode,
     }, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.create', target: entry.id, meta: { label: entry.label, dataset: entry.datasetSlug } })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.create', target: entry.id, meta: { label: entry.label, dataset: entry.datasetSlug, readMode: entry.readMode } })
     triggerEtlRefresh(`fonte do Data Hub "${entry.datasetSlug}" cadastrada`)
     res.json({ ok: true, source: entry })
   } catch (e) {
@@ -574,22 +614,29 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), async (req,
   const existing = getLakehouseSource(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Fonte não encontrada.' })
   const b = req.body || {}
+  const readMode = b.readMode === 'copy' || b.readMode === 'direct' ? b.readMode : readModeOf(existing)
   try {
     // Valida a combinação que vai ficar salva (o que mudou + o que ficou),
     // pra uma edição errada não deixar a fonte quebrada até o próximo ETL.
-    await previewDataset({
+    const credentials = {
       baseUrl: b.baseUrl ?? existing.baseUrl,
       datasetSlug: b.datasetSlug ?? existing.datasetSlug,
       token: b.token || resolveCredentials(existing.id).token,
-    })
+    }
+    await previewDataset(credentials)
+    if (readMode === 'direct') {
+      const direct = await testDirectQuery(credentials)
+      if (!direct.available) return res.status(400).json({ error: direct.error })
+    }
   } catch (e) {
     return res.status(400).json({ error: e.message })
   }
   try {
     const saved = updateLakehouseSource(req.params.id, {
-      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token,
+      label: b.label, baseUrl: b.baseUrl, datasetSlug: b.datasetSlug, token: b.token, readMode,
     }, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug } })
+    forgetDirectSource(saved.id)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.update', target: saved.id, meta: { dataset: saved.datasetSlug, readMode: saved.readMode } })
     // Força: a edição pode ter trocado o dataset ou o token, e `lastRunAt`
     // continua o mesmo — sem forçar, a fonte seguiria servindo as linhas do
     // dataset ANTIGO até a agenda vencer.
@@ -603,6 +650,7 @@ app.put('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), async (req,
 app.delete('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), (req, res) => {
   try {
     deleteLakehouseSource(req.params.id, req.user.email, isAdmin(req.user.email))
+    forgetDirectSource(req.params.id)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.delete', target: req.params.id })
     triggerEtlRefresh('fonte do Data Hub removida')
     res.json({ ok: true })
@@ -614,6 +662,7 @@ app.delete('/api/lakehouse-sources/:id', requireAuth(), requireAdmin(), (req, re
 app.patch('/api/lakehouse-sources/:id/enabled', requireAuth(), requireAdmin(), (req, res) => {
   try {
     const saved = setLakehouseEnabled(req.params.id, !!(req.body || {}).enabled, req.user.email)
+    forgetDirectSource(saved.id)
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'lakehouseSource.enabled', target: saved.id, meta: { enabled: saved.enabled } })
     // Força ao REATIVAR: enquanto desativada a fonte sai do snapshot por
     // inteiro, então não há "dado anterior" pra manter. Sem forçar, reativar
@@ -641,10 +690,13 @@ app.patch('/api/lakehouse-sources/:id/refresh', requireAuth(), requireAdmin(), (
 
 // Busca agora, sem esperar o ciclo. Dispara o ETL inteiro (é ele que escreve o
 // snapshot) — a resposta volta na hora e a atualização acontece em segundo
-// plano, igual ao que já acontece ao mexer no catálogo de queries.
+// plano, igual ao que já acontece ao mexer no catálogo de queries. Na leitura
+// direta não há o que copiar: o que muda é o cache da consulta, descartado
+// aqui para os painéis lerem o Data Hub de novo já na próxima abertura.
 app.patch('/api/lakehouse-sources/:id/sync', requireAuth(), requireAdmin(), (req, res) => {
   const entry = getLakehouseSource(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Fonte não encontrada.' })
+  forgetDirectSource(entry.id)
   // Força: o sentido do botão é "busca agora". Sem isso, uma fonte agendada
   // dentro da janela dela era simplesmente pulada pelo ciclo, e a tela dizia
   // "busca iniciada" tendo iniciado nada.
@@ -775,7 +827,7 @@ app.post('/api/ai/conversations', requireAuth(), async (req, res) => {
 // Um turno da conversa, em streaming (SSE). Resposta longa e incremental: o
 // texto aparece digitando e os widgets chegam como um evento próprio.
 app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) => {
-  const { text, dashboardMeasures } = req.body || {}
+  const { text, dashboardMeasures, sourceKeys, options, target } = req.body || {}
   if (!text || !String(text).trim()) return res.status(400).json({ error: 'Escreva uma mensagem.' })
   // Antes do stream, com status próprio: dentro dele viraria só um evento de
   // erro. 410 é o que faz o navegador retomar a conversa com o que já foi dito.
@@ -813,9 +865,13 @@ app.post('/api/ai/conversations/:id/messages', requireAuth(), async (req, res) =
       conversationId: req.params.id, email: req.user.email, userText: String(text),
       accessToken: req.accessToken, emit,
       dashboardMeasures: Array.isArray(dashboardMeasures) ? dashboardMeasures : [],
+      sourceKeys: Array.isArray(sourceKeys) ? sourceKeys.map(String) : undefined,
+      options,
+      // O widget do "Ajustar com IA" (ver sanitizeTarget em aiAssistant.mjs).
+      target,
     })
   } catch (e) {
-    console.error(`[ai] turno falhou: ${e.message}`)
+    logger.error(`[ai] turno falhou: ${e.message}`)
     emit({ type: 'error', message: e.message })
   } finally {
     clearInterval(keepAlive)
@@ -922,7 +978,59 @@ app.get('/api/workspace/tree', requireAuth(), (req, res) => {
 app.get('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), requireFolderAccess(), (req, res) => {
   const result = getDashboardForUser(req.params.fid, req.params.did, req.user.email)
   if (result.error) return res.status(result.error).json({ error: result.message })
-  res.json(result)
+  res.json({ ...result, locks: visibleTabLocks(req, result.dashboard.tabs) })
+})
+
+// ─── Bloqueio de edição por guia (server/tabLocks.mjs) ───────────────────
+// A janela se identifica com um `clientId` (gerado a cada carga da página).
+function editorOf(req) {
+  const raw = req.body?.clientId ?? req.query?.clientId
+  return { email: req.user.email, name: req.user.name, clientId: normalizeClientId(raw) }
+}
+
+// Só os bloqueios das guias que esta pessoa enxerga.
+function visibleTabLocks(req, tabs) {
+  const all = listTabLocks(req.params.fid, req.params.did, editorOf(req))
+  const visible = new Set(tabs.map((t) => t.id))
+  return Object.fromEntries(Object.entries(all).filter(([tid]) => visible.has(tid)))
+}
+
+// Quem está editando cada guia, mais a versão (`rev`) de cada uma. A tela
+// pergunta de tempos em tempos: mostra o cadeado nas guias bloqueadas e traz
+// a versão nova de uma guia que outra pessoa acabou de salvar.
+// E as permissões de quem pergunta, agora (ver getDashboardPulse) — mudou, a
+// tela se atualiza sem F5.
+app.get('/api/workspace/folders/:fid/dashboards/:did/locks', requireAuth(), requireFolderAccess(), (req, res) => {
+  const pulse = getDashboardPulse(req.params.fid, req.params.did, req.user.email)
+  if (!pulse) return res.status(404).json({ error: 'Dashboard não encontrada.' })
+  res.json({ locks: visibleTabLocks(req, Object.keys(pulse.revs).map((id) => ({ id }))), ...pulse })
+})
+
+// Pega (ou renova, com `renew: true`) o bloqueio de uma guia. Só quem pode
+// editar a guia. 409 = outra pessoa está editando — o corpo diz quem. No
+// pedido novo (não na renovação), devolve a guia como está no servidor, pra
+// edição começar da versão atual.
+app.post('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/lock', requireAuth(), requireTabEdit(), (req, res) => {
+  const editor = editorOf(req)
+  if (!editor.clientId) return res.status(400).json({ error: 'Identificação da janela (clientId) ausente ou inválida.' })
+  const renew = req.body?.renew === true
+  const result = acquireTabLock(req.params.fid, req.params.did, req.params.tid, editor, { renew })
+  if (!result.ok) {
+    const who = result.lock.self ? 'você, em outra janela' : result.lock.name
+    return res.status(409).json({ error: `Esta guia está sendo editada por ${who}.`, lock: result.lock })
+  }
+  res.json({
+    lock: result.lock,
+    ...(renew ? {} : { tab: getTabForUser(req.params.fid, req.params.did, req.params.tid, req.user.email) }),
+  })
+})
+
+// Solta o bloqueio desta janela. Também chamado com `keepalive` quando a
+// página fecha — por isso o clientId vem na query, e a resposta é sempre 204.
+app.delete('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/lock', requireAuth(), requireFolderAccess(), (req, res) => {
+  const editor = editorOf(req)
+  if (editor.clientId) releaseTabLock(req.params.fid, req.params.did, req.params.tid, editor)
+  res.sendStatus(204)
 })
 
 // Lista completa (accessEmails/managers reais) — só pra tela de gestão de
@@ -1012,6 +1120,17 @@ app.post('/api/workspace/folders/:fid/dashboards', requireAuth(), requireFolderM
   }
 })
 
+// Duplica uma dashboard na mesma pasta ("Nome (cópia)") — quem gerencia a pasta.
+app.post('/api/workspace/folders/:fid/dashboards/:did/duplicate', requireAuth(), requireFolderManager(), (req, res) => {
+  try {
+    const copy = duplicateDashboard(req.params.fid, req.params.did, req.user.email, req.user.name)
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'workspace.dashboard.duplicate', target: `${req.params.fid}/${copy.id}`, meta: { from: req.params.did } })
+    res.json({ ok: true, dashboard: { id: copy.id, name: copy.name } })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 app.put('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), requireFolderManager(), (req, res) => {
   try {
     const dashboard = updateDashboard(req.params.fid, req.params.did, req.body || {}, req.user.email)
@@ -1034,25 +1153,67 @@ app.delete('/api/workspace/folders/:fid/dashboards/:did', requireAuth(), require
 
 // Salva a dashboard inteira (guias/filtros/canvas/widgets) — quem gerencia a
 // pasta mexe livremente na estrutura.
+// Grava guia por guia (ver saveDashboardFull): só as que esta tela mudou, e
+// nunca uma guia que outra pessoa está editando. Devolve a dashboard como
+// ficou no servidor — com as guias que outras pessoas salvaram nesse meio-tempo.
 app.put('/api/workspace/folders/:fid/dashboards/:did/full', requireAuth(), requireFolderManager(), (req, res) => {
   try {
     const b = req.body || {}
-    const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures)
+    const editor = editorOf(req)
+    const dashboard = saveDashboardFull(req.params.fid, req.params.did, b.tabs, req.user.email, b.measures, {
+      changedTabIds: b.changedTabIds,
+      removedTabIds: b.removedTabIds,
+      measureChanges: b.measureChanges,
+      actorName: req.user.name,
+      lockedByOther: (tid) => blockingTabLock(req.params.fid, req.params.did, tid, editor),
+    })
     appendAuditLog({ email: req.user.email, name: req.user.name, action: 'dashboard.save', target: `${req.params.fid}/${dashboard.id}` })
-    res.json({ ok: true, dashboard })
+    const result = getDashboardForUser(req.params.fid, req.params.did, req.user.email)
+    res.json({ ok: true, ...result })
   } catch (e) {
+    if (e instanceof OutdatedClientError) return res.status(409).json({ error: e.message, code: e.code })
+    if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
     res.status(400).json({ error: e.message })
   }
 })
 
 // Salva só os widgets de UMA guia — usado por um usuário padrão com edição
-// liberada ali (não pode mexer na estrutura da dashboard).
+// liberada ali (não pode mexer na estrutura da dashboard). Recusa (409) se
+// outra pessoa estiver editando a guia, ou se ela foi salva por outra pessoa
+// depois que esta tela a leu (`baseRev`).
 app.put('/api/workspace/folders/:fid/dashboards/:did/tabs/:tid/widgets', requireAuth(), requireTabEdit(), (req, res) => {
   try {
-    const tab = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, (req.body || {}).widgets, req.user.email)
-    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'tab.widgets.save', target: `${req.params.fid}/${req.params.did}/${tab.id}` })
-    res.json({ ok: true, tab })
+    const b = req.body || {}
+    const lock = blockingTabLock(req.params.fid, req.params.did, req.params.tid, editorOf(req))
+    if (lock) {
+      const who = lock.self ? 'você, em outra janela' : lock.name
+      return res.status(409).json({ error: `Esta guia está sendo editada por ${who} — não dá para salvar agora.`, lock })
+    }
+    const saved = saveTabWidgets(req.params.fid, req.params.did, req.params.tid, b.widgets, req.user.email, { baseRev: b.baseRev, actorName: req.user.name })
+    appendAuditLog({ email: req.user.email, name: req.user.name, action: 'tab.widgets.save', target: `${req.params.fid}/${req.params.did}/${saved.id}` })
+    res.json({ ok: true, tab: getTabForUser(req.params.fid, req.params.did, req.params.tid, req.user.email) ?? saved })
   } catch (e) {
+    if (e instanceof OutdatedClientError) return res.status(409).json({ error: e.message, code: e.code })
+    if (e instanceof TabConflictError) return res.status(409).json({ error: e.message, lock: e.lock })
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Cria, ajusta ou remove medidas da dashboard UMA A UMA (ver
+// saveDashboardMeasures) — o que a IA usa pra uma medida já entrar salva.
+// Quem gerencia a pasta muda qualquer uma; quem edita alguma guia só cria
+// medida nova e remove uma que nenhum widget usa.
+app.put('/api/workspace/folders/:fid/dashboards/:did/measures', requireAuth(), requireFolderAccess(), (req, res) => {
+  try {
+    const b = req.body || {}
+    const measures = saveDashboardMeasures(req.params.fid, req.params.did, { upsert: b.upsert, remove: b.remove }, req.user.email)
+    appendAuditLog({
+      email: req.user.email, name: req.user.name, action: 'dashboard.measures.save', target: `${req.params.fid}/${req.params.did}`,
+      meta: { upsert: (b.upsert ?? []).map((m) => m?.id), remove: b.remove ?? [] },
+    })
+    res.json({ ok: true, measures })
+  } catch (e) {
+    if (e instanceof WorkspaceAccessError) return res.status(403).json({ error: e.message })
     res.status(400).json({ error: e.message })
   }
 })
@@ -1199,13 +1360,13 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
 // poderia simplesmente não acontecer.
 
 app.listen(PORT, () => {
-  console.log(`Indicadores Sebratel API ouvindo em :${PORT}`)
-  console.log(`  domínio permitido: @${ALLOWED_DOMAIN}`)
+  logger.info(`Indicadores Sebratel API ouvindo em :${PORT}`)
+  logger.info(`  domínio permitido: @${ALLOWED_DOMAIN}`)
   if (AUTH_DISABLED) {
-    console.warn('  ****************************************************************')
-    console.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
-    console.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
-    console.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
-    console.warn('  ****************************************************************')
+    logger.warn('  ****************************************************************')
+    logger.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
+    logger.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)
+    logger.warn('  *  Modo de teste — tire a flag do .env antes de publicar.      *')
+    logger.warn('  ****************************************************************')
   }
 })

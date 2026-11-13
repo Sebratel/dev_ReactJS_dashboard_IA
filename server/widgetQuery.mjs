@@ -9,19 +9,35 @@
 // (ver inferSourceDef), já que a forma vem do dataset publicado e não de um
 // tipo TS fixo por trás.
 // Espelha os tipos de src/features/builder/types.ts.
+//
+// Fonte do Data Hub em LEITURA DIRETA não passa por aqui: não há linha dela
+// na memória para agregar. runWidgetQuery/runFieldValues desviam para
+// server/directWidgetQuery.mjs, que pede o resultado pronto ao Data Hub e
+// devolve exatamente a mesma forma — reaproveitando daqui as regras de
+// rótulo, hierarquia de datas, ordenação, top N, matriz e tabela (por isso as
+// funções exportadas abaixo). Os dois módulos se importam: é seguro porque
+// nenhum dos dois usa o outro antes de uma chamada.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { getSnapshot } from './dataset.mjs'
 import { isSheetSource, sheetSourceId, sourceKey as sheetSourceKey, listSheetSources, resolveSheetRows } from './sheetSources.mjs'
-import { listLakehouseSources, sourceKey as lakehouseSourceKey } from './lakehouseSources.mjs'
+import { listLakehouseSources, sourceKey as lakehouseSourceKey, readModeOf } from './lakehouseSources.mjs'
 import { fieldDictionaryMap, DATA_TYPE_KIND } from './fieldDictionary.mjs'
 import { parseExpression, evaluateExpression } from './measureExpr.mjs'
+import { isDirectSource } from './datahubQuery.mjs'
+import {
+  runDirectWidgetQuery, runDirectFieldValues, directSourceDef, directSemiJoinKeys, directMeasureValue,
+} from './directWidgetQuery.mjs'
 
-const MAX_POINTS = 100
-const MAX_FIELD_VALUES = 500
-const MAX_LEGEND_SERIES = 8
-const INFER_SAMPLE_SIZE = 300
+export const MAX_POINTS = 100
+export const MAX_FIELD_VALUES = 500
+export const MAX_LEGEND_SERIES = 8
+export const INFER_SAMPLE_SIZE = 300
 const MAX_MATRIX_ROWS = 500
 const MAX_MATRIX_COLUMNS = 50
+// Separador das chaves de prefixo da Matriz (nível pai + filho) — caractere
+// que não aparece em dado de verdade.
+export const MATRIX_SEP = '\u0001'
 // Sentinelas de coluna pro clique-pra-ordenar da Matriz — a coluna de
 // rótulo da linha e a coluna "Total" não são uma entrada real de
 // `MatrixResult.columns[]` (essa só lista as colunas DINÂMICAS, vindas de
@@ -36,13 +52,25 @@ const AGG_LABELS = { countDistinct: 'Contagem distinta', count: 'Contagem', sum:
 // carregada (ver runWidgetQuery); sem ele (ou sem a medida existir mais),
 // cai num rótulo genérico em vez de quebrar (m.agg/m.field ficam ausentes
 // numa MeasureConfig que só tem measureRef).
-function defaultMeasureLabel(m, measuresById) {
+export function defaultMeasureLabel(m, measuresById) {
   if (m?.measureRef) return measuresById?.get(m.measureRef)?.name ?? 'Medida'
   const aggLabel = AGG_LABELS[m.agg] ?? m.agg
   return m.field ? `${aggLabel} de ${m.field}` : aggLabel
 }
 
-function sortAndLimitPoints(points, sort, isDateDim, limit) {
+// Troca a chave de agrupamento pelo rótulo de exibição (`labelOf`, ver
+// compositeDimensionFn). Quando os dois diferem — só numa Hierarquia de datas,
+// onde "2026-03" vira "Março" —, a chave crua fica em `key`: é dela que o
+// filtro por clique da tela tira o período (o rótulo bonito não volta a ser
+// data). Nos demais casos o ponto sai como sempre saiu, sem `key`.
+export function withDisplayLabels(points, labelOf) {
+  return points.map((p) => {
+    const label = labelOf(p.label)
+    return label === p.label ? { ...p, label } : { ...p, key: p.label, label }
+  })
+}
+
+export function sortAndLimitPoints(points, sort, isDateDim, limit) {
   if (sort === 'asc') {
     points.sort(isDateDim ? (a, b) => a.label.localeCompare(b.label) : (a, b) => a.value - b.value)
   } else if (isDateDim) {
@@ -72,7 +100,7 @@ const HIGH_CARDINALITY_RATIO = 0.5
 // — não há TS interface hand-escrita, pois a forma vem do dataset publicado.
 // kind por valor observado; campos nunca vistos com valor não-nulo ficam
 // 'dimension' (comportamento neutro: agrupável/filtrável).
-function inferSourceDef(source, rows, label) {
+export function inferSourceDef(source, rows, label) {
   const fields = new Map()
   const sample = rows.slice(0, INFER_SAMPLE_SIZE)
   for (const r of sample) {
@@ -106,7 +134,7 @@ function inferSourceDef(source, rows, label) {
   }
 }
 
-function getSourceDef(source, snap) {
+export function getSourceDef(source, snap) {
   const rows = getRows(snap, source)
   if (!Array.isArray(rows)) return null
   return inferSourceDef(source, rows)
@@ -123,7 +151,7 @@ function getSourceDef(source, snap) {
 // inteiro, mesmo com a própria fonte do widget saudável. O caso de uso
 // central da feature (uma planilha tipo "Bases" relacionada com várias
 // fontes-fato do Data Hub) é justamente onde isso batia.
-function collectWidgetSheetKeys(widget, relations = []) {
+export function collectWidgetSheetKeys(widget, relations = []) {
   const keys = new Set()
   if (isSheetSource(widget?.source)) keys.add(widget.source)
   for (const lk of widget?.lookups ?? []) if (isSheetSource(lk.source)) keys.add(lk.source)
@@ -164,21 +192,30 @@ export async function withSheetSources(baseSnap, sheetKeys, accessToken) {
 // `accessToken`: usado só pra tentar atualizar o cache de cada planilha se
 // estiver expirado — falhando (sem acesso, sessão sem o escopo novo etc.),
 // a planilha aparece com 0 campos em vez de derrubar a lista inteira.
-// Fontes do Data Hub não precisam de nada disso: elas já vêm resolvidas no
-// snapshot pelo ETL.
+// Fontes do Data Hub COPIADAS não precisam de nada disso: elas já vêm
+// resolvidas no snapshot pelo ETL. As em LEITURA DIRETA não têm linha no
+// snapshot: campos e amostra vêm de uma consulta curta ao Data Hub (em cache,
+// ver directSourceDef).
 export async function listSourceDefs(folderId, accessToken) {
   const snap = getSnapshot()
   const data = { ...(snap?.data ?? {}) }
   const titles = new Map()
   const folderIdsById = new Map()
+  const direct = []
 
   // Só nomeia/filtra: as linhas já estão em `data` sob a chave `dhub:<id>`.
-  // Uma fonte recém-cadastrada (ETL ainda não rodou) simplesmente não tem
-  // chave no snapshot e portanto não aparece.
+  // Uma fonte copiada recém-cadastrada (ETL ainda não rodou) simplesmente não
+  // tem chave no snapshot e portanto não aparece.
   for (const src of listLakehouseSources()) {
     const key = lakehouseSourceKey(src.id)
     titles.set(key, src.label)
     folderIdsById.set(key, src.folderIds ?? null)
+    // O que sobrou no snapshot de quando ela era copiada não vale mais: o
+    // catálogo dela é o do Data Hub.
+    if (readModeOf(src) === 'direct') {
+      delete data[key]
+      if (src.enabled !== false) direct.push(key)
+    }
   }
 
   for (const sh of listSheetSources()) {
@@ -196,28 +233,40 @@ export async function listSourceDefs(folderId, accessToken) {
   // como texto/dimensão) — `kindAuto` guarda o valor original inferido, pra
   // a tela do dicionário poder mostrar os dois lado a lado.
   const dict = fieldDictionaryMap()
-  return Object.entries(data)
-    .filter(([id]) => {
-      if (!folderId) return true
-      if (isSheetSource(id)) return true
-      const allowed = folderIdsById.get(id)
-      return allowed == null || allowed.includes(folderId)
+  const allowedHere = (id) => {
+    if (!folderId) return true
+    if (isSheetSource(id)) return true
+    const allowed = folderIdsById.get(id)
+    return allowed == null || allowed.includes(folderId)
+  }
+  const withDictionary = (def) => {
+    def.fields = def.fields.map((f) => {
+      const entry = dict.get(`${def.key}::${f.key}`)
+      if (!entry) return f
+      const next = entry.description ? { ...f, description: entry.description } : { ...f }
+      if (entry.dataType && DATA_TYPE_KIND[entry.dataType]) {
+        next.kindAuto = f.kind
+        next.dataType = entry.dataType
+        next.kind = DATA_TYPE_KIND[entry.dataType]
+      }
+      return next
     })
-    .map(([id, rows]) => {
-      const def = inferSourceDef(id, rows ?? [], titles.get(id))
-      def.fields = def.fields.map((f) => {
-        const entry = dict.get(`${id}::${f.key}`)
-        if (!entry) return f
-        const next = entry.description ? { ...f, description: entry.description } : { ...f }
-        if (entry.dataType && DATA_TYPE_KIND[entry.dataType]) {
-          next.kindAuto = f.kind
-          next.dataType = entry.dataType
-          next.kind = DATA_TYPE_KIND[entry.dataType]
-        }
-        return next
-      })
-      return def
-    })
+    return def
+  }
+  const copied = Object.entries(data)
+    .filter(([id]) => allowedHere(id))
+    .map(([id, rows]) => withDictionary(inferSourceDef(id, rows ?? [], titles.get(id))))
+  // Falhando (Data Hub fora do ar, token revogado), a fonte direta aparece
+  // sem campos em vez de derrubar a lista inteira — igual às planilhas.
+  const directDefs = await Promise.all(direct.filter(allowedHere).map(async (key) => {
+    try {
+      return withDictionary(await directSourceDef(key, titles.get(key)))
+    } catch (e) {
+      logger.warn(`[leitura direta] ${key}: ${e.message}`)
+      return { key, label: titles.get(key) ?? key, fields: [], direct: true, error: e.message }
+    }
+  }))
+  return [...copied, ...directDefs]
 }
 
 export function assertField(sourceDef, field) {
@@ -346,7 +395,7 @@ export function resolveDateWindow(spec, now = new Date()) {
 // mais "de fora"), usada só pra reordenar níveis quando o usuário marca as
 // caixinhas fora de ordem no editor (ver toggleHierarchyLevel no cliente) —
 // o motor de agregação em si não presume ordem nenhuma no array.
-const BUCKET_RE = /^(year|quarter|month|day):(.+)$/
+export const BUCKET_RE = /^(year|quarter|month|day):(.+)$/
 const BUCKET_RANK = { year: 0, quarter: 1, month: 2, day: 3 }
 const MONTH_NAMES_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro']
 
@@ -371,7 +420,7 @@ export function parseIsoDate(v) {
   return { y: dm[1], mo: dm[2].padStart(2, '0'), d: dm[3].padStart(2, '0') }
 }
 
-function dimensionKeyFn(dimension) {
+export function dimensionKeyFn(dimension) {
   const m = BUCKET_RE.exec(dimension)
   if (!m) return { field: dimension, bucket: null, keyOf: (r) => (r[dimension] == null ? null : String(r[dimension])), prettyOf: (k) => k }
   const [, bucket, field] = m
@@ -412,7 +461,7 @@ function dimensionKeyFn(dimension) {
 // incremento (sem repetir o ano, que já é coluna irmã); sem 'year:', cada
 // nível mantém a chave cumulativa (com ano embutido) — evita rótulo
 // ambíguo numa hierarquia Trimestre+Mês sem Ano cobrindo vários anos.
-function compositeDimensionFn(dimensions) {
+export function compositeDimensionFn(dimensions) {
   const parts = dimensions.map(dimensionKeyFn)
   const bucketFields = parts.filter((p) => p.bucket)
   const isHierarchy = dimensions.length > 1 && bucketFields.length === parts.length
@@ -515,7 +564,7 @@ function mergeLookups(rows, lookups) {
 
 // Valida um campo aceitando tanto campos nativos da fonte principal quanto
 // campos mesclados via lookup (`${source}.${field}`).
-function assertFieldOrLookup(sourceDef, lookups, field) {
+export function assertFieldOrLookup(sourceDef, lookups, field) {
   if (lookups.some((lk) => lk.outKey === field)) return
   assertField(sourceDef, field)
 }
@@ -538,7 +587,11 @@ function assertFieldOrLookup(sourceDef, lookups, field) {
 // — o filtro simplesmente não alcança o widget, mesmo silêncio de sempre
 // quando um filtro de aba não bate com a fonte do widget. Não encadeia
 // (fato → dimensão → outro fato): só relações DIRETAS entre as duas fontes.
-export function resolveIndirectFilter(tf, widgetSourceDef, relations, snap) {
+//
+// Assíncrona porque a fonte do FILTRO pode estar em leitura direta: aí as
+// chaves vêm de uma consulta ao Data Hub (directSemiJoinKeys) em vez das
+// linhas do snapshot — o resto é igual, valha o widget de que modo valer.
+export async function resolveIndirectFilter(tf, widgetSourceDef, relations, snap) {
   if (!tf.values?.length) return undefined
   for (const rel of relations) {
     let filterKeyField, widgetKeyField
@@ -548,6 +601,9 @@ export function resolveIndirectFilter(tf, widgetSourceDef, relations, snap) {
       filterKeyField = rel.fieldB; widgetKeyField = rel.fieldA
     } else continue
     if (!widgetSourceDef.fields.some((f) => f.key === widgetKeyField)) continue // relação mal configurada — ignora em vez de derrubar o widget
+    if (isDirectSource(tf.filter.source)) {
+      return { field: widgetKeyField, values: await directSemiJoinKeys(tf, filterKeyField) }
+    }
     // A fonte do FILTRO pode estar ausente do snapshot agora (ciclo do ETL
     // falhou, planilha desregistrada etc.) — `getRows` devolve `null` nesse
     // caso, DIFERENTE de "a fonte existe mas o filtro bateu em zero linhas".
@@ -645,7 +701,12 @@ function collectMeasureRefSheetKeys(measureId, measuresById, visited) {
 // repetido). `resolvedScalarCache` (separado de `visiting`) garante que essa
 // medida-base comum só é calculada uma vez por resolução — resolve o
 // losango E funciona como cache de performance no mesmo mecanismo.
-export function resolveMeasure(measureId, ctx, depth = 1) {
+//
+// Assíncrona porque uma medida pode ser de fonte em leitura direta (aí o
+// número vem do Data Hub, ver directMeasureValue). As refs de uma fórmula são
+// resolvidas uma por vez, de propósito: `visiting` é a pilha da recursão, e
+// resolver em paralelo a embaralharia.
+export async function resolveMeasure(measureId, ctx, depth = 1) {
   if (depth > MAX_MEASURE_DEPTH) throw new Error(`Cadeia de medidas aninhada demais (máximo ${MAX_MEASURE_DEPTH} níveis).`)
   if (ctx.resolvedScalarCache.has(measureId)) return ctx.resolvedScalarCache.get(measureId)
   if (ctx.visiting.has(measureId)) throw new Error(`Referência circular entre medidas envolvendo "${measureId}".`)
@@ -655,8 +716,8 @@ export function resolveMeasure(measureId, ctx, depth = 1) {
 
   ctx.visiting.add(measureId)
   try {
-    const result = def.kind === 'simple' ? resolveSimpleMeasure(def, ctx)
-      : def.kind === 'formula' ? resolveFormulaMeasure(def, ctx, depth)
+    const result = def.kind === 'simple' ? await resolveSimpleMeasure(def, ctx)
+      : def.kind === 'formula' ? await resolveFormulaMeasure(def, ctx, depth)
       : (() => { throw new Error(`Tipo de medida desconhecido "${def.kind}".`) })()
     ctx.resolvedScalarCache.set(measureId, result)
     return result
@@ -665,7 +726,8 @@ export function resolveMeasure(measureId, ctx, depth = 1) {
   }
 }
 
-function resolveSimpleMeasure(def, ctx) {
+async function resolveSimpleMeasure(def, ctx) {
+  if (isDirectSource(def.source)) return directMeasureValue(def, ctx)
   const sourceDef = getSourceDef(def.source, ctx.snap)
   if (!sourceDef) throw new Error(`Fonte desconhecida na medida "${def.name}": ${def.source}`)
   if (def.field) assertField(sourceDef, def.field)
@@ -682,7 +744,7 @@ function resolveSimpleMeasure(def, ctx) {
     const sourcesFiltered = new Set(relevantTabFilters.length ? [def.source] : [])
     for (const tf of ctx.tabFilters) {
       if (tf.filter.source === def.source) continue
-      const resolved = resolveIndirectFilter(tf, sourceDef, ctx.relations, ctx.snap)
+      const resolved = await resolveIndirectFilter(tf, sourceDef, ctx.relations, ctx.snap)
       if (resolved) { indirectFilters.push({ field: resolved.field, op: 'in', values: resolved.values }); sourcesFiltered.add(tf.filter.source) }
     }
     const rows = applyFilters(getRows(ctx.snap, def.source) ?? [], relevantTabFilters, indirectFilters)
@@ -711,11 +773,11 @@ function resolveSimpleMeasure(def, ctx) {
   return { value: aggregator.value(acc), sourcesFiltered: cached.sourcesFiltered }
 }
 
-function resolveFormulaMeasure(def, ctx, depth) {
+async function resolveFormulaMeasure(def, ctx, depth) {
   const scope = {}
   const sourcesFiltered = new Set()
   for (const [alias, refId] of Object.entries(def.refs ?? {})) {
-    const sub = resolveMeasure(refId, ctx, depth + 1)
+    const sub = await resolveMeasure(refId, ctx, depth + 1)
     scope[alias] = sub.value
     for (const s of sub.sourcesFiltered) sourcesFiltered.add(s)
   }
@@ -743,7 +805,7 @@ export function isPartialMeasureFilter(tabFilters, sourcesFiltered) {
 // já existente (ver o comentário maior em runWidgetQuery). Preserva
 // label/color/dataLabels do slot do WIDGET (customização por série), só
 // agg/field/dateWindow vêm da medida referenciada.
-function resolveLevel2Measure(measureConfig, widgetSource, measuresById) {
+export function resolveLevel2Measure(measureConfig, widgetSource, measuresById) {
   if (!measureConfig?.measureRef) return measureConfig
   const def = measuresById.get(measureConfig.measureRef)
   if (!def) throw new Error(`Medida "${measureConfig.measureRef}" não encontrada.`)
@@ -799,24 +861,24 @@ function makeMeasureRowPredicate(resolved) {
 // "Valores" (uma célula por linha × coluna). Sem "Colunas" configurado, cai
 // numa única coluna (`value`) — vira uma tabela agrupada simples com
 // subtotais, útil mesmo sem quebra por coluna.
+export const MATRIX_SINGLE_COL = 'value'
+
 function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField, matrixSort) {
   if (!matrixRowFields.length) return { columns: [], rows: [], grandTotal: {}, grandTotalAll: 0 }
 
   const rowKeyFns = matrixRowFields.map(dimensionKeyFn)
   const colFn = matrixColumnFields.length ? compositeDimensionFn(matrixColumnFields) : null
   const aggregator = makeAggregator(measure, pkField)
-  const SINGLE_COL = 'value'
-  const SEP = ''
 
   // levels[depth] = Map<prefixKey, { labelParts, perCol: Map<colKey,acc>, rowAcc }>
   const levels = rowKeyFns.map(() => new Map())
   const grandPerCol = new Map() // colKey -> acc (total geral por coluna, pra ranquear/capar colunas)
-  let grandAcc = aggregator.init()
+  const grandAcc = aggregator.init()
 
   for (const r of rows) {
     const rowVals = rowKeyFns.map((fn) => fn.keyOf(r))
     if (rowVals.some((v) => v == null || v === '')) continue
-    const colKey = colFn ? colFn.keyOf(r) : SINGLE_COL
+    const colKey = colFn ? colFn.keyOf(r) : MATRIX_SINGLE_COL
     if (colKey == null || colKey === '') continue
 
     aggregator.add(grandAcc, r)
@@ -825,7 +887,7 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
     aggregator.add(gAcc, r)
 
     for (let depth = 0; depth < rowKeyFns.length; depth++) {
-      const prefixKey = rowVals.slice(0, depth + 1).join(SEP)
+      const prefixKey = rowVals.slice(0, depth + 1).join(MATRIX_SEP)
       let node = levels[depth].get(prefixKey)
       if (!node) {
         node = { labelParts: rowVals.slice(0, depth + 1), perCol: new Map(), rowAcc: aggregator.init() }
@@ -838,19 +900,31 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
     }
   }
 
+  return renderMatrix({ levels, grandPerCol, grandAcc, valueOf: aggregator.value }, matrixRowFields, matrixColumnFields, measure, matrixSort)
+}
+
+// A árvore final da Matriz a partir dos totais de cada nível. Separada da
+// agregação acima porque a leitura direta (directWidgetQuery.mjs) recebe esses
+// mesmos totais prontos do Data Hub — lá o "acumulador" já é o número e
+// `valueOf` devolve como está; aqui ele lê o acumulador. Ordenação, cortes e
+// rótulos ficam iguais nos dois modos por serem este mesmo código.
+export function renderMatrix({ levels, grandPerCol, grandAcc, valueOf }, matrixRowFields, matrixColumnFields, measure, matrixSort) {
+  const rowKeyFns = matrixRowFields.map(dimensionKeyFn)
+  const colFn = matrixColumnFields.length ? compositeDimensionFn(matrixColumnFields) : null
+
   // Colunas dinâmicas: rankeadas pelo total geral, capadas em MAX_MATRIX_COLUMNS
   // (evita explosão quando o campo de coluna tem cardinalidade alta).
   const columnKeys = colFn
     ? Array.from(grandPerCol.keys())
-      .sort((a, b) => aggregator.value(grandPerCol.get(b)) - aggregator.value(grandPerCol.get(a)))
+      .sort((a, b) => valueOf(grandPerCol.get(b)) - valueOf(grandPerCol.get(a)))
       .slice(0, MAX_MATRIX_COLUMNS)
-    : [SINGLE_COL]
+    : [MATRIX_SINGLE_COL]
 
   const nodeValues = (node) => {
     const values = {}
     for (const ck of columnKeys) {
       const acc = node.perCol.get(ck)
-      values[ck] = acc ? aggregator.value(acc) : 0
+      values[ck] = acc ? valueOf(acc) : 0
     }
     return values
   }
@@ -860,8 +934,8 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
   // dinâmica de verdade, lida do mesmo `perCol` que `nodeValues` usa (nunca
   // null/undefined — cai em 0 igual lá).
   const sortValueOf = (node, column) => (
-    column === MATRIX_TOTAL_SORT_KEY ? aggregator.value(node.rowAcc)
-      : (node.perCol.get(column) ? aggregator.value(node.perCol.get(column)) : 0)
+    column === MATRIX_TOTAL_SORT_KEY ? valueOf(node.rowAcc)
+      : (node.perCol.get(column) ? valueOf(node.perCol.get(column)) : 0)
   )
 
   // Monta a árvore: nível 0 é a raiz; cada nível seguinte aninha sob o
@@ -880,7 +954,7 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
         ? (a, b) => a[1].labelParts[depth].localeCompare(b[1].labelParts[depth], 'pt-BR') * dir
         : (a, b) => (sortValueOf(a[1], matrixSort.column) - sortValueOf(b[1], matrixSort.column)) * dir
     const entries = Array.from(levels[depth].entries())
-      .filter(([key]) => depth === 0 || key.startsWith(parentPrefix + SEP))
+      .filter(([key]) => depth === 0 || key.startsWith(parentPrefix + MATRIX_SEP))
       .sort(comparator)
       .slice(0, MAX_MATRIX_ROWS)
     return entries.map(([key, node]) => {
@@ -890,7 +964,7 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
       // o risco de string composta ambígua que o rótulo de gráfico tem (ver
       // compositeDimensionFn), então prettifica sempre, incondicionalmente.
       const label = rowKeyFns[depth].prettyOf(node.labelParts[depth])
-      const result = { key, label, level: depth, values: nodeValues(node), total: aggregator.value(node.rowAcc) }
+      const result = { key, label, level: depth, values: nodeValues(node), total: valueOf(node.rowAcc) }
       if (depth + 1 < rowKeyFns.length) {
         const children = buildLevel(depth + 1, key)
         if (children.length) result.children = children
@@ -900,14 +974,151 @@ function buildMatrix(rows, matrixRowFields, matrixColumnFields, measure, pkField
   }
 
   const grandTotal = {}
-  for (const ck of columnKeys) grandTotal[ck] = grandPerCol.has(ck) ? aggregator.value(grandPerCol.get(ck)) : 0
+  for (const ck of columnKeys) grandTotal[ck] = grandPerCol.has(ck) ? valueOf(grandPerCol.get(ck)) : 0
 
   return {
-    columns: colFn ? columnKeys.map((k) => ({ key: k, label: colFn.labelOf(k) })) : [{ key: SINGLE_COL, label: defaultMeasureLabel(measure) }],
+    columns: colFn ? columnKeys.map((k) => ({ key: k, label: colFn.labelOf(k) })) : [{ key: MATRIX_SINGLE_COL, label: defaultMeasureLabel(measure) }],
     rows: buildLevel(0, ''),
     grandTotal,
-    grandTotalAll: aggregator.value(grandAcc),
+    grandTotalAll: valueOf(grandAcc),
   }
+}
+
+// Tabela a partir de linhas JÁ filtradas (e já mescladas com as fontes
+// relacionadas): combinações distintas de `cols`, ordenadas, paginadas. Fora
+// de runWidgetQuery porque a leitura direta usa esta mesma função quando a
+// tabela tem coluna de outra fonte — aí as linhas são os grupos que o Data Hub
+// devolveu, já mesclados.
+export function buildTableResult(rows, cols, lookups, { page, pageSize, tableSort }) {
+  // Chave de dedup é só `cols` (o que aparece na tela) — os outKeys de
+  // lookup abaixo continuam sendo carregados na linha projetada mesmo
+  // quando não estão em `cols` (mesmo comportamento de sempre), mas não
+  // participam da chave: senão duas linhas visualmente idênticas nas
+  // colunas mostradas poderiam aparecer separadas por causa de um valor
+  // que não está nem sendo exibido. Primeira ocorrência vence quando a
+  // combinação se repete (mesmo padrão já usado no índice de lookup).
+  const seen = new Map()
+  for (const r of rows) {
+    const projected = {}
+    const sortVals = {}
+    for (const c of cols) {
+      // Coluna de bucket: computa o valor (não existe como chave literal
+      // na linha crua) e SEMPRE mostra a forma "bonita" (Ano/Trimestre
+      // por extenso/nome do mês/dia do mês) — diferente do rótulo de
+      // gráfico (ver compositeDimensionFn), aqui não tem ambiguidade de
+      // "esconder o ano redundante": cada bucket é a PRÓPRIA coluna,
+      // separada de qualquer coluna-irmã de Ano que exista ao lado. Mas
+      // dedup/ordenação usam a chave CRUA (cumulativa, com ano embutido),
+      // NUNCA a "bonita" — senão datas de anos diferentes com o mesmo
+      // trimestre/mês/dia colidiriam e uma sumiria silenciosamente da
+      // tabela, e 'month:' ordenaria pelo NOME do mês (alfabético, não
+      // cronológico).
+      if (BUCKET_RE.test(c)) {
+        const dimFn = dimensionKeyFn(c)
+        const raw = dimFn.keyOf(r)
+        projected[c] = raw == null ? null : dimFn.prettyOf(raw)
+        sortVals[c] = raw
+      } else {
+        projected[c] = r[c] ?? null
+        sortVals[c] = projected[c]
+      }
+    }
+    // outKey de lookup entra em `sortVals` também — não faz parte da chave
+    // de dedup (ver comentário acima), mas o cabeçalho dela é clicável que
+    // nem qualquer outra coluna (ver clique-pra-ordenar), então precisa de
+    // um valor comparável igual às colunas nativas.
+    for (const lk of lookups) { projected[lk.outKey] = r[lk.outKey] ?? null; sortVals[lk.outKey] = projected[lk.outKey] }
+    const key = JSON.stringify(cols.map((c) => sortVals[c]))
+    if (!seen.has(key)) seen.set(key, { projected, sortVals })
+  }
+  const entries = Array.from(seen.values())
+  // Clique num cabeçalho de coluna (front): ordena só por AQUELA coluna,
+  // numérico se o valor for número (`typeof`, o tipo real já preservado em
+  // `sortVals` — nunca comparação de texto pra número), alfabético (pt-BR)
+  // senão. Vazio sempre por último, nas duas direções — senão "decrescente"
+  // jogaria toda célula vazia pro topo, o oposto do que se espera.
+  if (tableSort?.column && (cols.includes(tableSort.column) || lookups.some((lk) => lk.outKey === tableSort.column))) {
+    const col = tableSort.column
+    const dir = tableSort.direction === 'desc' ? -1 : 1
+    entries.sort((a, b) => {
+      const av = a.sortVals[col]
+      const bv = b.sortVals[col]
+      if (av == null && bv == null) return 0
+      if (av == null) return 1
+      if (bv == null) return -1
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
+      return String(av).localeCompare(String(bv), 'pt-BR') * dir
+    })
+  } else {
+    // Ordem padrão (sem clique ainda): mesmo critério alfabético (pt-BR)
+    // de sempre, coluna por coluna na ordem declarada — só pra uma lista
+    // de valores distintos ficar previsível em vez de espelhar a ordem
+    // arbitrária do dataset de origem.
+    entries.sort((a, b) => {
+      for (const c of cols) {
+        const cmp = String(a.sortVals[c] ?? '').localeCompare(String(b.sortVals[c] ?? ''), 'pt-BR')
+        if (cmp !== 0) return cmp
+      }
+      return 0
+    })
+  }
+  const distinctRows = entries.map((e) => e.projected)
+
+  const total = distinctRows.length
+  const startIdx = (page - 1) * pageSize
+  const pageRows = distinctRows.slice(startIdx, startIdx + pageSize)
+  return { rows: pageRows, total, page, pageSize }
+}
+
+// Histograma a partir de pares [valor, peso]: o peso é 1 por linha no motor
+// em memória e a quantidade de linhas de cada valor distinto na leitura
+// direta (o Data Hub devolve o valor já contado) — a conta é a mesma.
+export function histogramResult(pairs, binsIn) {
+  const bins = Math.max(2, Math.min(50, binsIn ?? 10))
+  if (pairs.length === 0) return { points: [] }
+  // Laço em vez de Math.min(...valores): com dezenas de milhares de valores o
+  // spread estoura a pilha de argumentos.
+  let min = Infinity
+  let max = -Infinity
+  let n = 0
+  let sum = 0
+  for (const [v, w] of pairs) {
+    if (v < min) min = v
+    if (v > max) max = v
+    n += w
+    sum += v * w
+  }
+  const width = (max - min) / bins || 1 // todos os valores iguais — cai tudo na 1ª faixa
+  const counts = new Array(bins).fill(0)
+  for (const [v, w] of pairs) {
+    const idx = Math.min(bins - 1, Math.floor((v - min) / width))
+    counts[idx] += w
+  }
+  const mean = sum / n
+  let squares = 0
+  for (const [v, w] of pairs) squares += (v - mean) ** 2 * w
+  const stddev = Math.sqrt(squares / n)
+  // Densidade normal no ponto central de cada faixa, escalada para a mesma
+  // unidade da barra (contagem esperada na faixa se os dados fossem
+  // perfeitamente normais): pdf(x) * N * largura_da_faixa.
+  const gaussianAt = (mid) => {
+    if (!(stddev > 0)) return null
+    const pdf = Math.exp(-0.5 * ((mid - mean) / stddev) ** 2) / (stddev * Math.sqrt(2 * Math.PI))
+    return pdf * n * width
+  }
+  const fmtEdge = (x) => x.toLocaleString('pt-BR', { maximumFractionDigits: Math.abs(x) >= 1000 ? 0 : 1 })
+  const points = counts.map((count, i) => {
+    const from = min + i * width
+    const to = i === bins - 1 ? max : from + width
+    const mid = (from + to) / 2
+    const gaussian = gaussianAt(mid)
+    return { label: `${fmtEdge(from)}–${fmtEdge(to)}`, value: count, l0: gaussian === null ? null : Math.round(gaussian * 10) / 10 }
+  })
+  const seriesKeys = [
+    { key: 'value', label: 'Frequência', role: 'bar' },
+    { key: 'l0', label: 'Distribuição normal', role: 'line' },
+  ]
+  return { points, seriesKeys }
 }
 
 export async function runWidgetQuery({ widget, tabFilters = [], relations = [], page = 1, pageSize = 50, accessToken, tableSort, matrixSort, dashboardMeasures = [] }) {
@@ -926,6 +1137,10 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
   // que só tem measureRef).
   if (widget.measureX?.measureRef) throw new Error('Medida nomeada ainda não é suportada no eixo X de dispersão (measureX) — use um cálculo simples aqui, ou mova pra um KPI.')
   if (widget.matrixValue?.measureRef) throw new Error('Medida nomeada ainda não é suportada no valor da Matriz — use um cálculo simples aqui, ou mova pra um KPI.')
+  // Fonte em leitura direta: quem agrega é o Data Hub (mesmo formato de saída).
+  if (isDirectSource(widget?.source)) {
+    return runDirectWidgetQuery({ widget, tabFilters, relations, page, pageSize, accessToken, tableSort, matrixSort, measuresById, measureSheetKeys })
+  }
   const snap = await withSheetSources(getSnapshot(), [...collectWidgetSheetKeys(widget, relations), ...measureSheetKeys], accessToken)
   if (!snap) return null
   if (!widget?.source) throw new Error('Widget sem fonte de dados (source).')
@@ -966,7 +1181,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
   const indirectFilters = []
   for (const tf of tabFilters) {
     if (tf.filter.source === widget.source) continue
-    const resolved = resolveIndirectFilter(tf, sourceDef, relations, snap)
+    const resolved = await resolveIndirectFilter(tf, sourceDef, relations, snap)
     if (resolved) indirectFilters.push({ field: resolved.field, op: 'in', values: resolved.values })
   }
   // Mescla ANTES de filtrar (não depois): "Filtro fixo do widget" pode mirar
@@ -994,85 +1209,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
     // Hierarquia de datas) valida contra o campo-base, não a chave literal
     // (que não existe em nenhuma linha crua).
     for (const c of cols) assertFieldOrLookup(sourceDef, lookups, BUCKET_RE.test(c) ? dimensionKeyFn(c).field : c)
-
-    // Chave de dedup é só `cols` (o que aparece na tela) — os outKeys de
-    // lookup abaixo continuam sendo carregados na linha projetada mesmo
-    // quando não estão em `cols` (mesmo comportamento de sempre), mas não
-    // participam da chave: senão duas linhas visualmente idênticas nas
-    // colunas mostradas poderiam aparecer separadas por causa de um valor
-    // que não está nem sendo exibido. Primeira ocorrência vence quando a
-    // combinação se repete (mesmo padrão já usado no índice de lookup).
-    const seen = new Map()
-    for (const r of rows) {
-      const projected = {}
-      const sortVals = {}
-      for (const c of cols) {
-        // Coluna de bucket: computa o valor (não existe como chave literal
-        // na linha crua) e SEMPRE mostra a forma "bonita" (Ano/Trimestre
-        // por extenso/nome do mês/dia do mês) — diferente do rótulo de
-        // gráfico (ver compositeDimensionFn), aqui não tem ambiguidade de
-        // "esconder o ano redundante": cada bucket é a PRÓPRIA coluna,
-        // separada de qualquer coluna-irmã de Ano que exista ao lado. Mas
-        // dedup/ordenação usam a chave CRUA (cumulativa, com ano embutido),
-        // NUNCA a "bonita" — senão datas de anos diferentes com o mesmo
-        // trimestre/mês/dia colidiriam e uma sumiria silenciosamente da
-        // tabela, e 'month:' ordenaria pelo NOME do mês (alfabético, não
-        // cronológico).
-        if (BUCKET_RE.test(c)) {
-          const dimFn = dimensionKeyFn(c)
-          const raw = dimFn.keyOf(r)
-          projected[c] = raw == null ? null : dimFn.prettyOf(raw)
-          sortVals[c] = raw
-        } else {
-          projected[c] = r[c] ?? null
-          sortVals[c] = projected[c]
-        }
-      }
-      // outKey de lookup entra em `sortVals` também — não faz parte da chave
-      // de dedup (ver comentário acima), mas o cabeçalho dela é clicável que
-      // nem qualquer outra coluna (ver clique-pra-ordenar), então precisa de
-      // um valor comparável igual às colunas nativas.
-      for (const lk of lookups) { projected[lk.outKey] = r[lk.outKey] ?? null; sortVals[lk.outKey] = projected[lk.outKey] }
-      const key = JSON.stringify(cols.map((c) => sortVals[c]))
-      if (!seen.has(key)) seen.set(key, { projected, sortVals })
-    }
-    const entries = Array.from(seen.values())
-    // Clique num cabeçalho de coluna (front): ordena só por AQUELA coluna,
-    // numérico se o valor for número (`typeof`, o tipo real já preservado em
-    // `sortVals` — nunca comparação de texto pra número), alfabético (pt-BR)
-    // senão. Vazio sempre por último, nas duas direções — senão "decrescente"
-    // jogaria toda célula vazia pro topo, o oposto do que se espera.
-    if (tableSort?.column && (cols.includes(tableSort.column) || lookups.some((lk) => lk.outKey === tableSort.column))) {
-      const col = tableSort.column
-      const dir = tableSort.direction === 'desc' ? -1 : 1
-      entries.sort((a, b) => {
-        const av = a.sortVals[col]
-        const bv = b.sortVals[col]
-        if (av == null && bv == null) return 0
-        if (av == null) return 1
-        if (bv == null) return -1
-        if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
-        return String(av).localeCompare(String(bv), 'pt-BR') * dir
-      })
-    } else {
-      // Ordem padrão (sem clique ainda): mesmo critério alfabético (pt-BR)
-      // de sempre, coluna por coluna na ordem declarada — só pra uma lista
-      // de valores distintos ficar previsível em vez de espelhar a ordem
-      // arbitrária do dataset de origem.
-      entries.sort((a, b) => {
-        for (const c of cols) {
-          const cmp = String(a.sortVals[c] ?? '').localeCompare(String(b.sortVals[c] ?? ''), 'pt-BR')
-          if (cmp !== 0) return cmp
-        }
-        return 0
-      })
-    }
-    const distinctRows = entries.map((e) => e.projected)
-
-    const total = distinctRows.length
-    const startIdx = (page - 1) * pageSize
-    const pageRows = distinctRows.slice(startIdx, startIdx + pageSize)
-    return { rows: pageRows, total, page, pageSize }
+    return buildTableResult(rows, cols, lookups, { page, pageSize, tableSort })
   }
 
   const pkField = sourceDef.fields.find((f) => f.pk)?.key ?? null
@@ -1101,10 +1238,10 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
     }
     const scatterLimit = Math.min(widget.limit ?? 15, MAX_POINTS)
     const points = Array.from(groups.entries())
-      .map(([label, g]) => ({ label: scatterLabelOf(label), value: yAgg.value(g.y), x: xAgg.value(g.x) }))
+      .map(([label, g]) => ({ label, value: yAgg.value(g.y), x: xAgg.value(g.x) }))
       .sort((a, b) => b.value - a.value)
       .slice(0, scatterLimit)
-    return { points }
+    return { points: withDisplayLabels(points, scatterLabelOf) }
   }
 
   // Histograma: divide os valores de UM campo numérico em faixas (bins) de
@@ -1117,41 +1254,10 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
   if (widget.type === 'histogram') {
     const field = widget.histogramField
     if (!field) return { points: [] }
-    const bins = Math.max(2, Math.min(50, widget.histogramBins ?? 10))
-    const values = rows.map((r) => Number(r[field])).filter((v) => Number.isFinite(v))
-    if (values.length === 0) return { points: [] }
-    const min = Math.min(...values)
-    const max = Math.max(...values)
-    const width = (max - min) / bins || 1 // todos os valores iguais — cai tudo na 1ª faixa
-    const counts = new Array(bins).fill(0)
-    for (const v of values) {
-      const idx = Math.min(bins - 1, Math.floor((v - min) / width))
-      counts[idx]++
-    }
-    const mean = values.reduce((sum, v) => sum + v, 0) / values.length
-    const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / values.length
-    const stddev = Math.sqrt(variance)
-    // Densidade normal no ponto central de cada faixa, escalada para a mesma
-    // unidade da barra (contagem esperada na faixa se os dados fossem
-    // perfeitamente normais): pdf(x) * N * largura_da_faixa.
-    const gaussianAt = (mid) => {
-      if (!(stddev > 0)) return null
-      const pdf = Math.exp(-0.5 * ((mid - mean) / stddev) ** 2) / (stddev * Math.sqrt(2 * Math.PI))
-      return pdf * values.length * width
-    }
-    const fmtEdge = (n) => n.toLocaleString('pt-BR', { maximumFractionDigits: Math.abs(n) >= 1000 ? 0 : 1 })
-    const points = counts.map((count, i) => {
-      const from = min + i * width
-      const to = i === bins - 1 ? max : from + width
-      const mid = (from + to) / 2
-      const gaussian = gaussianAt(mid)
-      return { label: `${fmtEdge(from)}–${fmtEdge(to)}`, value: count, l0: gaussian === null ? null : Math.round(gaussian * 10) / 10 }
-    })
-    const seriesKeys = [
-      { key: 'value', label: 'Frequência', role: 'bar' },
-      { key: 'l0', label: 'Distribuição normal', role: 'line' },
-    ]
-    return { points, seriesKeys }
+    // Cada linha pesa 1 aqui; na leitura direta cada valor distinto chega
+    // com a quantidade de linhas que o têm.
+    const pairs = rows.map((r) => [Number(r[field]), 1]).filter(([v]) => Number.isFinite(v))
+    return histogramResult(pairs, widget.histogramBins)
   }
 
   // Sem dimensão (KPI/pie sem quebra): agregado único sobre as linhas filtradas,
@@ -1165,7 +1271,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
       // medida com janela) — evita duas medidas do mesmo pedido calculando
       // "hoje" com um milissegundo de diferença.
       const mctx = { measuresById, snap, relations, tabFilters, now: new Date(), sourceRowsCache: new Map(), resolvedScalarCache: new Map(), visiting: new Set() }
-      const resolved = resolveMeasure(measuresIn[0].measureRef, mctx)
+      const resolved = await resolveMeasure(measuresIn[0].measureRef, mctx)
       const point = { label: 'total', value: resolved.value }
       if (isPartialMeasureFilter(tabFilters, resolved.sourcesFiltered)) point.measureWarning = 'filtro parcial'
       return { points: [point] }
@@ -1231,7 +1337,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
     // chave cumulativa de sempre (ver compositeDimensionFn); só o texto
     // exibido muda numa Hierarquia de datas de verdade (sem efeito nos
     // demais casos, `labelOf` é a identidade).
-    points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+    points = withDisplayLabels(points, labelOf)
     return { points, seriesKeys: topLegendKeys.map((k) => ({ key: k, label: k })) }
   }
 
@@ -1270,7 +1376,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
   })
   points = sortAndLimitPoints(points, widget.sort, isDateDim, limit)
   // Ver comentário equivalente no bloco de legenda acima.
-  points = points.map((p) => ({ ...p, label: labelOf(p.label) }))
+  points = withDisplayLabels(points, labelOf)
   // Sempre gera o(s) seriesKey(s) do lado das colunas — mesmo com 1 medida só
   // (usa a chave 'value', que já é onde o valor mora no ponto) — senão o
   // rótulo/cor customizados na pílula do Eixo Y ficam sem efeito (só
@@ -1283,6 +1389,7 @@ export async function runWidgetQuery({ widget, tabFilters = [], relations = [], 
 }
 
 export async function runFieldValues({ source, field, accessToken }) {
+  if (isDirectSource(source)) return runDirectFieldValues({ source, field })
   const snap = await withSheetSources(getSnapshot(), isSheetSource(source) ? [source] : [], accessToken)
   if (!snap) return null
   const sourceDef = getSourceDef(source, snap)

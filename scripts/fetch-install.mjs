@@ -20,22 +20,32 @@
 // atual antes de sobrescrever), então ela não some do Builder entre uma
 // execução e outra.
 //
+// Fonte em LEITURA DIRETA (readMode 'direct') não é copiada: os painéis
+// consultam o Data Hub na hora (server/directWidgetQuery.mjs). Na vez dela, o
+// ciclo só confere que o Data Hub responde a consulta e anota o total de
+// linhas — é o que a tela de Configurações mostra. Fonte COPIADA grande demais
+// (COPY_MAX_BYTES, medido na 1ª página) vira erro NELA, com a saída sugerida,
+// e não entra no snapshot: antes, ela derrubava o ciclo inteiro na hora de
+// gravar, sem erro em lugar nenhum, e as fontes pequenas paravam de atualizar
+// junto — de novo a cada ciclo.
+//
 // ETL_FORCE_IDS (ver FORCED, abaixo) fura a agenda para as fontes listadas —
 // é o que dá sentido às ações manuais da tela.
 //
 // Grava um snapshot (gzip) em SNAPSHOT_OUT/public/installData.data.
 // Rodado sob demanda (`npm run fetch:install`) ou pelo scheduler.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from '../server/logger.mjs'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { gzipSync, gunzipSync } from 'node:zlib'
 import { resolve } from 'node:path'
 import {
-  listForEtl as listLakehouseForEtl, fetchDatasetRows, recordLakehouseRuns, sourceKey as lakehouseKey,
-  isDue, MAX_ROWS as MAX_LAKEHOUSE_ROWS,
+  listForEtl as listLakehouseForEtl, fetchDatasetRows, queryDataset, recordLakehouseRuns, sourceKey as lakehouseKey,
+  isDue, readModeOf, CopyTooLargeError, COPY_MAX_BYTES, MAX_ROWS as MAX_LAKEHOUSE_ROWS,
 } from '../server/lakehouseSources.mjs'
 import { decryptSecret } from '../server/secretBox.mjs'
 
-// Onde gravar o snapshot. `SNAPSHOT_OUT` é o nome que o serviço `etl` usa; mas
+// Onde gravar o snapshot. `SNAPSHOT_OUT` é o nome que o serviço `scheduler` usa; mas
 // este script também roda disparado pela PRÓPRIA API (ao cadastrar/editar uma
 // fonte, ver triggerEtlRefresh em server/index.mjs), e lá o que existe no
 // ambiente é `SNAPSHOT_PATH` — o arquivo que ela LÊ.
@@ -45,7 +55,7 @@ import { decryptSecret } from '../server/secretBox.mjs'
 // container dela (caminho que ninguém lê) enquanto a API seguia lendo
 // /snapshot/installData.data — a fonte recém-cadastrada aparecia em
 // Configurações, com contagem de linhas e tudo, e NUNCA chegava no Builder nem
-// no dicionário. Era preciso esperar o serviço `etl` rodar, o que com fonte
+// no dicionário. Era preciso esperar o serviço `scheduler` rodar, o que com fonte
 // agendada de 60 min podia levar uma hora.
 const OUT = resolve(process.env.SNAPSHOT_OUT || process.env.SNAPSHOT_PATH || 'public/installData.data')
 
@@ -92,11 +102,11 @@ async function main() {
   const now = Date.now()
   const data = {}
   const runs = []
-  if (FORCED.size) console.log(`[etl] busca manual pedida para: ${[...FORCED].join(', ')}`)
+  if (FORCED.size) logger.info(`[etl] busca manual pedida para: ${[...FORCED].join(', ')}`)
 
   const sources = listLakehouseForEtl()
   if (sources.length === 0) {
-    console.log('[etl] nenhuma fonte do Data Hub cadastrada — cadastre em Configurações.')
+    logger.info('[etl] nenhuma fonte do Data Hub cadastrada — cadastre em Configurações.')
   }
 
   // Sequencial (não Promise.all): são datasets de tamanho desconhecido —
@@ -105,7 +115,24 @@ async function main() {
   for (const src of sources) {
     const key = lakehouseKey(src.id)
     if (src.enabled === false) {
-      console.log(`[etl] ${key}: desativada — pulando`)
+      logger.info(`[etl] ${key}: desativada — pulando`)
+      continue
+    }
+    if (readModeOf(src) === 'direct') {
+      // Não entra no snapshot (nem o que sobrou de quando era copiada).
+      if (!FORCED.has(src.id) && !isDue(src, now)) continue
+      try {
+        if (!src.tokenEnc) throw new Error('fonte sem token cadastrado')
+        const { total } = await queryDataset({
+          baseUrl: src.baseUrl, datasetSlug: src.datasetSlug, token: decryptSecret(src.tokenEnc),
+        }, { limit: 1 })
+        runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: total ?? null, error: null })
+        logger.info(`[etl] ${key} (${src.datasetSlug}): leitura direta — ${total ?? '?'} linha(s) no Data Hub, nada copiado`)
+      } catch (e) {
+        // Sem lastRunAt: confere de novo no próximo ciclo (é uma consulta só).
+        runs.push({ id: src.id, error: e.message })
+        logger.info(`[etl] ${key} (${src.datasetSlug}): leitura direta falhou (${e.message})`)
+      }
       continue
     }
     // "Manter o dado anterior" só vale se ele existe. Fora da agenda mas
@@ -115,29 +142,48 @@ async function main() {
     // já tinha rodado.
     if (!FORCED.has(src.id) && !isDue(src, now) && previous.data[key]) {
       data[key] = previous.data[key]
-      console.log(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${data[key].length} linha(s) anteriores`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): agendada (${src.refreshMinutes}min) — ainda não venceu, mantendo ${data[key].length} linha(s) anteriores`)
       continue
     }
     try {
       if (!src.tokenEnc) throw new Error('fonte sem token cadastrado')
       const { rows, total, pages } = await fetchDatasetRows({
         baseUrl: src.baseUrl, datasetSlug: src.datasetSlug, token: decryptSecret(src.tokenEnc),
-      }, { maxRows: MAX_LAKEHOUSE_ROWS })
+      }, { maxRows: MAX_LAKEHOUSE_ROWS, maxBytes: COPY_MAX_BYTES })
       data[key] = rows
-      runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: rows.length, error: null })
+      runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), rowCount: rows.length, rowTotal: total, error: null })
       const truncated = rows.length < total ? ` de ${total} (teto de ${MAX_LAKEHOUSE_ROWS})` : ''
-      console.log(`[etl] ${key} (${src.datasetSlug}): ${rows.length} linhas${truncated} em ${pages} página(s)`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): ${rows.length} linhas${truncated} em ${pages} página(s)`)
     } catch (e) {
+      if (e instanceof CopyTooLargeError) {
+        // Não é falha passageira: a fonte segue a agenda dela (lastRunAt) em
+        // vez de ser rebaixada a cada ciclo. Fica no snapshot só o que ela já
+        // tinha, se tinha.
+        if (previous.data[key]) data[key] = previous.data[key]
+        runs.push({ id: src.id, lastRunAt: new Date(now).toISOString(), error: e.message })
+        logger.info(`[etl] ${key} (${src.datasetSlug}): ${e.message}`)
+        continue
+      }
       // Falha transitória — mantém o último dado bom em vez de zerar, e NÃO
       // grava lastRunAt (tenta de novo no próximo ciclo). O erro fica
       // registrado pra aparecer na tela de Configurações.
       data[key] = previous.data[key] ?? []
       runs.push({ id: src.id, error: e.message })
-      console.log(`[etl] ${key} (${src.datasetSlug}): falhou (${e.message}) — mantendo ${data[key].length} linha(s) anteriores`)
+      logger.info(`[etl] ${key} (${src.datasetSlug}): falhou (${e.message}) — mantendo ${data[key].length} linha(s) anteriores`)
     }
   }
   const snapshot = { meta: { generatedAt: new Date().toISOString() }, data }
-  const json = JSON.stringify(snapshot)
+  // Rede de proteção: com o teto por fonte isto não deveria estourar, mas se
+  // estourar (muitas fontes copiadas perto do teto), o motivo vai para as
+  // fontes do ciclo em vez de o processo morrer mudo.
+  let json
+  try {
+    json = JSON.stringify(snapshot)
+  } catch (e) {
+    const reason = `o snapshot ficou grande demais para gravar (${e.message}) — mude as fontes maiores para "Direto no Data Hub"`
+    if (runs.length) recordLakehouseRuns(runs.map((r) => ({ id: r.id, error: r.error ?? reason })))
+    throw new Error(reason, { cause: e })
+  }
   const gz = gzipSync(Buffer.from(json, 'utf8'))
   // A execução só é registrada DEPOIS que o snapshot foi gravado. Antes era o
   // contrário, e uma gravação que falhava (volume sem permissão de escrita)
@@ -154,7 +200,7 @@ async function main() {
   }
   if (runs.length) recordLakehouseRuns(runs)
   const ok = runs.filter((r) => !r.error).length
-  console.log(`OK — snapshot gravado em ${OUT} (${(json.length / 1048576).toFixed(1)} MB → gzip ${(gz.length / 1048576).toFixed(1)} MB) · ${ok} dataset(s) do Data Hub executado(s)`)
+  logger.info(`OK — snapshot gravado em ${OUT} (${(json.length / 1048576).toFixed(1)} MB → gzip ${(gz.length / 1048576).toFixed(1)} MB) · ${ok} dataset(s) do Data Hub executado(s)`)
 }
 
-main().catch((e) => { console.error('[etl] falhou:', e); process.exit(1) })
+main().catch((e) => { logger.error('[etl] falhou:', e); process.exit(1) })

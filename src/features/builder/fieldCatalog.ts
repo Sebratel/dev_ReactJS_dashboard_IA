@@ -61,6 +61,13 @@ export interface SourceDef {
   key: SourceTable
   label: string
   fields: FieldDef[]
+  // Fonte do Data Hub em leitura direta: os campos vêm de lá na hora e os
+  // widgets são calculados lá (ver server/directWidgetQuery.mjs).
+  direct?: boolean
+  rowCount?: number | null
+  // Leitura direta que falhou ao listar (Data Hub fora, token revogado): a
+  // fonte aparece sem campos, com o motivo aqui.
+  error?: string
 }
 
 let sources: SourceDef[] = []

@@ -2,11 +2,12 @@
 // filtros da aba). Tipos de visual: kpi, bar, barH, barStacked, barHStacked,
 // comboBarLine, line, area, pie, scatter, funnel, table, matrix.
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown } from 'lucide-react'
+import { Loader2, AlertTriangle, Pencil, Trash2, Copy, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, ChevronsUpDown, Wand2 } from 'lucide-react'
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, PieChart, Pie, Cell, ComposedChart,
   ScatterChart, Scatter, FunnelChart, Funnel, LabelList, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  type FunnelProps,
 } from 'recharts'
 import { cn } from '@/utils/cn'
 import { getSourceDef } from './fieldCatalog'
@@ -16,9 +17,13 @@ import { WidgetCommentsPopover } from './WidgetCommentsPopover'
 import { WidgetInsightPopover } from './WidgetInsightPopover'
 import { resolveConditionalEffect, resolveTableCellEffect, resolveTableRowEffect } from './conditionalFormat'
 import type { BlinkSpeed, ChartAnimationSpeed, ColumnSort, ConditionalEffect, ConditionalRule, DataLabelContent, DataLabelFormat, FilterConfig, MatrixResult, MeasureDef, SeriesMeta, TabRelation, TextFormat, PinnedInsight, WidgetConfig, WidgetDataPoint, WidgetDataResponse } from './types'
-import { MATRIX_LABEL_SORT_KEY, MATRIX_TOTAL_SORT_KEY } from './types'
+import { MATRIX_LABEL_SORT_KEY, MATRIX_ROW_SEP, MATRIX_TOTAL_SORT_KEY } from './types'
+import type { ClickCond } from './clickFilter'
+import { useWidgetClick, type ClickEvent, type WidgetClick } from './useClickFilter'
 
-const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
+// A paleta do app — a que vale quando o widget não tem `palette` própria. O
+// editor (PaletteEditor) parte dela ao personalizar.
+export const PALETTE = ['#ffb000', '#3b82f6', '#10b981', '#7c3aed', '#22d3ee', '#f97316', '#ef4444', '#6366f1']
 
 // Cor padrão dos rótulos de eixo. Antes eram dois hexadecimais fixos (#9ca3af e
 // #6b7280) escolhidos olhando só o tema escuro: no claro ficavam lavados sobre o
@@ -524,10 +529,17 @@ interface WidgetRendererProps {
   // Fixar/remover a leitura da IA deste gráfico (ver WidgetInsightPopover) —
   // como o arrasto de coluna acima, o widget pede e o DashboardBuilder grava.
   onPinInsight?: (insight: PinnedInsight | undefined) => void
+  // Filtro por clique (ver clickFilter.ts): só fora do modo edição, onde o
+  // clique é de arrastar e redimensionar.
+  clickable?: boolean
+  // "Ajustar com IA" neste widget (ver ChartFrame) — ausente = sem o botão.
+  onAdjustWithAi?: () => void
 }
 
-function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit, onRemove, onDuplicate, onPinInsight, cardEffect, children }: {
+function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit, onRemove, onDuplicate, onPinInsight, onAdjustWithAi, cardEffect, children }: {
   widget: WidgetConfig; editMode: boolean; onEdit?: () => void; onRemove?: () => void; onDuplicate?: () => void
+  // "Ajustar com IA" — só para quem pode editar a guia (ver DashboardBuilder).
+  onAdjustWithAi?: () => void
   tabFilters: { filter: FilterConfig; values: string[] }[]
   relations: TabRelation[]
   // Recorte do resultado que serve de impressão digital pra saber se uma
@@ -625,6 +637,18 @@ function ChartFrame({ widget, tabFilters, relations, dataShape, editMode, onEdit
               widget={widget} tabFilters={tabFilters} relations={relations} points={dataShape} editMode={editMode} onPin={onPinInsight}
               iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined}
             />
+            {onAdjustWithAi && (
+              <button
+                type="button"
+                onClick={onAdjustWithAi}
+                style={iconStyle}
+                aria-label="Ajustar com IA"
+                title="Ajustar com IA — peça para a IA mudar este widget (filtros, tipo, campos, aparência)"
+                className={cn('h-6 w-6 flex items-center justify-center rounded-md hover:text-brand-cyan hover:bg-brand-cyan/10', !widget.iconColor && 'text-gray-500')}
+              >
+                <Wand2 size={11} />
+              </button>
+            )}
             <WidgetCommentsPopover widgetId={widget.id} iconStyle={iconStyle} iconClassName={!widget.iconColor ? 'text-gray-500' : undefined} />
           </div>
           {editMode && (
@@ -723,8 +747,13 @@ interface BarGrowAnim { perBarMs: number; horizontal: boolean }
 // crescimento escalonado do "Gráfico dinâmico" (`growAnim`). Sem os dois,
 // `null` (deixa o <Bar fill={s.color}> normal cuidar de tudo). Cada barra
 // vira independente da série quanto à cor, estilo Power BI.
-function conditionalCells(points: WidgetDataPoint[], dataKey: string, rules: ConditionalRule[] | undefined, fallbackColor: string, growAnim?: BarGrowAnim) {
-  if (!rules?.length && !growAnim) return null
+// `dimmed`: filtro por clique NESTE gráfico — a barra fora da seleção
+// esmaece (o gráfico onde se clicou não se filtra, só acende o escolhido).
+function conditionalCells(points: WidgetDataPoint[], dataKey: string, rules: ConditionalRule[] | undefined, fallbackColor: string, growAnim?: BarGrowAnim, dimmed?: { at: (i: number) => boolean; opacity?: number }) {
+  if (!rules?.length && !growAnim && !dimmed) return null
+  // Só põe `fillOpacity` na barra esmaecida: uma Cell com a chave presente
+  // (mesmo `undefined`) apagaria a opacidade que a série já define.
+  const dimProps = (i: number) => (dimmed?.at(i) ? { fillOpacity: DIM_OPACITY * (dimmed.opacity ?? 1) } : {})
   return points.map((p, i) => {
     const raw = (p as unknown as Record<string, unknown>)[dataKey] ?? p.value
     const rawEffect = resolveConditionalEffect(Number(raw), rules)
@@ -739,6 +768,7 @@ function conditionalCells(points: WidgetDataPoint[], dataKey: string, rules: Con
           fill={effect?.backgroundColor ?? fallbackColor}
           className={effect?.blink ? 'animate-pulse' : undefined}
           style={effect?.blink ? pulseSyncStyle(effect.blinkSpeed) : undefined}
+          {...dimProps(i)}
         />
       )
     }
@@ -762,9 +792,28 @@ function conditionalCells(points: WidgetDataPoint[], dataKey: string, rules: Con
         key={i}
         fill={effect?.backgroundColor ?? fallbackColor}
         style={{ animation: layers.join(', '), transformBox: 'fill-box', transformOrigin: growAnim.horizontal ? 'left' : 'bottom' } as React.CSSProperties}
+        {...dimProps(i)}
       />
     )
   })
+}
+
+// ─── Filtro por clique nos gráficos (ver clickFilter.ts) ──────────────────
+// Opacidade do que fica fora da seleção, no widget onde se clicou.
+const DIM_OPACITY = 0.25
+// Linha que marca a categoria escolhida em gráfico de linha/área (a cor da marca, brand-blue).
+const SELECTION_STROKE = '#ffb000'
+
+// O que o gráfico precisa para filtrar a guia pelo clique. Montado no
+// WidgetRenderer, que conhece as dimensões do widget.
+interface ChartClick {
+  active: boolean
+  // Condições de uma categoria (barra, fatia, ponto, rótulo do eixo).
+  pointConds: (p: WidgetDataPoint) => ClickCond[] | null
+  // Com Legenda: a categoria E o valor da série (o pedaço da barra empilhada).
+  segmentConds?: (p: WidgetDataPoint, seriesKey: string) => ClickCond[] | null
+  select: WidgetClick['select']
+  lit: WidgetClick['lit']
 }
 
 const TARGET_LINE_COLOR = '#ef4444'
@@ -772,13 +821,14 @@ function targetLineLabel(target: number) {
   return `Meta: ${target.toLocaleString('pt-BR')}`
 }
 
-function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat, dataLabels, seriesOpacity, gridLines, gridLinesColor, gridLinesOpacity, legendFormat, palette, target, targetLineColor, targetLineOpacity, conditionalRules, dynamicAnimation, dynamicAnimationSpeed }: {
+function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat, dataLabels, seriesOpacity, gridLines, gridLinesColor, gridLinesOpacity, legendFormat, palette, target, targetLineColor, targetLineOpacity, conditionalRules, dynamicAnimation, dynamicAnimationSpeed, click }: {
   type: WidgetConfig['type']; points: WidgetDataPoint[]; color?: string; seriesKeys?: SeriesMeta[]
   axisXFormat?: TextFormat; axisYFormat?: TextFormat; dataLabels?: DataLabelFormat; seriesOpacity?: number
   gridLines?: WidgetConfig['gridLines']; gridLinesColor?: string; gridLinesOpacity?: number
   legendFormat?: TextFormat; palette?: string[]
   target?: number; targetLineColor?: string; targetLineOpacity?: number; conditionalRules?: ConditionalRule[]
   dynamicAnimation?: boolean; dynamicAnimationSpeed?: ChartAnimationSpeed
+  click?: ChartClick
 }) {
   const pal = palette?.length ? palette : PALETTE
   const series = resolveSeries(seriesKeys, color, palette)
@@ -813,17 +863,59 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
   // com a duração escolhida. Bar é diferente (ver conditionalCells/growAnim
   // abaixo) — a Recharts cresce TODAS as barras juntas, não uma de cada vez.
   const nativeAnimProps = dynamicAnimation ? { isAnimationActive: true, animationDuration: drawMs, animationEasing: 'linear' as const } : {}
+
+  // ─── Filtro por clique (ver ChartClick) ───
+  // O alvo nas colunas/linhas é a categoria INTEIRA, não só a barra: o clique
+  // em qualquer ponto da área do gráfico vale pela categoria mais próxima — é
+  // o que deixa clicar numa barra de 2px ou numa linha. Com Legenda, o pedaço
+  // de barra clicado avisa a série por `segmentRef` antes de o clique chegar
+  // ao gráfico, que é quem sabe a categoria.
+  const segmentRef = useRef<ClickCond[] | null>(null)
+  const chartClickProps = click ? {
+    onClick: (st: { activeTooltipIndex?: number } | null, e: ClickEvent) => {
+      const segment = segmentRef.current
+      segmentRef.current = null
+      const i = st?.activeTooltipIndex
+      const p = typeof i === 'number' ? points[i] : undefined
+      if (p) click.select(segment ?? click.pointConds(p), e)
+    },
+    style: { cursor: 'pointer' },
+  } : {}
+  // O rótulo da categoria no eixo também filtra (fica fora da área do gráfico).
+  const tickClickProps = click ? {
+    onClick: (entry: { value?: unknown }, _i: number, e: ClickEvent) => {
+      const p = points.find((pt) => pt.label === String(entry?.value ?? ''))
+      if (p) click.select(click.pointConds(p), e)
+    },
+  } : {}
+  const segmentClickProps = (seriesKey: string) => (click?.segmentConds ? {
+    onClick: (_d: unknown, i: number) => { segmentRef.current = click.segmentConds!(points[i], seriesKey) },
+  } : {})
+  // Só no gráfico onde se clicou: o que ficou fora da seleção esmaece.
+  const condsAt = (i: number, seriesKey?: string) =>
+    (seriesKey && click?.segmentConds ? click.segmentConds(points[i], seriesKey) : click?.pointConds(points[i]) ?? null)
+  const barDimmed = (seriesKey: string) => (click?.active ? { at: (i: number) => !click.lit(condsAt(i, seriesKey)), opacity } : undefined)
+  const dimFactor = (i: number) => (click?.active && !click.lit(condsAt(i)) ? DIM_OPACITY : 1)
+  // Linha e área não têm barra para esmaecer: a categoria escolhida ganha uma
+  // linha vertical tracejada.
+  const selectedLines = click?.active
+    ? points.filter((_, i) => click.lit(condsAt(i))).slice(0, 31).map((p) => (
+      <ReferenceLine key={`click-${p.label}`} x={p.label} stroke={SELECTION_STROKE} strokeDasharray="4 3" strokeWidth={1.5} />
+    ))
+    : null
+
   if (type === 'pie') {
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <PieChart>
+        <PieChart style={click ? { cursor: 'pointer' } : undefined}>
           <Pie
             key={animKey('pie')}
             data={points} dataKey="value" nameKey="label" innerRadius="45%" outerRadius="75%" paddingAngle={2}
             label={dl ? pieLabelRenderer(dl) : undefined} labelLine={!!dl}
+            onClick={click ? (_d: unknown, i: number, e: ClickEvent) => click.select(click.pointConds(points[i]), e) : undefined}
             {...nativeAnimProps}
           >
-            {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={opacity} />)}
+            {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={click?.active ? (opacity ?? 1) * dimFactor(i) : opacity} />)}
           </Pie>
           <Tooltip {...TOOLTIP_PROPS} />
           <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />
@@ -848,7 +940,7 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     const growAnim = dynamicAnimation ? { perBarMs: drawMs / Math.max(1, points.length), horizontal: true } : undefined
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={points} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }}>
+        <BarChart data={points} layout="vertical" margin={{ top: 4, right: 16, left: 8, bottom: 0 }} {...chartClickProps}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} {...grid} />}
           <XAxis type="number" height={valHeight} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <YAxis
@@ -858,6 +950,7 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
             axisLine={false}
             tickLine={false}
             width={catWidth}
+            {...tickClickProps}
           />
           <Tooltip {...TOOLTIP_PROPS} />
           {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
@@ -869,8 +962,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
                 key={animKey(s.key)} dataKey={s.key} name={s.label} fill={s.color} fillOpacity={opacity}
                 radius={stacked ? [0, 0, 0, 0] : [0, 4, 4, 0]} maxBarSize={22} stackId={stacked ? 'stack' : undefined}
                 isAnimationActive={dynamicAnimation ? false : undefined}
+                {...segmentClickProps(s.key)}
               >
-                {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim)}
+                {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim, barDimmed(s.key))}
                 {/* Empilhada: sempre o total da pilha (nunca por segmento —
                     quebra a leitura com várias séries) — anexado só à
                     última série, o segmento do TOPO da pilha em Recharts. */}
@@ -894,7 +988,12 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
           <XAxis type="number" dataKey="x" name="Eixo X" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <YAxis type="number" dataKey="value" name="Eixo Y" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <Tooltip {...TOOLTIP_PROPS} cursor={{ strokeDasharray: '3 3' }} formatter={(v: number) => v.toLocaleString('pt-BR')} labelFormatter={() => ''} />
-          <Scatter key={animKey('scatter')} data={points} fill={color ?? pal[0]} fillOpacity={opacity} {...nativeAnimProps}>
+          <Scatter
+            key={animKey('scatter')} data={points} fill={color ?? pal[0]} fillOpacity={opacity} {...nativeAnimProps}
+            onClick={click ? (_d: unknown, i: number, e: ClickEvent) => click.select(click.pointConds(points[i]), e) : undefined}
+            style={click ? { cursor: 'pointer' } : undefined}
+          >
+            {click?.active && points.map((_, i) => <Cell key={i} fill={color ?? pal[0]} fillOpacity={(opacity ?? 1) * dimFactor(i)} />)}
             {dl && <LabelList dataKey="value" content={pointLabelContent(dl, points, 'value')} />}
           </Scatter>
         </ScatterChart>
@@ -904,13 +1003,16 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
   if (type === 'funnel') {
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <FunnelChart>
+        <FunnelChart style={click ? { cursor: 'pointer' } : undefined}>
           <Tooltip {...TOOLTIP_PROPS} />
           <Funnel
             key={animKey('funnel')} data={points} dataKey="value" nameKey="label"
+            // O Funil chama como os outros (dado, índice, evento — adaptEventsOfChild);
+            // só a tipagem dele exige também a forma de um onClick comum.
+            onClick={click ? ((_d: unknown, i: number, e: ClickEvent) => click.select(click.pointConds(points[i]), e)) as FunnelProps['onClick'] : undefined}
             {...(dynamicAnimation ? nativeAnimProps : { isAnimationActive: false })}
           >
-            {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={opacity} />)}
+            {points.map((_, i) => <Cell key={i} fill={pal[i % pal.length]} fillOpacity={click?.active ? (opacity ?? 1) * dimFactor(i) : opacity} />)}
             {dl ? <LabelList dataKey="value" content={funnelLabelContent(dl, points)} /> : <LabelList dataKey="label" position="right" fill={AXIS_CATEGORY_FILL} fontSize={10} />}
           </Funnel>
         </FunnelChart>
@@ -928,9 +1030,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     const growAnim = dynamicAnimation ? { perBarMs: drawMs / Math.max(1, points.length), horizontal: false } : undefined
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+        <ComposedChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} {...chartClickProps}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} {...grid} />}
-          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
+          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" {...tickClickProps} />
           <YAxis yAxisId="left" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <YAxis yAxisId="right" orientation="right" width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <Tooltip {...TOOLTIP_PROPS} />
@@ -943,7 +1045,7 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
                 key={animKey(s.key)} yAxisId="left" dataKey={s.key} name={s.label} fill={s.color} fillOpacity={opacity} radius={[4, 4, 0, 0]}
                 isAnimationActive={dynamicAnimation ? false : undefined}
               >
-                {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim)}
+                {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim, barDimmed(s.key))}
                 {sDl && <LabelList dataKey={s.key} content={barLabelContent(sDl, points, s.key, true, conditionalRules)} />}
               </Bar>
             )
@@ -1007,13 +1109,14 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
     const yWidth = axisSize(40, axisYFormat, 10, 3)
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <Comp data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+        <Comp data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} {...chartClickProps}>
           {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} {...grid} />}
-          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
+          <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} {...tickClickProps} />
           <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
           <Tooltip {...TOOLTIP_PROPS} />
           {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
           {target != null && <ReferenceLine y={target} stroke={targetStroke} strokeDasharray="6 4" label={{ value: targetLineLabel(target), position: 'right', fontSize: 10, fill: targetStroke }} />}
+          {selectedLines}
           {series.map((s) => {
             const sDl = resolveSeriesDataLabel(s.dataLabels, dataLabels)
             return type === 'line'
@@ -1043,9 +1146,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
   const growAnim = dynamicAnimation ? { perBarMs: drawMs / Math.max(1, points.length), horizontal: false } : undefined
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
+      <BarChart data={points} margin={{ top: 4, right: 8, left: -10, bottom: 0 }} {...chartClickProps}>
         {gridLines !== 'none' && <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} {...grid} />}
-        <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" />
+        <XAxis dataKey="label" height={xHeight} tick={makeAxisTick(axisXFormat, AXIS_CATEGORY_FILL, 9)} axisLine={false} tickLine={false} interval={0} angle={-15} textAnchor="end" {...tickClickProps} />
         <YAxis width={yWidth} tick={makeAxisTick(axisYFormat, AXIS_VALUE_FILL, 10)} axisLine={false} tickLine={false} />
         <Tooltip {...TOOLTIP_PROPS} />
         {showLegend && <Legend wrapperStyle={legendStyle} formatter={legendFormatter} />}
@@ -1057,8 +1160,9 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
               key={animKey(s.key)} dataKey={s.key} name={s.label} fill={s.color} fillOpacity={opacity}
               radius={stackedV ? [0, 0, 0, 0] : [4, 4, 0, 0]} stackId={stackedV ? 'stack' : undefined}
               isAnimationActive={dynamicAnimation ? false : undefined}
+              {...segmentClickProps(s.key)}
             >
-              {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim)}
+              {conditionalCells(points, s.key, conditionalRules, s.color ?? pal[0], growAnim, barDimmed(s.key))}
               {/* Empilhada: sempre o total da pilha — ver comentário
                   equivalente no bloco barH/barHStacked acima. */}
               {stackedV
@@ -1075,10 +1179,21 @@ function PointsChart({ type, points, color, seriesKeys, axisXFormat, axisYFormat
 const TABLE_COL_DEFAULT_WIDTH = 150
 const TABLE_COL_MIN_WIDTH = 24
 
-function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange, tableSort, onSortColumn }: {
+// Filtro por clique na Tabela: a célula filtra pelo valor da PRÓPRIA coluna
+// (clicar no nome filtra pela pessoa, na cidade pela cidade). O cabeçalho
+// continua sendo de ordenar.
+interface TableClick {
+  active: boolean
+  cellConds: (row: Record<string, unknown>, column: string) => ClickCond[] | null
+  select: WidgetClick['select']
+  lit: WidgetClick['lit']
+}
+
+function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange, tableSort, onSortColumn, click }: {
   widget: WidgetConfig; data: WidgetDataResponse; page: number; setPage: (p: number) => void
   editMode?: boolean; onColumnWidthsChange?: (widths: Record<string, number>) => void
   tableSort?: ColumnSort | null; onSortColumn?: (column: string) => void
+  click?: TableClick
 }) {
   const sourceDef = widget.source ? getSourceDef(widget.source) : undefined
   const lookups = widget.lookups ?? []
@@ -1202,10 +1317,14 @@ function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange
               // resolveTableRowEffect: quando bate, vence pra TODA célula
               // desta linha, sobrepondo qualquer regra de célula individual.
               const rowRule = resolveTableRowEffect(r, rowRules)
+              // Filtro por clique NESTA tabela: a linha que não passa pelo
+              // que se clicou esmaece (a tabela não se filtra pelo próprio clique).
+              const dimmed = !!click?.active && !click.lit(cols.flatMap((c) => click.cellConds(r, c) ?? []))
               return (
-                <tr key={i} className="border-b border-app-border/60 hover:bg-app-surface/50">
+                <tr key={i} className={cn('border-b border-app-border/60 hover:bg-app-surface/50', dimmed && 'opacity-40')}>
                   {cols.map((c) => {
                     const v = r[c]
+                    const conds = click ? click.cellConds(r, c) : null
                     const text = v == null ? '—'
                       : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? new Date(String(v)).toLocaleDateString('pt-BR')
                       : String(v)
@@ -1217,7 +1336,13 @@ function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange
                     if (rule?.backgroundColor) cellStyle.backgroundColor = rule.backgroundColor
                     if (rule?.blink) Object.assign(cellStyle, pulseSyncStyle(rule.blinkSpeed))
                     return (
-                      <td key={c} className={cn('px-3 py-1.5 text-gray-300 truncate', alignCls, rule?.blink && 'animate-pulse')} style={cellStyle}>
+                      <td
+                        key={c}
+                        onClick={conds ? (e) => click!.select(conds, e) : undefined}
+                        title={conds ? 'Clique para filtrar a guia por este valor (Ctrl+clique soma)' : undefined}
+                        className={cn('px-3 py-1.5 text-gray-300 truncate', alignCls, rule?.blink && 'animate-pulse', conds && 'cursor-pointer hover:underline')}
+                        style={cellStyle}
+                      >
                         {text}
                       </td>
                     )
@@ -1241,10 +1366,23 @@ function TableBody({ widget, data, page, setPage, editMode, onColumnWidthsChange
 
 // Tabela Matriz (pivot) — linhas em árvore (expandir/colapsar por grupo,
 // com subtotal), colunas dinâmicas + coluna "Total", linha "Total" geral.
-function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgroundOpacity, conditionalRules, matrixSort, onSortColumn }: {
+// Filtro por clique na Matriz: o rótulo da linha filtra pela linha (com os
+// níveis acima dela), o da coluna pela coluna, a célula pelas duas e o total
+// da linha pela linha. Com o clique ligado, ordenar a coluna fica na setinha
+// do cabeçalho — o rótulo dela passa a filtrar.
+interface MatrixClick {
+  active: boolean
+  rowConds: (node: MatrixResult['rows'][number]) => ClickCond[] | null
+  colConds: (column: MatrixResult['columns'][number]) => ClickCond[] | null
+  select: WidgetClick['select']
+  lit: WidgetClick['lit']
+}
+
+function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgroundOpacity, conditionalRules, matrixSort, onSortColumn, click }: {
   matrix: MatrixResult; rowFormat?: TextFormat; columnFormat?: TextFormat; backgroundColor?: string; backgroundOpacity?: number
   conditionalRules?: ConditionalRule[]
   matrixSort?: ColumnSort | null; onSortColumn?: (column: string) => void
+  click?: MatrixClick
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const toggle = (key: string) => setCollapsed((prev) => {
@@ -1264,13 +1402,20 @@ function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgrou
   // cabeçalho da matriz também precisa herdar o fundo customizado do widget.
   const headerBg = backgroundColor ? hexToRgba(backgroundColor, backgroundOpacity) : undefined
 
+  // Filtro por clique: condições de cada coluna dinâmica, calculadas uma vez.
+  const colConds = new Map(matrix.columns.map((c) => [c.key, click?.colConds(c) ?? null]))
+  const clickCls = (conds: ClickCond[] | null) => (conds ? 'cursor-pointer hover:underline' : undefined)
+  const dimCls = (conds: ClickCond[] | null) => (click?.active && !click.lit(conds) ? 'opacity-40' : undefined)
+  const both = (a: ClickCond[] | null, b: ClickCond[] | null | undefined) => (a && b ? [...a, ...b] : a ?? b ?? null)
+
   const renderRows = (nodes: MatrixResult['rows'], depth: number): React.ReactNode[] =>
     nodes.flatMap((node) => {
       const hasChildren = !!node.children?.length
       const isCollapsed = collapsed.has(node.key)
+      const rowConds = click ? click.rowConds(node) : null
       const row = (
         <tr key={node.key} className={cn('border-b border-app-border/60', depth === 0 && 'bg-app-surface/40')}>
-          <td className={cn('py-1.5 pr-2 text-gray-200 whitespace-nowrap', depth === 0 && 'font-semibold')} style={{ paddingLeft: 8 + depth * 16, ...rowStyle }}>
+          <td className={cn('py-1.5 pr-2 text-gray-200 whitespace-nowrap', depth === 0 && 'font-semibold', dimCls(rowConds))} style={{ paddingLeft: 8 + depth * 16, ...rowStyle }}>
             {/* `w-full`: um <span> flex não é largo por padrão (encolhe pro
                 conteúdo) — sem isso, `justifyContent` não tem espaço nenhum
                 pra redistribuir e "Centro"/"Direita" não fariam efeito. */}
@@ -1280,7 +1425,12 @@ function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgrou
                   {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
                 </button>
               ) : <span className="w-[11px] shrink-0" />}
-              <span className="truncate">{node.label}</span>
+              <span
+                className={cn('truncate', clickCls(rowConds))}
+                onClick={rowConds ? (e) => click!.select(rowConds, e) : undefined}
+              >
+                {node.label}
+              </span>
             </span>
           </td>
           {matrix.columns.map((c) => {
@@ -1289,13 +1439,25 @@ function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgrou
             const cellStyle: React.CSSProperties = { ...rowStyle }
             if (cellEffect?.backgroundColor) cellStyle.backgroundColor = cellEffect.backgroundColor
             if (cellEffect?.blink) Object.assign(cellStyle, pulseSyncStyle(cellEffect.blinkSpeed))
+            const cellConds = rowConds ? both(rowConds, colConds.get(c.key)) : null
             return (
-              <td key={c.key} className={cn('px-2 py-1.5 text-right text-gray-300 tabular-nums', cellEffect?.blink && 'animate-pulse')} style={cellStyle}>
+              <td
+                key={c.key}
+                onClick={cellConds ? (e) => click!.select(cellConds, e) : undefined}
+                className={cn('px-2 py-1.5 text-right text-gray-300 tabular-nums', cellEffect?.blink && 'animate-pulse', clickCls(cellConds), dimCls(cellConds))}
+                style={cellStyle}
+              >
                 {fmt(cellValue)}
               </td>
             )
           })}
-          <td className="px-2 py-1.5 text-right text-gray-100 font-semibold tabular-nums" style={rowStyle}>{fmt(node.total)}</td>
+          <td
+            onClick={rowConds ? (e) => click!.select(rowConds, e) : undefined}
+            className={cn('px-2 py-1.5 text-right text-gray-100 font-semibold tabular-nums', clickCls(rowConds), dimCls(rowConds))}
+            style={rowStyle}
+          >
+            {fmt(node.total)}
+          </td>
         </tr>
       )
       return hasChildren && !isCollapsed ? [row, ...renderRows(node.children!, depth + 1)] : [row]
@@ -1323,11 +1485,32 @@ function MatrixBody({ matrix, rowFormat, columnFormat, backgroundColor, backgrou
             <th onClick={() => onSortColumn?.(MATRIX_LABEL_SORT_KEY)} title={sortTitle} className={sortableThCls('py-2 pr-2 text-left font-semibold')} style={columnStyle}>
               <span className="inline-flex items-center">{sortIcon(MATRIX_LABEL_SORT_KEY)}</span>
             </th>
-            {matrix.columns.map((c) => (
-              <th key={c.key} onClick={() => onSortColumn?.(c.key)} title={sortTitle} className={sortableThCls('px-2 py-2 text-right font-semibold whitespace-nowrap')} style={columnStyle}>
-                <span className="inline-flex items-center justify-end gap-0.5">{c.label}{sortIcon(c.key)}</span>
-              </th>
-            ))}
+            {matrix.columns.map((c) => {
+              const conds = colConds.get(c.key) ?? null
+              // Sem o clique (modo edição, coluna sem campo): o cabeçalho
+              // inteiro ordena, como sempre.
+              if (!conds) {
+                return (
+                  <th key={c.key} onClick={() => onSortColumn?.(c.key)} title={sortTitle} className={sortableThCls('px-2 py-2 text-right font-semibold whitespace-nowrap')} style={columnStyle}>
+                    <span className="inline-flex items-center justify-end gap-0.5">{c.label}{sortIcon(c.key)}</span>
+                  </th>
+                )
+              }
+              return (
+                <th key={c.key} className={cn('px-2 py-2 text-right font-semibold whitespace-nowrap', dimCls(conds))} style={columnStyle}>
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    <span onClick={(e) => click!.select(conds, e)} title="Clique para filtrar a guia por esta coluna (Ctrl+clique soma)" className="cursor-pointer hover:underline">
+                      {c.label}
+                    </span>
+                    {onSortColumn && (
+                      <button type="button" onClick={() => onSortColumn(c.key)} title={sortTitle} className="rounded hover:bg-app-surface/60">
+                        {sortIcon(c.key)}
+                      </button>
+                    )}
+                  </span>
+                </th>
+              )
+            })}
             <th onClick={() => onSortColumn?.(MATRIX_TOTAL_SORT_KEY)} title={sortTitle} className={sortableThCls('px-2 py-2 text-right font-semibold')} style={columnStyle}>
               <span className="inline-flex items-center justify-end gap-0.5">Total{sortIcon(MATRIX_TOTAL_SORT_KEY)}</span>
             </th>
@@ -1365,7 +1548,8 @@ function TextBody({ content }: { content?: string }) {
 }
 
 // ─── Componente principal ────────────────────────────────────────
-export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasures, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight }: WidgetRendererProps) {
+export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasures, editMode, refreshKey, onEdit, onRemove, onDuplicate, onColumnWidthsChange, onPinInsight, clickable, onAdjustWithAi }: WidgetRendererProps) {
+  const click = useWidgetClick(widget, relations, !!clickable)
   const [data, setData] = useState<WidgetDataResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -1427,6 +1611,38 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [querySignature, refreshKey, widget.type])
 
+  // Filtro por clique de cada tipo de corpo — as condições saem das dimensões
+  // deste widget (ver clickFilter.ts). A chave de um ponto é `key` quando o
+  // rótulo exibido é outro (Hierarquia de datas), senão o próprio rótulo.
+  const chartClick: ChartClick | undefined = click && {
+    active: click.active,
+    pointConds: (p) => click.conds(widget.dimensions, p.key ?? p.label),
+    segmentConds: widget.legendDimension
+      ? (p, seriesKey) => {
+        const category = click.conds(widget.dimensions, p.key ?? p.label)
+        const series = click.conds([widget.legendDimension!], seriesKey)
+        return category && series ? [...category, ...series] : null
+      }
+      : undefined,
+    select: click.select,
+    lit: click.lit,
+  }
+  const tableClick: TableClick | undefined = click && {
+    active: click.active,
+    // Coluna de nível de data (Ano/Mês…) chega já formatada ("Março") — sem a
+    // chave crua, não filtra.
+    cellConds: (row, column) => (splitBucket(column).bucket ? null : click.conds([column], row[column] == null ? '' : String(row[column]))),
+    select: click.select,
+    lit: click.lit,
+  }
+  const matrixClick: MatrixClick | undefined = click && {
+    active: click.active,
+    rowConds: (node) => click.conds(widget.matrixRows?.slice(0, node.level + 1), node.key, MATRIX_ROW_SEP),
+    colConds: (column) => (widget.matrixColumns?.length ? click.conds(widget.matrixColumns, column.key) : null),
+    select: click.select,
+    lit: click.lit,
+  }
+
   let body: React.ReactNode
   if (widget.type === 'text') {
     body = <TextBody content={widget.content} />
@@ -1435,7 +1651,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
   } else if (error) {
     body = <div className="h-full flex items-center justify-center gap-1.5 text-[11px] text-risk-critical px-3 text-center"><AlertTriangle size={12} className="shrink-0" /> {error}</div>
   } else if (widget.type === 'table' && data) {
-    body = <TableBody widget={widget} data={data} page={page} setPage={setPage} editMode={editMode} onColumnWidthsChange={onColumnWidthsChange} tableSort={tableSort} onSortColumn={onSortColumn} />
+    body = <TableBody widget={widget} data={data} page={page} setPage={setPage} editMode={editMode} onColumnWidthsChange={onColumnWidthsChange} tableSort={tableSort} onSortColumn={onSortColumn} click={tableClick} />
   } else if (widget.type === 'matrix' && data?.matrix) {
     body = (
       <MatrixBody
@@ -1443,6 +1659,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
         backgroundColor={widget.backgroundColor} backgroundOpacity={widget.backgroundOpacity}
         conditionalRules={widget.conditionalRules}
         matrixSort={matrixSort} onSortColumn={onSortMatrixColumn}
+        click={matrixClick}
       />
     )
   } else if (widget.type === 'kpi' && data?.points) {
@@ -1463,6 +1680,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
         palette={widget.palette} target={widget.target}
         targetLineColor={widget.targetLineColor} targetLineOpacity={widget.targetLineOpacity} conditionalRules={widget.conditionalRules}
         dynamicAnimation={widget.dynamicAnimation} dynamicAnimationSpeed={widget.dynamicAnimationSpeed}
+        click={chartClick}
       />
     )
   } else {
@@ -1483,7 +1701,7 @@ export function WidgetRenderer({ widget, tabFilters, relations, dashboardMeasure
   return (
     <ChartFrame
       widget={widget} tabFilters={tabFilters} relations={relations} dataShape={dataShape} editMode={editMode}
-      onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} onPinInsight={onPinInsight} cardEffect={cardEffect}
+      onEdit={onEdit} onRemove={onRemove} onDuplicate={onDuplicate} onPinInsight={onPinInsight} onAdjustWithAi={onAdjustWithAi} cardEffect={cardEffect}
     >
       {body}
     </ChartFrame>

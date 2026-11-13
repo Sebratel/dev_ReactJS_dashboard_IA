@@ -13,8 +13,11 @@ public/installData.data
 .env.*
 !.env.example
 
-Dockerfile
-docker-compose.yml
+Dockerfile*
+docker-compose*.yml
+.github
+loadtest
+coverage
 .dockerignore
 
 *.log

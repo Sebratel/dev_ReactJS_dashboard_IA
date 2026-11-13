@@ -10,15 +10,32 @@
 // plataformas grandes pela mesma informação, então o SQL foi removido e este
 // módulo passou a ser o caminho único para dado corporativo.
 //
-//   GET <baseUrl>/api/public/v1/datasets/<slug>/rows?limit=&offset=
-//   header X-Api-Token: <token>          (evita o token no log de acesso)
+// Duas formas de ler uma fonte (`readMode`):
+//
+//   'direct' — DIRETO NO DATA HUB, o padrão das fontes novas. Nada é copiado:
+//              cada widget vira uma consulta agregada lá (POST /query, ver
+//              server/datahubQuery.mjs e server/directWidgetQuery.mjs) e só o
+//              resultado atravessa a rede. É o que deixa uma tabela de
+//              milhões de linhas, ou de centenas de colunas, ser usada aqui:
+//              copiar tudo para a memória da API não para em pé com isso.
+//   'copy'   — CÓPIA LOCAL, o jeito de antes: o ETL baixa a tabela inteira
+//              para o snapshot e o motor em memória agrega aqui. Continua
+//              servindo a tabela pequena que precisa cruzar campo a campo com
+//              outra fonte. Fonte cadastrada antes da leitura direta existir
+//              não tem o campo e segue copiada até alguém trocar na tela.
+//
+//   GET <baseUrl>/api/public/v1/datasets/<slug>/rows?limit=&offset=   (cópia)
 //   → { dataset, total, limit, offset, rows: [...] }
+//   POST <baseUrl>/api/public/v1/datasets/<slug>/query               (direta)
+//   corpo: QueryDef do Data Hub → { dataset, columns, rows, total, tookMs }
+//   header X-Api-Token: <token> nas duas  (evita o token no log de acesso)
 //
 // Cada entrada: { id, label, baseUrl, datasetSlug, tokenEnc, tokenHint,
-// enabled, refreshMode: 'realtime'|'scheduled', refreshMinutes, lastRunAt,
-// rowCount, lastError, lastErrorAt, folderIds, createdBy, createdAt,
-// updatedBy, updatedAt }. Persistido em data/lakehouseSources.json, mesmo
-// padrão de arquivo único de accessLog.mjs/sheetSources.mjs.
+// enabled, readMode: 'direct'|'copy', refreshMode: 'realtime'|'scheduled',
+// refreshMinutes, lastRunAt, rowCount, rowTotal, lastError, lastErrorAt,
+// folderIds, createdBy, createdAt, updatedBy, updatedAt }. Persistido em
+// data/lakehouseSources.json, mesmo padrão de arquivo único de
+// accessLog.mjs/sheetSources.mjs.
 //
 // O token NUNCA fica em claro no disco (ver server/secretBox.mjs) e NUNCA
 // volta pro navegador — a UI recebe só `tokenHint` ("dhub_…6T97"), o
@@ -26,12 +43,13 @@
 //
 // Diferente das planilhas (que só atualizam dentro de uma requisição, porque
 // dependem do token OAuth de quem está logado), o token daqui é da própria
-// aplicação — então a fonte é buscada em segundo plano pelo ciclo do ETL
-// (scripts/fetch-install.mjs), com o par realtime/agendada configurável por
-// fonte. As linhas caem no snapshot sob a chave `dhub:<id>`,
-// e dali em diante o motor de widgets (server/widgetQuery.mjs) não sabe nem
-// precisa saber que aquela fonte veio de uma API HTTP.
+// aplicação — então o ciclo do ETL (scripts/fetch-install.mjs) cuida da
+// fonte em segundo plano, no par realtime/agendada configurável por fonte: na
+// CÓPIA ele baixa as linhas para o snapshot (chave `dhub:<id>`, e dali em
+// diante o motor de widgets não sabe que aquela fonte veio de uma API HTTP);
+// na DIRETA ele só confere que o Data Hub responde e anota o total de linhas.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { encryptSecret, decryptSecret, maskSecret } from './secretBox.mjs'
@@ -60,8 +78,24 @@ export const MAX_ROWS = Math.max(1_000, Number(process.env.DHUB_MAX_ROWS) || 500
 // devolvendo página cheia, por exemplo), o laço de paginação termina.
 const MAX_PAGES = 200
 const REQUEST_TIMEOUT_MS = Math.max(10_000, Number(process.env.DHUB_TIMEOUT_MS) || 120_000)
+// Consulta de painel: o Data Hub corta a dele em 30s (DUCK_QUERY_TIMEOUT_MS
+// lá); a folga cobre a rede e a fila de vagas do motor.
+const QUERY_TIMEOUT_MS = Math.max(5_000, Number(process.env.DHUB_QUERY_TIMEOUT_MS) || 45_000)
+// Teto do que UMA fonte copiada pode ocupar no snapshot, em JSON. A API carrega
+// o snapshot inteiro na memória e ele ocupa ali umas três vezes o tamanho do
+// texto: 359 MB de JSON já passaram de 1,8 GB de memória no container, e a
+// memória do Node não aceita um texto acima de ~512 MB. Medido na 1ª página,
+// antes de baixar o resto (ver fetchDatasetRows).
+export const COPY_MAX_BYTES = Math.max(1, Number(process.env.DHUB_COPY_MAX_MB) || 100) * 1_048_576
 export const PREVIEW_ROW_LIMIT = 5
 export const DEFAULT_REFRESH_MINUTES = 60
+
+export const READ_MODES = ['direct', 'copy']
+// Sem o campo = cadastrada antes da leitura direta existir: segue copiada,
+// como sempre foi, até alguém trocar na tela.
+export function readModeOf(entry) {
+  return entry?.readMode === 'direct' ? 'direct' : 'copy'
+}
 
 export function sourceKey(id) {
   return `${SOURCE_PREFIX}${id}`
@@ -81,7 +115,7 @@ function load() {
     const list = JSON.parse(readFileSync(STORE_PATH, 'utf8'))
     return Array.isArray(list) ? list : []
   } catch (e) {
-    console.error(`[lakehouse] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[lakehouse] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }
@@ -137,10 +171,20 @@ function normalizeToken(token) {
   return raw
 }
 
+// Vazio = não mexe (o chamador decide o padrão).
+function normalizeReadMode(mode) {
+  if (mode === undefined || mode === null || mode === '') return null
+  if (!READ_MODES.includes(mode)) {
+    throw new Error('Modo de leitura inválido — use "direct" (direto no Data Hub) ou "copy" (cópia local).')
+  }
+  return mode
+}
+
 // ─── Leitura do catálogo ───────────────────────────────────────────
 // Sem tokenEnc: é o que vai pro navegador. `tokenHint` é o que a UI mostra.
+// `readMode` sempre preenchido, mesmo na fonte antiga que não tem o campo.
 function publicView({ tokenEnc, ...rest }) {
-  return { ...rest, hasToken: !!tokenEnc }
+  return { ...rest, readMode: readModeOf(rest), hasToken: !!tokenEnc }
 }
 
 export function listLakehouseSources() {
@@ -169,7 +213,7 @@ export function resolveCredentials(id) {
 }
 
 // ─── Escrita do catálogo ───────────────────────────────────────────
-export function createLakehouseSource({ label, baseUrl, datasetSlug, token, enabled }, userEmail) {
+export function createLakehouseSource({ label, baseUrl, datasetSlug, token, enabled, readMode }, userEmail) {
   if (!label || !String(label).trim()) throw new Error('Dê um nome pra esta fonte.')
   const plainToken = normalizeToken(token)
   const now = new Date().toISOString()
@@ -181,6 +225,7 @@ export function createLakehouseSource({ label, baseUrl, datasetSlug, token, enab
     tokenEnc: encryptSecret(plainToken),
     tokenHint: maskSecret(plainToken),
     enabled: enabled ?? true,
+    readMode: normalizeReadMode(readMode) ?? 'direct',
     refreshMode: 'scheduled',
     refreshMinutes: DEFAULT_REFRESH_MINUTES,
     lastRunAt: null,
@@ -210,6 +255,7 @@ export function updateLakehouseSource(id, patch, userEmail) {
   }
   if (patch.baseUrl !== undefined) merged.baseUrl = normalizeBaseUrl(patch.baseUrl)
   if (patch.datasetSlug !== undefined) merged.datasetSlug = normalizeSlug(patch.datasetSlug)
+  if (patch.readMode !== undefined) merged.readMode = normalizeReadMode(patch.readMode) ?? readModeOf(merged)
   if (patch.token) {
     const plainToken = normalizeToken(patch.token)
     merged.tokenEnc = encryptSecret(plainToken)
@@ -285,7 +331,9 @@ export function setLakehouseFolders(id, folderIds, userEmail) {
 }
 
 // Chamado pelo ETL depois de cada ciclo — um write só pro lote inteiro.
-// `error` null limpa a falha anterior (voltou a funcionar).
+// `error` null limpa a falha anterior (voltou a funcionar). `rowTotal` é o
+// total que o Data Hub informou: maior que `rowCount` = a cópia foi cortada
+// no teto de linhas (MAX_ROWS), e a tela precisa dizer isso.
 export function recordLakehouseRuns(runs) {
   if (!runs.length) return
   const list = load()
@@ -297,6 +345,7 @@ export function recordLakehouseRuns(runs) {
       ...s,
       lastRunAt: run.lastRunAt ?? s.lastRunAt,
       rowCount: run.rowCount ?? s.rowCount,
+      rowTotal: run.rowTotal ?? run.rowCount ?? s.rowTotal ?? null,
       lastError: run.error ?? null,
       lastErrorAt: run.error ? new Date().toISOString() : null,
     }
@@ -304,15 +353,64 @@ export function recordLakehouseRuns(runs) {
 }
 
 // ─── Acesso à API pública do Data Hub ──────────────────────────────
-function rowsUrl({ baseUrl, datasetSlug }, { limit, offset }) {
-  const url = new URL(`/api/public/v1/datasets/${encodeURIComponent(datasetSlug)}/rows`, baseUrl)
-  url.searchParams.set('limit', String(limit))
-  url.searchParams.set('offset', String(offset))
-  return url
+// O Data Hub de antes da consulta pública não tem POST /query: quem responde é
+// o roteador da aplicação dele ("Rota não encontrada."), não o conjunto.
+export class QueryUnavailableError extends Error {}
+
+// A fonte copiada não cabe no snapshot — erro da própria fonte, não do ciclo.
+export class CopyTooLargeError extends Error {}
+
+function apiUrl({ baseUrl, datasetSlug }, action) {
+  return new URL(`/api/public/v1/datasets/${encodeURIComponent(datasetSlug)}/${action}`, baseUrl)
+}
+
+function networkError(e, url, timeoutMs) {
+  const reason = e?.name === 'TimeoutError' || e?.name === 'AbortError'
+    ? `sem resposta em ${Math.round(timeoutMs / 1000)}s`
+    : (e?.message || 'falha de rede')
+  return new Error(`Não foi possível falar com o Data Hub em ${url.origin} (${reason}).`)
+}
+
+// Resposta HTTP de erro → Error com a mensagem que ajuda.
+//
+// A API pública responde { error: "..." } — a mensagem de lá é bem mais útil
+// que "HTTP 403" (token sem acesso ao dataset, token revogado, limite por
+// minuto do token, campo sensível etc.).
+//
+// E quando NÃO vem JSON, isso é a informação mais importante da falha:
+// significa que quem respondeu não foi o Data Hub, e sim algo no caminho
+// (proxy da empresa, firewall, um nginx errado). Antes essa pista era engolida
+// e a tela dizia "token recusado" — mandando investigar o token, que podia
+// estar perfeito. Agora o corpo cru aparece.
+async function httpFailure(res, url, datasetSlug) {
+  const corpo = await res.text().catch(() => '')
+  let detail = ''
+  try { detail = JSON.parse(corpo)?.error || '' } catch { /* corpo não-JSON */ }
+
+  if (!detail) {
+    const trecho = corpo.replace(/\s+/g, ' ').trim().slice(0, 160)
+    logger.error(`[data-hub] ${res.status} em ${url.origin} sem JSON de erro — corpo: ${trecho || '(vazio)'}`)
+    return new Error(
+      `O Data Hub respondeu ${res.status} ao buscar "${datasetSlug}", mas o corpo não é JSON — ` +
+      'sinal de que quem respondeu não foi ele, e sim algo no caminho (proxy ou firewall da rede onde a API roda). ' +
+      (trecho ? `Começo da resposta: "${trecho}".` : 'A resposta veio vazia.'),
+    )
+  }
+  if (res.status === 404 && url.pathname.endsWith('/query') && /rota não encontrada/i.test(detail)) {
+    return new QueryUnavailableError(
+      `O Data Hub em ${url.origin} ainda não tem a consulta direta (POST /api/public/v1/datasets/:slug/query). ` +
+      'Atualize o Data Hub, ou mude esta fonte para "Cópia local" enquanto isso.',
+    )
+  }
+  // Com a mensagem de lá, o status ainda importa pra saber se é credencial
+  // (401), permissão (403), dataset (404) ou limite do token (429).
+  return new Error(`${detail} (HTTP ${res.status} em ${url.origin})`)
 }
 
 async function requestPage({ baseUrl, datasetSlug, token }, { limit, offset }) {
-  const url = rowsUrl({ baseUrl, datasetSlug }, { limit, offset })
+  const url = apiUrl({ baseUrl, datasetSlug }, 'rows')
+  url.searchParams.set('limit', String(limit))
+  url.searchParams.set('offset', String(offset))
   let res
   try {
     res = await fetch(url, {
@@ -322,38 +420,9 @@ async function requestPage({ baseUrl, datasetSlug, token }, { limit, offset }) {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   } catch (e) {
-    const reason = e?.name === 'TimeoutError' || e?.name === 'AbortError'
-      ? `sem resposta em ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s`
-      : (e?.message || 'falha de rede')
-    throw new Error(`Não foi possível falar com o Data Hub em ${url.origin} (${reason}).`)
+    throw networkError(e, url, REQUEST_TIMEOUT_MS)
   }
-  if (!res.ok) {
-    // A API pública responde { error: "..." } — a mensagem de lá é bem mais
-    // útil que "HTTP 403" (token sem acesso ao dataset, token revogado etc.).
-    //
-    // E quando NÃO vem JSON, isso é a informação mais importante da falha:
-    // significa que quem respondeu não foi o Data Hub, e sim algo no caminho
-    // (proxy da empresa, firewall, um nginx errado). Antes essa pista era
-    // engolida e a tela dizia "token recusado" — mandando investigar o token,
-    // que podia estar perfeito. Agora o corpo cru aparece.
-    const corpo = await res.text().catch(() => '')
-    let detail = ''
-    try { detail = JSON.parse(corpo)?.error || '' } catch { /* corpo não-JSON */ }
-
-    if (!detail) {
-      const trecho = corpo.replace(/\s+/g, ' ').trim().slice(0, 160)
-      console.error(`[data-hub] ${res.status} em ${url.origin} sem JSON de erro — corpo: ${trecho || '(vazio)'}`)
-      throw new Error(
-        `O Data Hub respondeu ${res.status} ao buscar "${datasetSlug}", mas o corpo não é JSON — ` +
-        'sinal de que quem respondeu não foi ele, e sim algo no caminho (proxy ou firewall da rede onde a API roda). ' +
-        (trecho ? `Começo da resposta: "${trecho}".` : 'A resposta veio vazia.'),
-      )
-    }
-
-    // Com a mensagem de lá, o status ainda importa pra saber se é credencial
-    // (401), permissão (403) ou dataset (404).
-    throw new Error(`${detail} (HTTP ${res.status} em ${url.origin})`)
-  }
+  if (!res.ok) throw await httpFailure(res, url, datasetSlug)
   const body = await res.json()
   if (!Array.isArray(body?.rows)) {
     throw new Error(`Resposta inesperada do Data Hub para "${datasetSlug}" (sem a lista "rows").`)
@@ -361,9 +430,41 @@ async function requestPage({ baseUrl, datasetSlug, token }, { limit, offset }) {
   return body
 }
 
+// Leitura direta: um QueryDef do Data Hub (o mesmo contrato dos painéis de lá)
+// executado no lake, devolvendo só o resultado. Quem chama com cache, fila e
+// tradução de widget é server/datahubQuery.mjs — isto aqui é só o HTTP.
+export async function queryDataset({ baseUrl, datasetSlug, token }, def) {
+  const url = apiUrl({ baseUrl, datasetSlug }, 'query')
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'X-Api-Token': token, Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(def),
+      signal: AbortSignal.timeout(QUERY_TIMEOUT_MS),
+    })
+  } catch (e) {
+    throw networkError(e, url, QUERY_TIMEOUT_MS)
+  }
+  if (!res.ok) throw await httpFailure(res, url, datasetSlug)
+  const body = await res.json()
+  if (!Array.isArray(body?.rows)) {
+    throw new Error(`Resposta inesperada do Data Hub para "${datasetSlug}" (sem a lista "rows").`)
+  }
+  return body
+}
+
+const mb = (bytes) => (bytes / 1_048_576).toLocaleString('pt-BR', { maximumFractionDigits: 0 })
+
 // Busca o dataset inteiro, paginando por limit/offset até fechar o `total`
 // informado pela própria API. Devolve { rows, total, pages }.
-export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS } = {}) {
+//
+// `maxBytes`: a 1ª página dá o tamanho médio da linha, e com o `total` já dá
+// para saber se o resto cabe — sem baixar nada além dela. Não cabendo, é
+// CopyTooLargeError: antes, a fonte grande era baixada inteira a cada ciclo e
+// derrubava o processo do ETL na hora de gravar, sem erro em lugar nenhum, e
+// as fontes pequenas paravam de atualizar junto.
+export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS, maxBytes = Infinity } = {}) {
   const pages = []
   let fetched = 0
   let total = null
@@ -379,6 +480,19 @@ export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS } = {})
     // Página vazia é o único fim inequívoco: acabaram as linhas, ou o offset
     // passou do fim.
     if (got === 0) break
+    if (pageCount === 1 && Number.isFinite(maxBytes)) {
+      const perRow = JSON.stringify(body.rows).length / got
+      const rows = Math.min(total ?? got, maxRows)
+      const estimate = perRow * rows
+      if (estimate > maxBytes) {
+        const cols = Object.keys(body.rows[0] ?? {}).length
+        throw new CopyTooLargeError(
+          `Grande demais para cópia local: ${rows.toLocaleString('pt-BR')} linhas × ${cols} colunas ≈ ${mb(estimate)} MB ` +
+          `(o teto da cópia é ${mb(maxBytes)} MB). Mude a fonte para "Direto no Data Hub" — os painéis passam a ` +
+          'consultar o Data Hub em vez de baixar a tabela.',
+        )
+      }
+    }
     pages.push(body.rows)
     fetched += got
 
@@ -395,7 +509,7 @@ export async function fetchDatasetRows(credentials, { maxRows = MAX_ROWS } = {})
   }
 
   if (pageCount >= MAX_PAGES) {
-    console.warn(`[lakehouse] ${credentials.datasetSlug}: parei em ${MAX_PAGES} páginas (${fetched} linhas) — teto de segurança da paginação`)
+    logger.warn(`[lakehouse] ${credentials.datasetSlug}: parei em ${MAX_PAGES} páginas (${fetched} linhas) — teto de segurança da paginação`)
   }
   return { rows: pages.flat(), total: total ?? fetched, pages: pageCount }
 }
@@ -417,6 +531,24 @@ export async function previewDataset({ baseUrl, datasetSlug, token }) {
     total: typeof body.total === 'number' ? body.total : null,
     columns: body.rows.length ? Object.keys(body.rows[0]) : [],
     rows: body.rows,
+  }
+}
+
+// A leitura direta depende de o Data Hub ter a consulta pública (POST /query)
+// e de o token alcançar o conjunto por ela. Conferido no teste de conexão, no
+// cadastro e na edição: sem isso a fonte entraria "conectada" e todo widget
+// dela falharia. Nunca lança — devolve o diagnóstico.
+export async function testDirectQuery({ baseUrl, datasetSlug, token }) {
+  try {
+    const credentials = {
+      baseUrl: normalizeBaseUrl(baseUrl),
+      datasetSlug: normalizeSlug(datasetSlug),
+      token: normalizeToken(token),
+    }
+    const body = await queryDataset(credentials, { limit: 1 })
+    return { available: true, total: typeof body.total === 'number' ? body.total : null, error: null }
+  } catch (e) {
+    return { available: false, total: null, error: e.message, missingRoute: e instanceof QueryUnavailableError }
   }
 }
 

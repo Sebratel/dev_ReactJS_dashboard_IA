@@ -19,6 +19,7 @@
 // (server/secretBox.mjs). Um vazamento do volume `data` não entrega acesso à
 // conta Google de ninguém sem a chave.
 // ─────────────────────────────────────────────────────────────────────────
+import { logger } from './logger.mjs'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -46,7 +47,7 @@ function load() {
   } catch (e) {
     // Sessões são descartáveis: arquivo ilegível = todo mundo loga de novo,
     // o que é bem melhor que derrubar a API.
-    console.error(`[sessions] arquivo corrompido (${e.message}) — tratando como vazio`)
+    logger.error(`[sessions] arquivo corrompido (${e.message}) — tratando como vazio`)
     return []
   }
 }
@@ -79,7 +80,7 @@ function unpack(entry) {
   } catch (e) {
     // Chave de cifra trocada — a sessão é inutilizável, então vale como
     // inexistente (a pessoa loga de novo).
-    console.error(`[sessions] sessão ilegível (${e.message}) — tratando como expirada`)
+    logger.error(`[sessions] sessão ilegível (${e.message}) — tratando como expirada`)
     return null
   }
 }

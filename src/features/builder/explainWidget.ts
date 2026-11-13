@@ -11,6 +11,7 @@
 // WidgetInsightPopover). Deixar o modelo narrar também o "como" seria pagar
 // para arriscar erro numa informação que temos exata.
 import { getSourceDef } from './fieldCatalog'
+import { isClickFilterId } from './clickFilter'
 import type { FilterConfig, MeasureConfig, TabRelation, WidgetConfig, WidgetFilter } from './types'
 
 export interface CalcLine {
@@ -77,6 +78,20 @@ function filterLine(source: string | undefined, f: WidgetFilter | { field: strin
   const vals = f.values ?? []
   const shown = vals.length <= 2 ? vals.join(' ou ') : `${vals.length} valores selecionados`
   return `${fieldLabel(source, f.field)} ${verb} ${shown}`
+}
+
+// Filtro de período: [início, fim], qualquer um dos dois pode faltar.
+function periodLine(source: string | undefined, field: string, values: (string | null | undefined)[]): string {
+  const br = (v: string | null | undefined) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(v ?? ''))
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : ''
+  }
+  const [from, to] = [br(values[0]), br(values[1])]
+  const name = fieldLabel(source, field)
+  if (from && to) return from === to ? `${name} em ${from}` : `${name} de ${from} a ${to}`
+  if (from) return `${name} a partir de ${from}`
+  if (to) return `${name} até ${to}`
+  return name
 }
 
 // Existe uma TabRelation ligando estas duas fontes (em qualquer ordem) E o
@@ -165,10 +180,16 @@ export function describeCalculation(
   }
   for (const t of tabFilters) {
     if (!t.values?.length) continue
+    // O filtro por clique (ver clickFilter.ts) chega como filtro da tela, mas
+    // é o clique do momento: quem lê precisa saber que o número mudou por ele.
+    const kind = isClickFilterId(t.filter.id) ? 'Filtro por clique' : 'Filtro da tela'
+    const describe = (source: string | undefined) => (t.filter.type === 'daterange'
+      ? periodLine(source, t.filter.field, t.values)
+      : filterLine(source, { field: t.filter.field, op: 'in', values: t.values }))
     if (t.filter.source === src) {
       lines.push({
-        label: 'Filtro da tela',
-        value: filterLine(src, { field: t.filter.field, op: 'in', values: t.values }),
+        label: kind,
+        value: describe(src),
         hint: hintFor(src, [t.filter.field]),
       })
     } else if (relatesSource(relations, t.filter.source, src)) {
@@ -176,8 +197,8 @@ export function describeCalculation(
       // descrito nos termos da fonte de origem do filtro (é lá que os
       // valores foram escolhidos), não da fonte deste widget.
       lines.push({
-        label: 'Filtro da tela (via relação)',
-        value: filterLine(t.filter.source, { field: t.filter.field, op: 'in', values: t.values }),
+        label: `${kind} (via relação)`,
+        value: describe(t.filter.source),
         hint: hintFor(t.filter.source, [t.filter.field]),
       })
     }

@@ -42,7 +42,20 @@ export interface DashboardTab extends TabConfig {
   canEdit: boolean // resolvido pelo servidor pro usuário atual
 }
 
+// Quem está editando uma guia agora — ver server/tabLocks.mjs.
+export interface TabLockInfo {
+  name: string
+  since: string     // ISO
+  expiresAt: string // ISO
+  self: boolean     // a mesma pessoa (talvez em outra janela)
+  mine: boolean     // esta mesma janela
+}
+
+// Guia id → bloqueio vivo. Guia fora do mapa = ninguém editando.
+export type TabLocks = Record<string, TabLockInfo>
+
 export interface DashboardResponse {
   folder: { id: string; name: string; canManage: boolean; isManager: boolean }
   dashboard: { id: string; name: string; tabs: DashboardTab[]; measures?: MeasureDef[] }
+  locks?: TabLocks
 }

@@ -17,7 +17,9 @@ import { AxisFieldPicker, type AxisFieldGroup } from './AxisFieldPicker'
 import { TableColumnsWell } from './TableColumnsWell'
 import { InfoHint } from './InfoHint'
 import { getAllSources, getSourceDef, type FieldKind } from './fieldCatalog'
-import { fetchWidgetData, fetchFieldValues } from './builderApi'
+import { fetchWidgetData } from './builderApi'
+import { WidgetFiltersEditor } from './WidgetFiltersEditor'
+import { PaletteEditor } from './PaletteEditor'
 import { fetchSheetSources, createSheetSource, deleteSheetSource, refreshSheetSource, ApiError as SheetApiError, type SheetSource } from './sheetSourceApi'
 import { OPERATOR_LABELS } from './conditionalFormat'
 import type { BlinkSpeed, ChartAnimationSpeed, ConditionalOperator, ConditionalRule, DataLabelFormat, MeasureConfig, MeasureDef, SourceTable, TabRelation, TableConditionalRule, TableRuleOperator, TextFormat, WidgetConfig, WidgetDataPoint, WidgetType } from './types'
@@ -69,6 +71,12 @@ const LEGEND_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 
 const AXIS_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area', 'scatter', 'histogram']
 // Tipos que suportam rótulos de dados sobre o próprio gráfico.
 const DATA_LABEL_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area', 'scatter', 'pie', 'funnel', 'histogram']
+// Tipos em que `sort` muda alguma coisa (ver sortAndLimitPoints no servidor):
+// os que agrupam por categoria. Dispersão ordena sozinha pelo valor; tabela e
+// matriz ordenam pelo cabeçalho.
+const SORTABLE_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area', 'pie', 'funnel']
+// Tipos que usam `palette` (fatias, ou séries sem cor própria).
+const PALETTE_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area', 'pie', 'funnel', 'scatter']
 // Tipos que mostram legenda (quadradinho + nome da série) embaixo do gráfico
 // — scatter e funnel nunca mostram (não fazem sentido: 1 série só, sem nome).
 const LEGEND_DISPLAY_TYPES: WidgetType[] = ['bar', 'barH', 'barStacked', 'barHStacked', 'comboBarLine', 'line', 'area', 'pie', 'histogram']
@@ -876,7 +884,6 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   const [previewError, setPreviewError] = useState<string | null>(null)
   // Edição de UM filtro fixo (v1 pragmática: um filtro por widget cobre os
   // casos do default, ex. "status in [Cancelado]"; múltiplos via JSON depois).
-  const [filterValues, setFilterValues] = useState<string[] | null>(null)
 
   // Planilhas do Google já cadastradas (qualquer usuário pode adicionar a
   // sua — ver server/sheetSources.mjs) — carregadas uma vez, ao abrir o
@@ -962,7 +969,6 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
   useEffect(() => { if (isText && tabView === 'modificadores') setTabView('dados') }, [isText, tabView])
   const hasAxes = AXIS_TYPES.includes(draft.type)
   const hasDataLabels = DATA_LABEL_TYPES.includes(draft.type)
-  const wf = draft.widgetFilters?.[0]
 
   // Campo de qualquer fonte RELACIONADA (TabRelation, aba Relacionamentos)
   // com a fonte principal deste widget — cada um vira uma opção a mais nos
@@ -1140,13 +1146,6 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
     return items
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isBreakdownChart, hasLegend, measuresList, measuresLineList, draft.type])
-
-  useEffect(() => {
-    setFilterValues(null)
-    if (!wf || !draft.source) return
-    fetchFieldValues(draft.source, wf.field).then(setFilterValues).catch(() => setFilterValues([]))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft.source, wf?.field])
 
   const runPreview = () => {
     setPreview(null); setPreviewError(null)
@@ -1477,38 +1476,13 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                   </p>
                 )}
 
-                <FieldWell
-                  label="Filtro fixo do widget"
-                  hint="opcional — não reage aos filtros da aba"
-                  info="Restringe os dados deste widget a um subconjunto fixo, sempre — diferente dos filtros da aba (que ficam no topo da dashboard), que o usuário pode mudar a qualquer momento."
-                  allOptions={filterableFields}
-                  selectedKeys={wf ? [wf.field] : []}
-                  onAdd={(field) => set({ widgetFilters: [{ field, op: 'in', values: [] }] })}
-                  onRemove={() => set({ widgetFilters: undefined })}
+                <WidgetFiltersEditor
+                  filters={draft.widgetFilters ?? []}
+                  fieldOptions={filterableFields}
+                  source={draft.source}
+                  relations={relations}
+                  onChange={(list) => set({ widgetFilters: list.length ? list : undefined })}
                 />
-                {wf && (
-                  <div>
-                    <select value={wf.op} onChange={(e) => set({ widgetFilters: [{ ...wf, op: e.target.value as any }] })} className={cn(inputCls, 'mb-1.5')}>
-                      <option value="in">está em</option>
-                      <option value="notIn">não está em</option>
-                    </select>
-                    <div className="max-h-32 overflow-auto flex flex-wrap gap-1.5 rounded-lg border border-app-border p-2">
-                      {filterValues === null && <span className="text-[10px] text-gray-500">Carregando valores…</span>}
-                      {(filterValues ?? []).map((v) => {
-                        const on = wf.values.includes(v)
-                        return (
-                          <button
-                            key={v}
-                            onClick={() => set({ widgetFilters: [{ ...wf, values: on ? wf.values.filter((x) => x !== v) : [...wf.values, v] }] })}
-                            className={cn('px-2 py-0.5 rounded-md border text-[10px]', on ? 'border-brand-blue bg-brand-blue/10 text-brand-blue' : 'border-app-border text-gray-500')}
-                          >
-                            {v}
-                          </button>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
 
                 {!isTable && (
                   <Field
@@ -1516,6 +1490,26 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                     info="Quantas categorias aparecem no gráfico (padrão 15, máximo 100). Se o Eixo X é uma data, mantém os N períodos mais recentes; pra qualquer outro campo, mantém só os N maiores valores — o resto não aparece (não é somado a 'outros')."
                   >
                     <NumberStepper value={draft.limit} defaultValue={15} min={1} max={100} onChange={(n) => set({ limit: n })} />
+                  </Field>
+                )}
+
+                {/* `sort` já existia no motor (e a IA preenche), mas não tinha
+                    controle aqui — um widget da IA com "menor → maior" não
+                    tinha como voltar ao normal. */}
+                {SORTABLE_TYPES.includes(draft.type) && (
+                  <Field
+                    label="Ordenação"
+                    info="Em que ordem as categorias aparecem — e, junto com o Top N, quais ficam. Padrão: do maior para o menor valor. Com o Eixo X em data, a ordem é sempre a do calendário: o Padrão mostra os N períodos mais recentes, e as outras duas opções, os N primeiros."
+                  >
+                    <select
+                      value={draft.sort ?? ''}
+                      onChange={(e) => set({ sort: (e.target.value || undefined) as WidgetConfig['sort'] })}
+                      className={inputCls}
+                    >
+                      <option value="">Padrão (maior → menor; datas: as mais recentes)</option>
+                      <option value="desc">Do maior para o menor</option>
+                      <option value="asc">Do menor para o maior</option>
+                    </select>
                   </Field>
                 )}
               </>
@@ -1545,6 +1539,16 @@ export function WidgetEditorModal({ initial, newWidgetDefaults, onSave, onClose,
                     ))}
                   </div>
                 </CollapsibleSection>
+
+                {PALETTE_TYPES.includes(draft.type) && (
+                  <CollapsibleSection
+                    label="Paleta de cores"
+                    info="Cores das fatias (pizza, funil) e das séries sem cor própria (Legenda, várias medidas), na ordem. Sem paleta, vale a do app. A IA preenche isto quando pedem cores variadas — e daqui dá para trocar cada cor."
+                    open={openSections.has('paleta')} onToggle={() => toggleSection('paleta')}
+                  >
+                    <PaletteEditor value={draft.palette} suggestions={COLORS} onChange={(palette) => set({ palette })} />
+                  </CollapsibleSection>
+                )}
 
                 {isKpi && (
                   <CollapsibleSection

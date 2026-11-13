@@ -11,13 +11,27 @@ _probe_view.mjs
 # empresa) passaram a ser versionados também — decisão explícita do usuário,
 # ciente de que isso põe segredo/dado real no histórico do repositório.
 
-# ÚNICA exceção a essa decisão: a configuração do provedor de IA guarda a chave
-# da API cifrada, e data/.secret-key (a chave que a decifra) é versionado. Os
-# dois juntos no mesmo repositório equivalem a publicar a chave em claro — e
-# uma chave de API vazada é cobrada de imediato. O arquivo é recriado a partir
-# do .env/da tela, e em produção vive no volume, então não versioná-lo não
-# custa nada. Ver server/aiConfig.mjs.
+# Exceções a essa decisão: o que é SEGREDO, ou o que só faz sentido junto com
+# a chave que o decifra. Cifrado + chave no mesmo repositório = em claro.
+#
+# A configuração do provedor de IA guarda a chave da API cifrada. Uma chave de
+# API vazada é cobrada de imediato. Ver server/aiConfig.mjs.
 data/aiConfig.json
+#
+# 18/10/2026 — achado crítico FRN-01 do comitê Datahub & DashIA: a chave de
+# cifra estava versionada AO LADO do catálogo de fontes, cujo token cifrado é
+# uma credencial do Data Hub de PRODUÇÃO. Quem lia o repositório decifrava o
+# token e consultava o Data Hub fora das permissões por pasta do DashIA. As
+# sessões entram junto: o id da sessão fica em claro e É o cookie de login.
+#
+# Nada disto vai para a imagem (o Dockerfile.api não copia data/) e em
+# produção tudo vive no volume `data`, com chave própria — tirar do git não
+# muda o deploy. O que já está no histórico continua lá: por isso todo token
+# do Data Hub que algum dia esteve neste catálogo precisa ser REVOGADO no Data
+# Hub — esconder do git não basta.
+data/.secret-key
+data/lakehouseSources.json
+data/sessions.json
 
 # Cache local dos certificados públicos do Google (verificação do ID token do
 # Firebase). Não é segredo — é chave PÚBLICA —, mas é cache: muda sozinho a
@@ -30,3 +44,7 @@ data/.firebase-certs.json
 # Windows), inútil nas outras máquinas e no Docker, onde o `npm ci` baixa o da
 # própria plataforma.
 node_modules/@napi-rs/
+
+# Resultados do teste de carga (nascem em cada execução; só o RESULTS.md curado, em loadtest/, é versionado)
+loadtest/out/
+loadtest/out-*/

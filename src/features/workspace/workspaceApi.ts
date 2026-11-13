@@ -1,6 +1,6 @@
 import { apiFetch, ApiError } from '@/lib/apiClient'
 import type { TabConfig, TabAccess, MeasureDef } from '@/features/builder/types'
-import type { DashboardResponse, Folder, FolderMember, WorkspaceTreeFolder } from './types'
+import type { DashboardResponse, DashboardTab, Folder, FolderMember, TabLockInfo, TabLocks, WorkspaceTreeFolder } from './types'
 
 export { ApiError }
 
@@ -21,8 +21,11 @@ export async function fetchWorkspaceTree(): Promise<WorkspaceTreeFolder[]> {
   return body.folders
 }
 
-export async function fetchDashboard(folderId: string, dashboardId: string): Promise<DashboardResponse> {
-  return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}`))
+// `clientId` (a janela, ver useTabLocks.ts) só serve pra marcar como `mine`
+// os bloqueios de edição desta mesma janela.
+export async function fetchDashboard(folderId: string, dashboardId: string, clientId?: string): Promise<DashboardResponse> {
+  const query = clientId ? `?clientId=${enc(clientId)}` : ''
+  return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}${query}`))
 }
 
 // ─── Pastas (admin) ──────────────────────────────────────────────
@@ -76,16 +79,82 @@ export async function updateDashboard(folderId: string, dashboardId: string, pat
   return body.dashboard
 }
 
+// Cópia da dashboard inteira na mesma pasta ("Nome (cópia)") — ver
+// duplicateDashboard em server/workspace.mjs.
+export async function duplicateDashboard(folderId: string, dashboardId: string): Promise<{ id: string; name: string }> {
+  const body = await parse<{ dashboard: { id: string; name: string } }>(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/duplicate`, { method: 'POST' }))
+  return body.dashboard
+}
+
 export async function deleteDashboard(folderId: string, dashboardId: string): Promise<void> {
   await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}`, { method: 'DELETE' }))
 }
 
-export async function saveDashboardFull(folderId: string, dashboardId: string, tabs: TabConfig[], measures?: MeasureDef[]): Promise<void> {
-  await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/full`, jsonInit('PUT', { tabs, measures })))
+// Grava guia por guia (ver saveDashboardFull em server/workspace.mjs): só as
+// guias em `changedTabIds` são gravadas, e as medidas só pelo que mudou
+// (`measureChanges`, uma a uma). Devolve a dashboard como ficou no servidor.
+export async function saveDashboardFull(folderId: string, dashboardId: string, payload: {
+  tabs: TabConfig[]
+  changedTabIds: string[]
+  removedTabIds: string[]
+  measureChanges?: { upsert: MeasureDef[]; remove: string[] }
+  clientId: string
+}): Promise<DashboardResponse> {
+  return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/full`, jsonInit('PUT', payload)))
 }
 
-export async function saveTabWidgets(folderId: string, dashboardId: string, tabId: string, widgets: TabConfig['widgets']): Promise<void> {
-  await parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/tabs/${enc(tabId)}/widgets`, jsonInit('PUT', { widgets })))
+// `baseRev` = versão da guia que a tela leu; o servidor recusa (409) se outra
+// pessoa salvou a guia depois disso.
+export async function saveTabWidgets(folderId: string, dashboardId: string, tabId: string, payload: {
+  widgets: TabConfig['widgets']
+  baseRev?: number
+  clientId: string
+}): Promise<DashboardTab> {
+  const body = await parse<{ tab: DashboardTab }>(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/tabs/${enc(tabId)}/widgets`, jsonInit('PUT', payload)))
+  return body.tab
+}
+
+// Cria, ajusta ou remove medidas uma a uma, sem salvar o resto da dashboard —
+// é como o que a IA entrega já fica salvo. Devolve as medidas do servidor.
+export async function saveDashboardMeasures(folderId: string, dashboardId: string, changes: { upsert: MeasureDef[]; remove: string[] }): Promise<MeasureDef[]> {
+  const body = await parse<{ measures: MeasureDef[] }>(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/measures`, jsonInit('PUT', changes)))
+  return body.measures
+}
+
+// ─── Bloqueio de edição por guia (server/tabLocks.mjs) ───────────────
+const lockPath = (folderId: string, dashboardId: string, tabId: string) =>
+  `/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/tabs/${enc(tabId)}/lock`
+
+// Bloqueios + o "pulso" da dashboard: versão de cada guia e as permissões de
+// quem pergunta, agora (ver getDashboardPulse em server/workspace.mjs).
+export interface DashboardPulse {
+  revs: Record<string, number>
+  editable: string[]
+  canManage: boolean
+}
+
+export async function fetchTabLocks(folderId: string, dashboardId: string, clientId: string): Promise<{ locks: TabLocks } & DashboardPulse> {
+  return parse(await apiFetch(`/api/workspace/folders/${enc(folderId)}/dashboards/${enc(dashboardId)}/locks?clientId=${enc(clientId)}`))
+}
+
+export type AcquireTabLockResult =
+  | { ok: true; lock: TabLockInfo; tab?: DashboardTab | null }
+  | { ok: false; lock: TabLockInfo; message: string }
+
+// 409 não é falha aqui: é a resposta "outra pessoa está editando", com quem.
+export async function acquireTabLock(folderId: string, dashboardId: string, tabId: string, clientId: string, renew: boolean): Promise<AcquireTabLockResult> {
+  const res = await apiFetch(lockPath(folderId, dashboardId, tabId), jsonInit('POST', { clientId, renew }))
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null)
+    if (body?.lock) return { ok: false, lock: body.lock, message: body.error }
+  }
+  const body = await parse<{ lock: TabLockInfo; tab?: DashboardTab | null }>(res)
+  return { ok: true, lock: body.lock, tab: body.tab }
+}
+
+// `keepalive`: o pedido sai mesmo com a página fechando (ver useTabLocks).
+export async function releaseTabLock(folderId: string, dashboardId: string, tabId: string, clientId: string, keepalive = false): Promise<void> {
+  await apiFetch(`${lockPath(folderId, dashboardId, tabId)}?clientId=${enc(clientId)}`, { method: 'DELETE', keepalive })
 }
 
 export async function setTabAccess(folderId: string, dashboardId: string, tabId: string, access: TabAccess): Promise<TabConfig> {

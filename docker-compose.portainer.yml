@@ -150,6 +150,12 @@ services:
       # (production | staging); no Portainer de staging, defina APP_ENV=staging.
       NODE_ENV: production
       APP_ENV: ${APP_ENV:-production}
+      # Elastic APM (skill observabilidade-backend). ATENCAO: `${VAR-default}` SEM dois-pontos é de propósito — vazio
+      # significa "agente desligado" (CI, local); com `:-` não haveria como desligar. Nome do serviço fixo entre
+      # ambientes; o ambiente (production | staging) é o que o Kibana usa para separar.
+      ELASTIC_APM_SERVER_URL: ${ELASTIC_APM_SERVER_URL-https://apm.sebratel.net.br}
+      ELASTIC_APM_SERVICE_NAME: ${ELASTIC_APM_SERVICE_NAME:-indicadores-sebratel-api}
+      ELASTIC_APM_ENVIRONMENT: ${ELASTIC_APM_ENVIRONMENT:-${APP_ENV:-production}}
       SLOW_REQUEST_MS: ${SLOW_REQUEST_MS:-5000}
       # Origens extras autorizadas a chamar a API com cookie (CORS). Vazio = só a mesma origem (o nginx faz o proxy).
       CORS_ORIGINS: ${CORS_ORIGINS:-}

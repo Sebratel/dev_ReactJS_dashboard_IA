@@ -66,7 +66,7 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
 | Branch | `staging` | `main` |
 | Stack no Portainer | `dev_reactjs_dashboard_ia-staging` | `indicadores-sebratel` (a atual — ver a nota de migração abaixo) |
 | Compose path | `docker-compose.portainer.yml` | `docker-compose.portainer.yml` |
-| Como atualiza | **automático**: push em `staging` → CI verde → webhook | **semi-automático**: PR para `main` (`ci-ok` + 1 aprovação) → merge → CI → job `deploy-production` espera a **aprovação do Environment `production`** → webhook |
+| Como atualiza | **automático**: push em `staging` → CI verde → webhook | **manual**: *Pull and redeploy*, depois de `ci-ok` + 1 aprovação na PR para `main` |
 | Firebase / Data Hub | projeto e token **de staging** | os de produção |
 | `WEB_PORT` / `ADMIN_EMAILS` / `APP_ENV` | os do host de staging (`WEB_PORT=3011`, registrada; `APP_ENV=staging`) | os de produção (`APP_ENV=production`; a porta atual segue até a stack ser mexida) |
 
@@ -80,13 +80,6 @@ Dois ambientes, **duas stacks no Portainer** (staging num host/Portainer própri
    o Portainer puxa a branch e **rebuilda no host** (o compose usa `build:`, não há registry).
 4. Conferir: o job termina com "Webhook acionado"; no Portainer, a stack mostra o redeploy e os três serviços
    ficam **healthy**; `http://<staging>:<WEB_PORT>/api/health` responde `{"status":"ok",...}`.
-
-**Webhook de deploy de produção** (job `deploy-production`, mesmo arquivo):
-
-1. No Portainer de produção: stack `indicadores-sebratel` (não renomear) → **GitOps updates** → ligue **Webhook** (com *Re-pull image* e *Force redeployment*) e copie a URL.
-2. No GitHub: *Settings → Environments → production*: marque **Required reviewers** (quem aprova o deploy); em *Secrets* crie `PORTAINER_WEBHOOK_URL_PRODUCTION`; em *Variables* (opcional) `HEALTH_URL_PRODUCTION` = `http://<host>:<WEB_PORT>/api/health`.
-3. Merge na `main` → CI → o job aguarda aprovação → aciona o webhook → confere que `/api/health` responde `ok` na versão do `package.json` (até 5 min). Sem `HEALTH_URL_PRODUCTION`, a conferência é pulada com aviso.
-4. O mesmo vale para o webhook de staging: ligue *Re-pull image* e *Force redeployment*. Sem polling em nenhuma das duas stacks.
 
 > Não ligue o **polling** do GitOps junto com o webhook: o Portainer poderia puxar um commit antes do CI terminar.
 
@@ -143,6 +136,9 @@ o que vale é o que está aqui. Referência completa e comentada:
 | `ADMIN_EMAILS` | Administradores iniciais, separados por vírgula. Só valem enquanto a instalação não tem nenhum administrador salvo; depois disso, quem entra pela primeira vez é Padrão e é promovido na aba **Acessos**. |
 | `SECRETS_KEY` | Chave que cifra, em disco, os tokens do Data Hub e os tokens do Google das sessões. Gere com `openssl rand -base64 32`. |
 | `WEB_PORT` | Porta publicada no host. **Registrada: 3011** (faixa de frontend 3000–3099; planilha de portas, PROD linha 50 e STAGING linha 51), a mesma em staging e produção. Sem a variável o compose usa 3011 (nunca porta aleatória). A produção já existente mantém o valor que a stack define até ser mexida; ao migrar, atualize junto o upstream do NPM, o firewall e a monitoração. |
+| `ELASTIC_APM_SERVER_URL` | Elastic APM. Padrão `https://apm.sebratel.net.br`; **vazio desliga o agente** (por isso o compose usa `${VAR-default}`, sem dois-pontos). O CI roda com ela vazia. |
+| `ELASTIC_APM_SERVICE_NAME` | Nome do serviço no APM: **fixo entre ambientes** (`indicadores-sebratel-api`, igual ao campo `service` do log). Nunca ponha o ambiente no nome. |
+| `ELASTIC_APM_ENVIRONMENT` | `production` ou `staging` — é o que separa os ambientes no Kibana. Sem ela vale `APP_ENV`. |
 
 ### Não há credencial de banco
 

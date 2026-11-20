@@ -202,7 +202,14 @@ try {
   check('/api/health devolve {"status":"ok"} (o que o CI confere) e não vaza dado', corpoHealth.status === 'ok' && Object.keys(corpoHealth).every((k) => ['status', 'ok', 'service', 'version', 'timestamp'].includes(k)), JSON.stringify(corpoHealth))
   const nginx = readFileSync(join(RAIZ, 'docker', 'nginx.conf'), 'utf8')
   check('nginx: server_tokens off', /server_tokens\s+off/.test(nginx))
-  check('nginx: X-Content-Type-Options e X-Frame-Options', /X-Content-Type-Options/.test(nginx) && /X-Frame-Options/.test(nginx))
+  // Só as diretivas: o comentário do nginx.conf cita X-Frame-Options para explicar a troca.
+  const diretivas = nginx.replace(/^\s*#.*$/gm, '')
+  check('nginx: X-Content-Type-Options', /X-Content-Type-Options/.test(diretivas))
+  // Iframe: só o próprio site e o Data Hub (menu "Painéis"). Um X-Frame-Options DENY bloquearia o Data Hub.
+  const ancestors = [...diretivas.matchAll(/frame-ancestors ([^"]+)"/g)].map((m) => m[1].trim())
+  check('nginx: frame-ancestors só libera o próprio site e o Data Hub',
+    ancestors.length >= 2 && ancestors.every((a) => a === "'self' https://data-hub.sebratel.net.br"), JSON.stringify(ancestors))
+  check('nginx: sem X-Frame-Options', !/X-Frame-Options/i.test(diretivas))
 
   // Observabilidade: requestId devolvido, reaproveitado e presente no log JSON, sem segredo
   const rid = await fetch(`${h.base}/api/auth/me`, { headers: { cookie: comum, 'x-request-id': 'teste-correlacao-123' } })

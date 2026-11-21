@@ -205,10 +205,13 @@ try {
   // Só as diretivas: o comentário do nginx.conf cita X-Frame-Options para explicar a troca.
   const diretivas = nginx.replace(/^\s*#.*$/gm, '')
   check('nginx: X-Content-Type-Options', /X-Content-Type-Options/.test(diretivas))
-  // Iframe: só o próprio site e o Data Hub (menu "Painéis"). Um X-Frame-Options DENY bloquearia o Data Hub.
+  // Iframe: só o próprio site, o Data Hub (menu "Painéis") e o Hub Apps — o Data Hub
+  // abre dentro do Hub, e frame-ancestors vale para TODOS os ancestrais, não só o pai.
+  // Um X-Frame-Options DENY bloquearia o Data Hub.
+  const ANCESTORS = "'self' https://data-hub.sebratel.net.br https://hub-apps.sebratel.net.br https://hub-apps-staging.sebratel.net.br"
   const ancestors = [...diretivas.matchAll(/frame-ancestors ([^"]+)"/g)].map((m) => m[1].trim())
-  check('nginx: frame-ancestors só libera o próprio site e o Data Hub',
-    ancestors.length >= 2 && ancestors.every((a) => a === "'self' https://data-hub.sebratel.net.br"), JSON.stringify(ancestors))
+  check('nginx: frame-ancestors só libera o próprio site, o Data Hub e o Hub Apps',
+    ancestors.length >= 2 && ancestors.every((a) => a === ANCESTORS), JSON.stringify(ancestors))
   check('nginx: sem X-Frame-Options', !/X-Frame-Options/i.test(diretivas))
 
   // Observabilidade: requestId devolvido, reaproveitado e presente no log JSON, sem segredo

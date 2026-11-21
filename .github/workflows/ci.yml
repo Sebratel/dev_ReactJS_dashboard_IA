@@ -161,8 +161,8 @@ jobs:
             echo "::error::frontend não serviu o index.html"; exit 1; }
           curl -fsSI http://localhost:3011/ | grep -qi 'x-content-type-options: nosniff' || {
             echo "::error::nginx sem os cabeçalhos de segurança"; exit 1; }
-          curl -fsSI http://localhost:3011/ | grep -qi "content-security-policy: frame-ancestors 'self' https://data-hub.sebratel.net.br" || {
-            echo "::error::nginx não libera o iframe do Data Hub (frame-ancestors)"; exit 1; }
+          curl -fsSI http://localhost:3011/ | grep -qi "content-security-policy: frame-ancestors 'self' https://data-hub.sebratel.net.br https://hub-apps.sebratel.net.br" || {
+            echo "::error::nginx não libera o iframe do Data Hub e do Hub Apps (frame-ancestors)"; exit 1; }
           # rota autenticada sem cookie tem de responder 401 (e não 200 nem 502)
           codigo=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3011/api/workspace/tree)
           [ "$codigo" = "401" ] || { echo "::error::/api/workspace/tree sem sessão devolveu $codigo (esperado 401)"; exit 1; }

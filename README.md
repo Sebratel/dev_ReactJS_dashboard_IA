@@ -692,6 +692,48 @@ pessoa cairia no login com sessão válida. E `Secure` só é marcado quando a
 requisição chega por https — num servidor interno em http puro, marcar sempre
 faria o navegador **descartar o cookie em silêncio** e o login nunca completaria.
 
+### Entrada pelo Hub Apps e "só pelo Hub" (`HUB_ONLY`)
+
+O card "Indicadores" do Hub Apps abre este app **dentro do Hub**, num iframe, em
+`/login?sso_token=<token>`. O token é um JWT HS256 de 5 min assinado com o
+segredo do Hub (`HUB_SSO_SECRET` aqui), com `{ sub, email, name, appId, iat, exp }`.
+
+- [src/lib/hubEntry.ts](src/lib/hubEntry.ts) é o **primeiro import** de
+  `main.tsx`: tira o `sso_token` da URL com `history.replaceState` antes de o
+  router ler o endereço. A troca (`bootAuth` em `src/store/authSession.ts`)
+  roda fora do React — o StrictMode não a repete — e antes de o guarda de rota
+  decidir.
+- `POST /api/auth/hub` ([server/hubSso.mjs](server/hubSso.mjs)) confere: só
+  HS256 (o `alg` do cabeçalho nunca escolhe), assinatura em tempo constante,
+  `exp` no futuro, `iat` até 60 s adiantado, vida ≤ 600 s, `appId === HUB_APP_ID`,
+  e-mail `@sebratel.com.br` em minúsculas e **uso único** (hash guardado até o `exp`).
+- A sessão aberta é a de sempre (`data/sessions.json`), marcada `via: 'hub'`,
+  de 8 h. O id volta no **corpo**, nunca em cookie: fica no `sessionStorage` do
+  quadro e vai no `Authorization: Bearer`. Sessão do Hub posta em cookie, ou do
+  Google mandada no Bearer, não vale — uma não se troca pela outra. Abrir o
+  endereço numa aba solta não herda nada.
+- O papel continua vindo de `data/users.json` (aba **Acessos**), nunca do token.
+
+Com `HUB_ONLY=true` (e só com `HUB_SSO_SECRET` preenchido — sem ele o modo é
+ignorado, para não trancar todo mundo), **sem exceção para administrador**:
+`POST /api/auth/session` (Google) responde 403 `{ code: 'HUB_ONLY' }`; toda
+sessão de cookie, inclusive as abertas antes, recebe 403 `HUB_ONLY` em qualquer
+rota protegida; `AUTH_DISABLED` é ignorado; e a tela de login vira "Acesse pelo
+Hub Apps", com um único botão-link `target="_top"` para `HUB_URL`. O front lê o
+modo em `GET /api/auth/config` (`{ hubSso, hubOnly, hubUrl }`) e trata 401 e
+403 `HUB_ONLY` como fim de sessão, sem laço de redirect.
+
+**Menu "Painéis" do Data Hub.** O Data Hub abre este app num iframe dentro do
+Hub (Hub → Data Hub → Indicadores); por isso o `frame-ancestors` do nginx lista
+o Data Hub e o Hub. O Hub não emite token para esse quadro, então quem prova a
+identidade é o Data Hub, com um segredo só desta ligação (`DATAHUB_SSO_SECRET`)
+e um token `{ iss: 'data-hub', aud: 'dashia', email, name, via, iat, exp }`,
+pelo mesmo `?sso_token=`. A sessão fica `via: 'datahub'`. Com `HUB_ONLY`, só
+atravessa quem tem `via: 'hub'` no Data Hub — o master que entra direto lá não
+ganha passagem. Contrato completo em [DEPLOY-PORTAINER.md](DEPLOY-PORTAINER.md).
+
+Provado por `npm run test:hub` (conferência do token e a API real com `HUB_ONLY`).
+
 ### Três camadas de permissão, e o papel vem do servidor
 
 Papéis globais são exatamente dois, `admin` e `standard`. **O papel não vem do

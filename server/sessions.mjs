@@ -85,10 +85,20 @@ function unpack(entry) {
   }
 }
 
-export function createSession({ email, name, picture }, tokens) {
+// `via` diz por onde a sessão foi aberta: 'google' (popup do Firebase, anda no
+// cookie), 'hub' (token do Hub Apps) ou 'datahub' (token do Data Hub, menu
+// "Painéis"). As duas últimas andam só no Authorization: Bearer, guardadas no
+// sessionStorage do quadro — ver server/hubSso.mjs. Sessão antiga, gravada
+// antes deste campo existir, vale como 'google'.
+export function sessionVia(session) {
+  return session?.via || 'google'
+}
+
+export function createSession({ email, name, picture }, tokens, { via = 'google', ttlMs = TTL_MS } = {}) {
   const now = Date.now()
   const entry = {
     id: randomBytes(32).toString('base64url'),
+    via,
     email, name, picture: picture ?? null,
     // Só o access_token do Google (planilhas), quando o login trouxe um.
     // Não há refresh_token no fluxo web do Firebase — ver validAccessToken().
@@ -96,7 +106,7 @@ export function createSession({ email, name, picture }, tokens) {
     accessTokenExpiresAt: tokens.expiresAt ?? 0,
     createdAt: now,
     lastSeenAt: now,
-    expiresAt: now + TTL_MS,
+    expiresAt: now + Math.min(ttlMs, TTL_MS),
   }
   // Aproveita a escrita para varrer as expiradas — não precisa de job separado.
   const kept = load().filter((s) => alive(s, now))

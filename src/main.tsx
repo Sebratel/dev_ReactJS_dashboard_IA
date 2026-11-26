@@ -1,15 +1,19 @@
+// PRIMEIRO import, de propósito: ao ser avaliado, tira o ?sso_token do Hub Apps
+// da barra de endereço — antes de o router (importado logo abaixo) ler a URL.
+import './lib/hubEntry'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
 import { router } from './router'
-import { loadSession } from './store/authSession'
+import { bootAuth } from './store/authSession'
 import './styles/globals.css'
 
 // Quem está logado vem do servidor (o cookie de sessão é HttpOnly, invisível
-// pro JavaScript), então a checagem começa antes do primeiro render e o router
-// espera por ela através do `ready` do authStore. Sem esperar, um F5 numa
-// sessão válida piscaria a tela de login.
-void loadSession()
+// pro JavaScript; a sessão do Hub fica no sessionStorage do quadro), então a
+// checagem começa antes do primeiro render e o router espera por ela através
+// do `ready` do authStore. Sem esperar, um F5 numa sessão válida piscaria a
+// tela de login — e a entrada pelo Hub perderia a corrida para o guarda de rota.
+void bootAuth()
 
 // Depois de um redeploy, os arquivos da versão antiga somem do servidor: uma
 // aba aberta desde antes falha ao carregar uma tela ("Failed to fetch

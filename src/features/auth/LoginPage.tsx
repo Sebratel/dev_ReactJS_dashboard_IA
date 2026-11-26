@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { motion, useReducedMotion, AnimatePresence } from 'framer-motion'
-import { AlertCircle, Info, Loader2, Lock, Shield } from 'lucide-react'
+import { AlertCircle, ExternalLink, Info, Loader2, Lock, Shield } from 'lucide-react'
 import { loginWithGoogle } from '@/store/authSession'
+import { useAuthStore } from '@/store/authStore'
 import { mensagemDeErro } from '@/lib/firebase'
 import { ApiError } from '@/lib/apiClient'
 
@@ -59,9 +60,15 @@ export default function LoginPage() {
   // (popup bloqueado, domínio não autorizado no Firebase) e o nosso servidor
   // (conta de fora do domínio, e-mail não verificado).
   const [erroLocal, setErroLocal] = useState<string | null>(null)
+  // "Só pelo Hub" (GET /api/auth/config): a tela vira "Acesse pelo Hub Apps",
+  // sem nenhum outro botão de login. `hubError` é o motivo de a última entrada
+  // pelo Hub ter falhado (link vencido, já usado...).
+  const hubOnly = useAuthStore((s) => s.hubOnly)
+  const hubUrl = useAuthStore((s) => s.hubUrl)
+  const hubError = useAuthStore((s) => s.hubError)
   // `?erro=` ainda é lido porque uma sessão encerrada pelo servidor pode
   // mandar a pessoa pra cá com um motivo.
-  const error = erroLocal ?? searchParams.get('erro')
+  const error = erroLocal ?? hubError ?? searchParams.get('erro')
 
   const handleGoogle = async () => {
     setBusy(true)
@@ -139,13 +146,17 @@ export default function LoginPage() {
                   <span className="inline-flex rounded-full border border-amber-300/70 bg-amber-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] text-amber-900">
                     INDICADORES SEBRATEL
                   </span>
-                  <h1 className="text-2xl font-bold tracking-tight text-on-surface sm:text-[1.65rem]">Acessar plataforma</h1>
+                  <h1 className="text-2xl font-bold tracking-tight text-on-surface sm:text-[1.65rem]">
+                    {hubOnly ? 'Acesse pelo Hub Apps' : 'Acessar plataforma'}
+                  </h1>
                   <p className="text-sm leading-relaxed text-neutral-700">
-                    Acesso com conta Google para controle de permissões.
+                    {hubOnly
+                      ? 'Os Indicadores abrem dentro do Hub Apps. Entre no Hub e clique em Indicadores.'
+                      : 'Acesso com conta Google para controle de permissões.'}
                   </p>
                 </header>
 
-                <div className="rounded-2xl border border-amber-300/80 bg-[#FFFBEB] p-4 shadow-sm">
+                {!hubOnly && <div className="rounded-2xl border border-amber-300/80 bg-[#FFFBEB] p-4 shadow-sm">
                   <div className="flex items-center justify-center gap-3">
                     <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-amber-400/50 bg-amber-100/80 text-primary">
                       <Shield className="h-5 w-5" strokeWidth={2} aria-hidden />
@@ -155,7 +166,7 @@ export default function LoginPage() {
                       <span className="font-semibold text-on-surface">@sebratel.com.br</span>
                     </p>
                   </div>
-                </div>
+                </div>}
 
                 <AnimatePresence initial={false}>
                   {error && (
@@ -173,6 +184,19 @@ export default function LoginPage() {
                   )}
                 </AnimatePresence>
 
+                {hubOnly ? (
+                  // Link, não botão: leva o Hub para o topo da janela (target="_top")
+                  // mesmo quando esta tela está dentro de um quadro.
+                  <a
+                    href={hubUrl}
+                    target="_top"
+                    rel="noopener"
+                    className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-[#FFB800] px-4 py-3.5 text-sm font-semibold text-on-surface shadow-md transition-shadow hover:bg-[#e6a800] hover:shadow-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    <ExternalLink className="h-4 w-4" aria-hidden />
+                    Abrir o Hub Apps
+                  </a>
+                ) : (<>
                 <motion.button
                   type="button"
                   onClick={handleGoogle}
@@ -202,6 +226,7 @@ export default function LoginPage() {
                     Problemas para acessar?
                   </a>
                 </p>
+                </>)}
               </div>
             </motion.div>
           </motion.div>

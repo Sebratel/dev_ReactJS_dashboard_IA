@@ -52,8 +52,13 @@ import {
 import { listRequests, latestRequestsByFolder, getRequest, createRequest, decideRequest } from './accessRequests.mjs'
 import {
   COOKIE_NAME, TTL_MS as SESSION_TTL_MS, createSession, getSession, destroySession, touchSession, validAccessToken,
+  sessionVia,
 } from './sessions.mjs'
 import { verifyFirebaseIdToken, firebaseProjectId } from './firebaseToken.mjs'
+import {
+  EMBEDDED_VIAS, HUB_SESSION_TTL_MS, hubOnlyActive, hubSsoConfigured, datahubSsoConfigured, datahubSsoProblem,
+  hubUrl, verifyLaunchToken,
+} from './hubSso.mjs'
 
 // Versão da aplicação: a do package.json (a mesma da tag da imagem e do label no Portainer).
 // APP_VERSION do ambiente só vale se alguém sobrescrever de propósito (o Dockerfile.api a define a
@@ -93,7 +98,11 @@ const AUTH_DISABLED_NAME = process.env.AUTH_DISABLED_NAME || AUTH_DISABLED_EMAIL
 // de fora aqui deixaria o resto do servidor decidindo permissão sobre uma
 // premissa falsa. Então para na subida, dizendo o que corrigir, em vez de
 // atender pela metade.
-if (AUTH_DISABLED && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
+// HUB_ONLY vence o bypass: com o "só pelo Hub" valendo, AUTH_DISABLED é
+// ignorado — não existe porta dos fundos, nem de desenvolvimento.
+const authBypass = () => AUTH_DISABLED && !hubOnlyActive()
+
+if (authBypass() && !AUTH_DISABLED_EMAIL.endsWith('@' + ALLOWED_DOMAIN)) {
   logger.error(`[auth] AUTH_DISABLED_EMAIL (${AUTH_DISABLED_EMAIL}) não é do domínio @${ALLOWED_DOMAIN} — ajuste o .env.`)
   process.exit(1)
 }
@@ -124,7 +133,7 @@ app.use((req, res, next) => {
   if (origin && CORS_ORIGINS.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     // A sessão é um cookie, não um header Authorization — sem isto o navegador
     // não envia o cookie em requisição de origem cruzada.
     res.setHeader('Access-Control-Allow-Credentials', 'true')
@@ -186,21 +195,52 @@ function clearCookie(res, req, name) {
   res.append('Set-Cookie', parts.join('; '))
 }
 
+// Sessão aberta pelo Hub (ou pelo Data Hub dentro do Hub): o id vem no
+// Authorization: Bearer, lido do sessionStorage do quadro — nunca em cookie.
+// Assim abrir o endereço numa aba solta não herda a sessão do quadro.
+function readBearer(req) {
+  const raw = String(req.headers.authorization ?? '')
+  const m = /^Bearer ([A-Za-z0-9_-]{20,200})$/.exec(raw.trim())
+  return m ? m[1] : null
+}
+
+// Cada origem de sessão anda num lugar só: a do Hub/Data Hub no Bearer, a do
+// Google no cookie. Um id de sessão do Google mandado no Bearer, ou um do Hub
+// enfiado no cookie, não vale — é o que impede trocar uma pela outra.
+function sessionFromRequest(req) {
+  const bearer = readBearer(req)
+  if (bearer) {
+    const s = getSession(bearer)
+    return s && EMBEDDED_VIAS.has(sessionVia(s)) ? s : null
+  }
+  const s = getSession(readCookie(req, COOKIE_NAME))
+  return s && !EMBEDDED_VIAS.has(sessionVia(s)) ? s : null
+}
+
+const HUB_ONLY_MESSAGE = 'Os Indicadores são acessados pelo Hub Apps. Abra o Hub e clique em Indicadores.'
+
 function requireAuth() {
   return async (req, res, next) => {
     // Bypass de desenvolvimento (AUTH_DISABLED): nenhuma sessão é lida nem
     // criada, a identidade vem do .env. Fica sem access_token do Google — quem
     // depende dele são as fontes de planilha, e resolveSheetRows() já trata
-    // token ausente caindo no cache, em vez de estourar.
-    if (AUTH_DISABLED) {
+    // token ausente caindo no cache, em vez de estourar. Desligado com HUB_ONLY.
+    if (authBypass()) {
       req.user = { email: AUTH_DISABLED_EMAIL, name: AUTH_DISABLED_NAME }
       req.accessToken = null
       req.sessionId = null
       touchUser(AUTH_DISABLED_EMAIL, AUTH_DISABLED_NAME)
       return next()
     }
-    const session = getSession(readCookie(req, COOKIE_NAME))
+    const session = sessionFromRequest(req)
     if (!session) return res.status(401).json({ error: 'Sessão inválida ou expirada. Entre novamente.' })
+    // Só pelo Hub: sessão que não veio do Hub (login pelo Google, inclusive as
+    // abertas ANTES de ligar o modo) para de valer — de qualquer pessoa,
+    // administrador incluído. O cookie é apagado para não voltar a cada pedido.
+    if (hubOnlyActive() && !EMBEDDED_VIAS.has(sessionVia(session))) {
+      clearCookie(res, req, COOKIE_NAME)
+      return res.status(403).json({ error: HUB_ONLY_MESSAGE, code: 'HUB_ONLY' })
+    }
     // Revalidado a cada requisição, não só no login: se o domínio permitido
     // mudar, as sessões já abertas de fora dele param na hora.
     if (!session.email.endsWith('@' + ALLOWED_DOMAIN)) {
@@ -222,6 +262,7 @@ function requireAuth() {
     // login por causa de uma credencial acessória.
     req.accessToken = validAccessToken(session)
     req.sessionId = session.id
+    req.authVia = sessionVia(session)
     if (Date.now() - (session.lastSeenAt ?? 0) > TOUCH_INTERVAL_MS) touchSession(session.id)
     touchUser(session.email, session.name)
     next()
@@ -244,6 +285,9 @@ function requireAuth() {
 // depois é o cookie (30 dias). Assim o front não precisa renovar token a cada
 // requisição, e um logout de verdade invalida a sessão no servidor.
 app.post('/api/auth/session', async (req, res) => {
+  // Só pelo Hub: o login pelo Google é recusado AQUI, no servidor, antes de
+  // olhar o token — esconder o botão na tela não seria controle de acesso.
+  if (hubOnlyActive()) return res.status(403).json({ error: HUB_ONLY_MESSAGE, code: 'HUB_ONLY' })
   const idToken = String(req.body?.idToken ?? '')
   if (!idToken) return res.status(400).json({ error: 'Faltou o token de identificação.' })
   if (!firebaseProjectId()) {
@@ -284,12 +328,50 @@ app.post('/api/auth/session', async (req, res) => {
     accessToken: googleAccessToken,
     refreshToken: null,
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 55 * 60 * 1000,
-  })
+  }, { via: 'google' })
   writeCookie(res, req, COOKIE_NAME, session.id, SESSION_TTL_MS)
   touchUser(user.email, user.name)
-  appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email })
+  appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email, meta: { via: 'google' } })
   res.json({
     user: { email: user.email, name: user.name, picture: user.picture },
+    isAdmin: isAdmin(user.email),
+    manualPending: isManualPending(user.email),
+  })
+})
+
+// ─── Entrada pelo Hub Apps (e pelo Data Hub dentro do Hub) ─────────────────
+// Rotas PÚBLICAS: a tela pergunta como entrar e troca o token de 5 min por uma
+// sessão. Ver server/hubSso.mjs.
+//
+// Como a tela de login deve se apresentar. Não revela nada além do que a
+// própria tela mostra (e nunca o segredo: ele não sai do servidor).
+app.get('/api/auth/config', (_req, res) => {
+  res.json({ hubSso: hubSsoConfigured(), hubOnly: hubOnlyActive(), hubUrl: hubUrl() })
+})
+
+// Troca o token do Hub (ou do Data Hub) por uma sessão de 8 h. O id da sessão
+// volta no CORPO, não em cookie: o front o guarda no sessionStorage do quadro e
+// o manda no Authorization: Bearer (sessionFromRequest).
+app.post('/api/auth/hub', (req, res) => {
+  const token = typeof req.body?.token === 'string' ? req.body.token.trim() : ''
+  if (!token) return res.status(400).json({ error: 'Token de acesso ausente.' })
+
+  const r = verifyLaunchToken(token)
+  if (!r.ok) {
+    logger.warn(`[auth] entrada pelo Hub recusada (${r.status}): ${r.error}`)
+    return res.status(r.status).json({ error: r.error, ...(r.code ? { code: r.code } : {}) })
+  }
+
+  // Provisiona como o login normal: registra a pessoa em data/users.json (o
+  // papel sai de lá, nunca do token) e a entrada na auditoria.
+  const user = { email: r.email, name: r.name, picture: null }
+  const session = createSession(user, { accessToken: null, refreshToken: null, expiresAt: 0 }, { via: r.via, ttlMs: HUB_SESSION_TTL_MS })
+  touchUser(user.email, user.name)
+  appendAuditLog({ email: user.email, name: user.name, action: 'auth.login', target: user.email, meta: { via: r.via } })
+  res.json({
+    token: session.id,
+    expiresAt: new Date(session.expiresAt).toISOString(),
+    user: { email: user.email, name: user.name },
     isAdmin: isAdmin(user.email),
     manualPending: isManualPending(user.email),
   })
@@ -305,7 +387,7 @@ app.get('/api/auth/me', requireAuth(), (req, res) => {
 })
 
 app.post('/api/auth/logout', async (req, res) => {
-  const session = getSession(readCookie(req, COOKIE_NAME))
+  const session = getSession(readBearer(req) || readCookie(req, COOKIE_NAME))
   if (session) {
     appendAuditLog({ email: session.email, name: session.name, action: 'auth.logout', target: session.email })
     destroySession(session.id)
@@ -1362,7 +1444,15 @@ app.post('/api/access/heartbeat', requireAuth(), (_req, res) => {
 app.listen(PORT, () => {
   logger.info(`Indicadores Sebratel API ouvindo em :${PORT}`)
   logger.info(`  domínio permitido: @${ALLOWED_DOMAIN}`)
-  if (AUTH_DISABLED) {
+  logger.info(`  entrada pelo Hub Apps: ${hubSsoConfigured() ? 'ligada' : 'desligada (sem HUB_SSO_SECRET)'}; pelo Data Hub: ${datahubSsoConfigured() ? 'ligada' : 'desligada'}`)
+  if (hubOnlyActive()) logger.info('  HUB_ONLY ligado: só entra quem vem pelo Hub Apps (sem exceção)')
+  else if (['1', 'true', 'sim', 'yes'].includes(String(process.env.HUB_ONLY ?? '').trim().toLowerCase())) {
+    logger.warn('  HUB_ONLY=true IGNORADO: falta HUB_SSO_SECRET — sem ele ninguém entraria pelo Hub.')
+  }
+  const problemaDatahub = datahubSsoProblem()
+  if (problemaDatahub) logger.warn(`  ${problemaDatahub}`)
+  if (AUTH_DISABLED && hubOnlyActive()) logger.warn('  AUTH_DISABLED=true IGNORADO: HUB_ONLY está ligado.')
+  if (authBypass()) {
     logger.warn('  ****************************************************************')
     logger.warn('  *  ATENÇÃO: LOGIN DESABILITADO (AUTH_DISABLED=true)            *')
     logger.warn(`  *  Toda requisição é atendida como ${AUTH_DISABLED_EMAIL}`)

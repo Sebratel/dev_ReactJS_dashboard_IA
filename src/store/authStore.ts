@@ -12,6 +12,8 @@
 import { create } from 'zustand'
 import { clearSessionScopedStorage } from './sessionScopedStorage'
 
+export const DEFAULT_HUB_URL = 'https://hub-apps.sebratel.net.br'
+
 export interface AuthUser {
   name: string
   email: string
@@ -28,6 +30,15 @@ interface AuthState {
   // não mandar pro /login quem só ainda não foi verificado (o que faria um
   // F5 numa sessão válida cair na tela de login).
   ready: boolean
+  // Como a tela de login se apresenta (GET /api/auth/config). Com `hubOnly`, a
+  // única porta é o Hub Apps: a tela mostra "Acesse pelo Hub Apps" e nenhum
+  // outro botão de login. É só UX — quem recusa o resto é o servidor.
+  hubOnly: boolean
+  hubUrl: string
+  // Por que a última entrada pelo Hub falhou (token vencido, já usado...).
+  hubError: string | null
+  setAuthConfig: (c: { hubOnly: boolean; hubUrl: string }) => void
+  setHubError: (msg: string | null) => void
   setSession: (session: { user: AuthUser; isAdmin: boolean; manualPending?: boolean }) => void
   setIsAdmin: (v: boolean) => void
   setManualPending: (v: boolean) => void
@@ -40,6 +51,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAdmin: false,
   manualPending: false,
   ready: false,
+  hubOnly: false,
+  hubUrl: DEFAULT_HUB_URL,
+  hubError: null,
+  setAuthConfig: ({ hubOnly, hubUrl }) => set({ hubOnly, hubUrl: hubUrl || DEFAULT_HUB_URL }),
+  setHubError: (hubError) => set({ hubError }),
   setSession: ({ user, isAdmin, manualPending = false }) => set({ user, isAdmin, manualPending, ready: true }),
   setIsAdmin: (isAdmin) => set({ isAdmin }),
   setManualPending: (manualPending) => set({ manualPending }),

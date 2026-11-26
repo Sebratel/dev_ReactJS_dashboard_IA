@@ -1,6 +1,6 @@
 {
   "name": "indicadores-sebratel",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,8 @@
     "//test:click": "Logica do filtro por clique (src/features/builder/clickFilter.ts): do clique para condicoes (valor, nivel de data como periodo, campo de outra fonte, chave composta), selecao com e sem Ctrl, filtros de guia que cada widget recebe (o de origem nunca se filtra), o que fica aceso e o texto do balao. Que o filtro da o mesmo numero da barra clicada, nos dois modos, esta no test:direct. Sem rede e sem servidor.",
     "test:auth": "tsx scripts/test-auth.mjs",
     "//test:auth": "Teste de fumaca da verificacao do ID token do Firebase (server/firebaseToken.mjs): prova que token bom entra e que alg:none, HS256 com a chave publica, payload adulterado, aud/iss de outro projeto, expirado e kid desconhecido NAO entram. Nao usa rede.",
+    "test:hub": "tsx scripts/test-hub.mjs",
+    "//test:hub": "Entrada pelo Hub Apps e HUB_ONLY (server/hubSso.mjs + API real): token do Hub valido, segredo errado, alg:none, vencido, iat no futuro, appId errado, dominio de fora, reuso e payload adulterado; token do Data Hub (menu Paineis) so atravessa com HUB_ONLY se a sessao de la veio do Hub; com HUB_ONLY o login pelo Google e recusado no servidor, sessao antiga de cookie (ate de admin) para de valer, a sessao do Hub so vale no Bearer (nunca em cookie) e AUTH_DISABLED e ignorado; HUB_ONLY sem segredo e ignorado. Segredos e e-mails ficticios.",
     "test:access": "tsx scripts/test-access.mjs",
     "//test:access": "Quem entra e o que pode pedir (server/accessLog.mjs, server/accessRequests.mjs, liberacao de pasta em server/workspace.mjs): primeiro acesso e Padrao mesmo estando em ADMIN_EMAILS quando ja existe admin salvo; primeiro acesso marcado ate abrir o manual; pedido de acesso com um pendente por pasta, decisao unica e liberacao que poe o e-mail na pasta. Usa pasta temporaria e e-mails ficticios, nao toca em data/.",
     "test:direct": "tsx scripts/test-direct.mjs",
@@ -28,7 +30,7 @@
     "//security:scan": "Varredura estatica (sem rede): segredo no codigo versionado, .env/chave no git, AUTH_DISABLED ligado, Dockerfile como root/sem healthcheck/:latest, compose com container_name/sem name:/sem limite de memoria/porta fixa, stack trace devolvido ao cliente. Nunca imprime o valor do segredo.",
     "test:security": "tsx scripts/test-security.mjs",
     "//test:security": "Seguranca da API REAL (sobe server/index.mjs com login de verdade e dados inventados): toda rota /api/* descoberta no codigo exige sessao, toda rota de admin recusa usuario comum, cookie e ID token forjados nao entram, pasta restrita, CORS sem eco de origem, erro sem stack, corpo acima de 2 MB, cabecalhos, entrada hostil. Nao toca em data/ nem na rede.",
-    "test:all": "npm run test:ai && npm run test:click && npm run test:auth && npm run test:access && npm run test:direct && npm run test:locks && npm run test:security",
+    "test:all": "npm run test:ai && npm run test:click && npm run test:auth && npm run test:hub && npm run test:access && npm run test:direct && npm run test:locks && npm run test:security",
     "loadtest": "node loadtest/run.mjs",
     "//loadtest": "Carga real contra a API (ver loadtest/README.md): npm run loadtest -- smoke | load | stress | spike | soak | abuso. Dataset sintetico, login de verdade, pasta temporaria; nao toca em data/.",
     "version:set": "node scripts/set-version.mjs",

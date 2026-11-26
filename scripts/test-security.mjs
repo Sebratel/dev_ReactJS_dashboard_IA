@@ -46,6 +46,8 @@ const ABERTAS = new Map([
   ['GET /api/health', 'sonda do Docker/Portainer e do CI; não devolve dado'],
   ['POST /api/auth/session', 'é a porta de entrada: valida o ID token'],
   ['POST /api/auth/logout', 'só encerra a sessão do próprio cookie; sem sessão é no-op'],
+  ['GET /api/auth/config', 'diz à tela de login se o acesso é só pelo Hub; nenhum dado nem segredo (test:hub)'],
+  ['POST /api/auth/hub', 'é a porta de entrada pelo Hub Apps: confere o token de 5 min (test:hub)'],
 ])
 
 check(`o teste enxergou as rotas do servidor (${rotas.length})`, rotas.length > 50, String(rotas.length))

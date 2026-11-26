@@ -4,6 +4,17 @@
 
 ---
 
+## 25/11/2026 — Dentro do Hub Apps com login automático, e "só pelo Hub" sem exceção (1.0.6)
+
+Pedido: abrir os Indicadores dentro do Hub Apps (iframe, sem tela de login) e bloquear TODO acesso direto pelo endereço — inclusive de administradores, sem lista de exceção. O menu "Painéis" do Data Hub, que abre os Indicadores dentro do Hub, precisa continuar funcionando.
+
+- **Entrada pelo Hub** (`server/hubSso.mjs`, novo; `POST /api/auth/hub`): o Hub abre `/login?sso_token=<JWT HS256 de 5 min>`. O servidor confere só HS256, assinatura em tempo constante, `exp`, `iat` (até 60 s adiantado), vida ≤ 600 s, `appId` (`HUB_APP_ID`, padrão o id do card), e-mail `@sebratel.com.br` e uso único, e abre uma sessão de 8 h marcada `via: 'hub'`. O id volta no corpo e vive no `sessionStorage` do quadro (`src/lib/hubEntry.ts`, primeiro import do `main.tsx`, que tira o token da URL antes do router), enviado no `Authorization: Bearer`. Sessão do Hub em cookie, ou do Google no Bearer, não vale.
+- **`HUB_ONLY=true`** (só com `HUB_SSO_SECRET`): login pelo Google recusado no servidor (403 `HUB_ONLY`), sessões de cookie — inclusive as já abertas, de qualquer papel — recusadas em toda rota protegida, `AUTH_DISABLED` ignorado, tela "Acesse pelo Hub Apps" com o botão-link para o Hub (`target="_top"`). `GET /api/auth/config` diz à tela o modo; o cliente HTTP trata 401 e 403 `HUB_ONLY` como fim de sessão.
+- **Painéis do Data Hub**: hoje o quadro abre os Indicadores com login do Google dentro do iframe, que o `HUB_ONLY` recusa. Ficou pronto o lado de cá: token `{ iss: 'data-hub', aud: 'dashia', email, name, via, iat, exp }` assinado com `DATAHUB_SSO_SECRET` (segredo só desta ligação), pelo mesmo `?sso_token=`; com `HUB_ONLY` só entra quem tem `via: 'hub'` no Data Hub (o master que entra direto lá não atravessa). Falta o Data Hub emitir o token (contrato no DEPLOY-PORTAINER).
+- Variáveis novas no `backend` do compose: `HUB_SSO_SECRET`, `HUB_APP_ID`, `HUB_ONLY`, `HUB_URL`, `DATAHUB_SSO_SECRET`. O `frame-ancestors` do nginx (1.0.5) ficou como estava.
+
+Verificado: `npm run test:hub` 89/89 (novo: conferência do token e a API real com HUB_ONLY ligado, sem segredo e desligado). Os demais seguem passando (`test:ai` 95, `test:click` 43, `test:auth` 21, `test:access` 32, `test:direct` 125, `test:locks` 63, `test:security` 72, com as duas rotas públicas novas na lista explícita), `tsc` e `security:scan` limpos, build ok. E2E local com Playwright num Hub falso: dentro do quadro entra sem login, o token sai da URL, a sessão fica no sessionStorage (sem cookie) e sobrevive ao F5; aba solta logo depois mostra "Acesse pelo Hub Apps" com o link `target="_top"` e sem botão do Google; aba solta com `?sso_token=` não troca o token; Sair volta para "Acesse pelo Hub Apps".
+
 ## 21/10/2026 — "Ajustar com IA" em cada widget, e o editor mostra tudo que a IA preenche (vários filtros fixos, ordenação, paleta)
 
 Pedido (com print do "Como foi calculado" de uma pizza): a IA montou uma pizza e umas barras praticamente iguais, mas a pizza dava 79 e as barras 80 — a pizza tinha um filtro fixo "Status igual a Encerrado" que as barras não tinham. Pedidos: (1) um botão para pedir à IA que ajuste, modifique ou melhore um widget específico, como o botão da leitura por IA; (2) os widgets que a IA monta devem vir com os campos preenchidos para o cliente alterar como quiser; (3) no meio do trabalho: poder pôr quantos filtros fixos o cliente quiser no widget, não só um.

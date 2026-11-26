@@ -72,11 +72,12 @@ jobs:
       - name: Varredura estática de segurança
         run: npm run security:scan
 
-      - name: Testes (IA, filtro por clique, login, acesso, leitura direta, bloqueio de guia)
+      - name: Testes (IA, filtro por clique, login, entrada pelo Hub, acesso, leitura direta, bloqueio de guia)
         run: |
           npm run test:ai
           npm run test:click
           npm run test:auth
+          npm run test:hub
           npm run test:access
           npm run test:direct
           npm run test:locks

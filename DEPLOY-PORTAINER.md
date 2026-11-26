@@ -180,6 +180,47 @@ Google — que usam o login do próprio usuário, sem credencial de serviço.
 > invalida os tokens do Data Hub já cadastrados: eles precisam ser
 > recadastrados na tela (o resto do cadastro é preservado).
 
+### Entrada pelo Hub Apps e "só pelo Hub" (`HUB_ONLY`)
+
+Todas vão só no serviço `backend` e já estão listadas no `environment:` do
+`docker-compose.portainer.yml` (o Portainer não repassa o que não está lá).
+
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `HUB_SSO_SECRET` | vazio | **Segredo.** O MESMO valor do `SSO_JWT_SECRET` da stack do Hub Apps. Confere o token de 5 min que o Hub manda em `?sso_token=`. Vazio = entrada pelo Hub desligada e `HUB_ONLY` ignorado. Nunca em `VITE_*`. |
+| `HUB_APP_ID` | `f03eb408-086d-495b-a4dc-1cbe3b539b28` | id do card "Indicadores" no Hub. O segredo do Hub é comum a todos os apps; sem conferir o appId, um token de outro app entraria aqui. |
+| `HUB_ONLY` | `false` | `true` = só pelo Hub, **sem exceção** (nem administrador): o login pelo Google é recusado no servidor (403 `HUB_ONLY`), sessões de cookie — inclusive as já abertas — param de valer, `AUTH_DISABLED` é ignorado e a tela de login vira "Acesse pelo Hub Apps". Só vale com `HUB_SSO_SECRET`. |
+| `HUB_URL` | `https://hub-apps.sebratel.net.br` | Para onde o botão "Abrir o Hub Apps" leva (`target="_top"`). |
+| `DATAHUB_SSO_SECRET` | vazio | **Segredo.** Menu "Painéis" do Data Hub, que abre este app dentro do Hub (Hub → Data Hub → Indicadores). Igual ao `DASHIA_SSO_SECRET` da stack do Data Hub, **diferente** do `HUB_SSO_SECRET`, com 32+ caracteres (`openssl rand -base64 48`). Vazio = Painéis sem entrada automática. |
+
+Como funciona: o servidor confere o token (só HS256, assinatura em tempo
+constante, `exp` no futuro, `iat` até 60 s adiantado, vida ≤ 600 s, `appId`,
+e-mail `@sebratel.com.br`, uso único) e abre uma sessão de 8 h marcada
+`via: 'hub'`. O id dela volta no corpo — nunca em cookie —, fica no
+`sessionStorage` do quadro e vai no `Authorization: Bearer`. Abrir o endereço
+numa aba solta não herda nada; o papel continua vindo da aba **Acessos**.
+
+Card no Hub: **pass_token = 1** ("SSO — passar token"), **embed = 1** ("Abrir
+dentro do Hub") e URL `https://dashia.sebratel.net.br/login`.
+
+**Painéis do Data Hub.** O Data Hub precisa emitir, para quem está logado
+nele, um token HS256 assinado com o `DASHIA_SSO_SECRET` e abrir o quadro em
+`https://dashia.sebratel.net.br/?sso_token=<token>`:
+
+```json
+{ "iss": "data-hub", "aud": "dashia", "sub": "<email>", "email": "<email>",
+  "name": "<nome>", "via": "hub | google", "iat": 0, "exp": "iat + 300" }
+```
+
+`via` é a origem da sessão **do Data Hub** que pediu o token. Com `HUB_ONLY`,
+só `via: "hub"` entra: o master que abre o Data Hub direto (exceção de lá) não
+atravessa para cá. Sem essa mudança no Data Hub, com `HUB_ONLY=true` os
+Painéis mostram "Acesse pelo Hub Apps".
+
+Ordem segura para ligar: (1) `HUB_SSO_SECRET` com `HUB_ONLY=false` e o card com
+pass_token/embed = 1; (2) conferir a entrada pelo Hub; (3) Data Hub com o
+token dos Painéis e `DATAHUB_SSO_SECRET` aqui; (4) `HUB_ONLY=true`.
+
 ---
 
 ## 4. Depois de subir
